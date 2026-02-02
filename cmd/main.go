@@ -209,6 +209,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "ControllerConfig")
 		os.Exit(1)
 	}
+
+	if err := (&controller.SQSConsumerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SQSConsumer")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

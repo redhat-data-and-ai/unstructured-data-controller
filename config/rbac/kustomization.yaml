@@ -25,4 +25,7 @@ resources:
 - controllerconfig_admin_role.yaml
 - controllerconfig_editor_role.yaml
 - controllerconfig_viewer_role.yaml
+- sqsconsumer_admin_role.yaml
+- sqsconsumer_editor_role.yaml
+- sqsconsumer_viewer_role.yaml
 

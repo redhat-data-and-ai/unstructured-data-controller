@@ -1,0 +1,10 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: SQSConsumer
+metadata:
+  labels:
+    app.kubernetes.io/name: unstructured-data-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: sqsconsumer-sample
+spec:
+  # TODO(user): Add fields here
+  queueURL: http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/unstructured-s3-queue
