@@ -31,9 +31,13 @@ type ControllerConfigSpec struct {
 }
 
 type UnstructuredDataProcessingConfigSpec struct {
-	IngestionBucket   string `json:"ingestionBucket,omitempty"`
-	DataStorageBucket string `json:"dataStorageBucket,omitempty"`
+	MaxConcurrentDoclingTasks int `json:"maxConcurrentDoclingTasks,omitempty"`
+
+	IngestionBucket string `json:"ingestionBucket,omitempty"`
+	DoclingServeURL string `json:"doclingServeURL,omitempty"`
+
 	CacheDirectory    string `json:"cacheDirectory,omitempty"`
+	DataStorageBucket string `json:"dataStorageBucket,omitempty"`
 }
 
 // ControllerConfigStatus defines the observed state of ControllerConfig.

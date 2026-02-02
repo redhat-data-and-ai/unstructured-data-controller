@@ -20,9 +20,11 @@ import (
 	"context"
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -70,6 +72,31 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return ctrl.Result{}, err
 	}
 
+	// first, let's create (or update) the DocumentProcessor CR for this data product
+	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dataProductName,
+			Namespace: unstructuredDataProductCR.Namespace,
+		},
+		Spec: operatorv1alpha1.DocumentProcessorSpec{
+			DataProduct:             dataProductName,
+			DocumentProcessorConfig: unstructuredDataProductCR.Spec.DocumentProcessorConfig,
+		},
+	}
+	// result, err := kubecontrollerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error { return nil })
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error {
+		documentProcessorCR.Spec = operatorv1alpha1.DocumentProcessorSpec{
+			DataProduct:             dataProductName,
+			DocumentProcessorConfig: unstructuredDataProductCR.Spec.DocumentProcessorConfig,
+		}
+		return nil
+	})
+	if err != nil {
+		logger.Error(err, "failed to create/update DocumentProcessor CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	logger.Info("DocumentProcessor CR created/updated", "result", result)
+
 	var source unstructured.DataSource
 	switch unstructuredDataProductCR.Spec.SourceConfig.Type {
 	case operatorv1alpha1.SourceTypeS3:
@@ -115,6 +142,20 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	// now we may remove the force reconcile label as we have read all the files from the source and we are ready to accept more events
 	if err := controllerutils.RemoveForceReconcileLabel(ctx, r.Client, unstructuredDataProductCR); err != nil {
 		logger.Error(err, "failed to remove force reconcile label from UnstructuredDataProduct CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+
+	// fetch the DocumentProcessor CR
+	latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: unstructuredDataProductCR.Namespace,
+		Name:      dataProductName,
+	}, latestDocumentProcessorCR); err != nil {
+		logger.Error(err, "failed to get DocumentProcessor CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, latestDocumentProcessorCR); err != nil {
+		logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 

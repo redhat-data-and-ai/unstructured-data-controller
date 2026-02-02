@@ -31,4 +31,8 @@ resources:
 - unstructureddataproduct_admin_role.yaml
 - unstructureddataproduct_editor_role.yaml
 - unstructureddataproduct_viewer_role.yaml
+- documentprocessor_admin_role.yaml
+- documentprocessor_editor_role.yaml
+- documentprocessor_viewer_role.yaml
+
 

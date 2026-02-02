@@ -54,8 +54,12 @@ spec:
                     type: string
                   dataStorageBucket:
                     type: string
+                  doclingServeURL:
+                    type: string
                   ingestionBucket:
                     type: string
+                  maxConcurrentDoclingTasks:
+                    type: integer
                 type: object
             type: object
           status:

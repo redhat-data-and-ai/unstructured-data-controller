@@ -4,28 +4,27 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: unstructureddataproducts.operator.dataverse.redhat.com
+  name: documentprocessors.operator.dataverse.redhat.com
 spec:
   group: operator.dataverse.redhat.com
   names:
-    kind: UnstructuredDataProduct
-    listKind: UnstructuredDataProductList
-    plural: unstructureddataproducts
-    singular: unstructureddataproduct
+    kind: DocumentProcessor
+    listKind: DocumentProcessorList
+    plural: documentprocessors
+    singular: documentprocessor
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataProductReady")].status
+    - jsonPath: .status.conditions[?(@.type=="DocumentProcessorReady")].status
       name: Status
       type: string
-    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataProductReady")].message
+    - jsonPath: .status.conditions[?(@.type=="DocumentProcessorReady")].message
       name: Message
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: UnstructuredDataProduct is the Schema for the unstructureddataproducts
-          API
+        description: DocumentProcessor is the Schema for the documentprocessors API
         properties:
           apiVersion:
             description: |-
@@ -45,78 +44,9 @@ spec:
           metadata:
             type: object
           spec:
-            description: UnstructuredDataProductSpec defines the desired state of
-              UnstructuredDataProduct
+            description: DocumentProcessorSpec defines the desired state of DocumentProcessor
             properties:
-              chunksGeneratorConfig:
-                properties:
-                  markdownSplitterConfig:
-                    properties:
-                      chunkOverlap:
-                        type: integer
-                      chunkSize:
-                        type: integer
-                      codeBlocks:
-                        type: boolean
-                      headingHierarchy:
-                        type: boolean
-                      joinTableRows:
-                        type: boolean
-                      referenceLinks:
-                        type: boolean
-                    type: object
-                  recursiveCharacterSplitterConfig:
-                    properties:
-                      chunkOverlap:
-                        type: integer
-                      chunkSize:
-                        type: integer
-                      keepSeparator:
-                        type: boolean
-                      separators:
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                  strategy:
-                    type: string
-                  tokenSplitterConfig:
-                    properties:
-                      allowedSpecial:
-                        items:
-                          type: string
-                        type: array
-                      chunkOverlap:
-                        type: integer
-                      chunkSize:
-                        type: integer
-                      disallowedSpecial:
-                        items:
-                          type: string
-                        type: array
-                      encodingName:
-                        type: string
-                      modelName:
-                        type: string
-                    type: object
-                required:
-                - strategy
-                type: object
-              destinationConfig:
-                properties:
-                  snowflakeInternalStageConfig:
-                    properties:
-                      database:
-                        type: string
-                      schema:
-                        type: string
-                      stage:
-                        type: string
-                    type: object
-                  type:
-                    type: string
-                type: object
-              documentProcessorConfig:
+              config:
                 properties:
                   doclingConfig:
                     properties:
@@ -152,22 +82,11 @@ spec:
                   type:
                     type: string
                 type: object
-              sourceConfig:
-                properties:
-                  s3Config:
-                    properties:
-                      bucket:
-                        type: string
-                      prefix:
-                        type: string
-                    type: object
-                  type:
-                    type: string
-                type: object
+              dataProduct:
+                type: string
             type: object
           status:
-            description: UnstructuredDataProductStatus defines the observed state
-              of UnstructuredDataProduct
+            description: DocumentProcessorStatus defines the observed state of DocumentProcessor
             properties:
               conditions:
                 items:
@@ -225,9 +144,61 @@ spec:
                   - type
                   type: object
                 type: array
+              jobs:
+                items:
+                  properties:
+                    attempts:
+                      type: integer
+                    createdOn:
+                      type: string
+                    doclingConfig:
+                      properties:
+                        abort_on_error:
+                          type: boolean
+                        do_ocr:
+                          type: boolean
+                        force_ocr:
+                          type: boolean
+                        from_formats:
+                          items:
+                            type: string
+                          type: array
+                        image_export_mode:
+                          type: string
+                        ocr_engine:
+                          type: string
+                        ocr_lang:
+                          items:
+                            type: string
+                          type: array
+                        pdf_backend:
+                          type: string
+                        return_as_file:
+                          type: boolean
+                        table_mode:
+                          type: string
+                        to_formats:
+                          items:
+                            type: string
+                          type: array
+                      type: object
+                    documentConverter:
+                      type: string
+                    filePath:
+                      type: string
+                    status:
+                      type: string
+                    taskID:
+                      type: string
+                  type: object
+                type: array
               lastAppliedGeneration:
                 format: int64
                 type: integer
+              permanentlyFailingFiles:
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true

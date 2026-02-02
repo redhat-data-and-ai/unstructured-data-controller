@@ -3,4 +3,5 @@ resources:
 - operator_v1alpha1_controllerconfig.yaml
 - operator_v1alpha1_sqsconsumer.yaml
 - operator_v1alpha1_unstructureddataproduct.yaml
+- operator_v1alpha1_documentprocessor.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

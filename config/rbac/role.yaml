@@ -17,6 +17,7 @@ rules:
   - operator.dataverse.redhat.com
   resources:
   - controllerconfigs
+  - documentprocessors
   - sqsconsumers
   - unstructureddataproducts
   verbs:
@@ -31,6 +32,7 @@ rules:
   - operator.dataverse.redhat.com
   resources:
   - controllerconfigs/finalizers
+  - documentprocessors/finalizers
   - sqsconsumers/finalizers
   - unstructureddataproducts/finalizers
   verbs:
@@ -39,6 +41,7 @@ rules:
   - operator.dataverse.redhat.com
   resources:
   - controllerconfigs/status
+  - documentprocessors/status
   - sqsconsumers/status
   - unstructureddataproducts/status
   verbs:

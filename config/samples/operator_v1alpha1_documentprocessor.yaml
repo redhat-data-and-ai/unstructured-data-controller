@@ -1,0 +1,25 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: DocumentProcessor
+metadata:
+  labels:
+    app.kubernetes.io/name: unstructured-data-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: documentprocessor-sample
+spec:
+  dataProduct: testunstructureddataproduct
+  config:
+    type: docling
+    doclingConfig:
+      from_formats:
+        - pdf
+        - docx
+        - pptx
+        - xlsx
+      image_export_mode: embedded
+      do_ocr: true
+      force_ocr: false
+      ocr_engine: easyocr
+      ocr_lang:
+        - en
+      pdf_backend: dlparse_v4
+      table_mode: fast

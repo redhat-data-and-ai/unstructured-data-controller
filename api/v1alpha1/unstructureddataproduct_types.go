@@ -42,17 +42,17 @@ type DocumentProcessorConfig struct {
 }
 
 type DoclingConfig struct {
-	FromFormats     []string `json:"from_formats"`
-	ToFormats       []string `json:"to_formats"`
-	ImageExportMode string   `json:"image_export_mode"`
-	DoOCR           bool     `json:"do_ocr"`
-	ForceOCR        bool     `json:"force_ocr"`
-	OCREngine       string   `json:"ocr_engine"`
-	OCRLang         []string `json:"ocr_lang"`
-	PDFBackend      string   `json:"pdf_backend"`
-	TableMode       string   `json:"table_mode"`
-	AbortOnError    bool     `json:"abort_on_error"`
-	ReturnAsFile    bool     `json:"return_as_file"`
+	FromFormats     []string `json:"from_formats,omitempty"`
+	ToFormats       []string `json:"to_formats,omitempty"`
+	ImageExportMode string   `json:"image_export_mode,omitempty"`
+	DoOCR           bool     `json:"do_ocr,omitempty"`
+	ForceOCR        bool     `json:"force_ocr,omitempty"`
+	OCREngine       string   `json:"ocr_engine,omitempty"`
+	OCRLang         []string `json:"ocr_lang,omitempty"`
+	PDFBackend      string   `json:"pdf_backend,omitempty"`
+	TableMode       string   `json:"table_mode,omitempty"`
+	AbortOnError    bool     `json:"abort_on_error,omitempty"`
+	ReturnAsFile    bool     `json:"return_as_file,omitempty"`
 }
 
 type ChunksGeneratorConfig struct {

@@ -5,6 +5,7 @@ resources:
 - bases/operator.dataverse.redhat.com_controllerconfigs.yaml
 - bases/operator.dataverse.redhat.com_sqsconsumers.yaml
 - bases/operator.dataverse.redhat.com_unstructureddataproducts.yaml
+- bases/operator.dataverse.redhat.com_documentprocessors.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

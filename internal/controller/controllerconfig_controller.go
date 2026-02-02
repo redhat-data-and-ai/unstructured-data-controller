@@ -31,12 +31,15 @@ import (
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
 
 var (
 	ingestionBucket string
+
+	doclingClient *docling.Client
 )
 
 // ControllerConfigReconciler reconciles a ControllerConfig object
@@ -141,6 +144,20 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	logger.Info(fmt.Sprintf("Ingestion bucket: %s, Data storage bucket: %s, Cache directory: %s",
 		ingestionBucket, dataStorageBucket, cacheDirectory))
+
+	doclingServeURL := config.Spec.UnstructuredDataProcessingConfig.DoclingServeURL
+
+	// initialize the docling client
+	doclingClient = docling.NewClientFromURL(
+		doclingServeURL,
+		&docling.ClientConfig{
+			URL:                   doclingServeURL,
+			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
+		},
+	)
+
+	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
+	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
 
 	// update the status of the Config CR to indicate that it is healthy
 	config.UpdateStatus(nil)
