@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/operator.dataverse.redhat.com_controllerconfigs.yaml
+- bases/operator.dataverse.redhat.com_sqsconsumers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
