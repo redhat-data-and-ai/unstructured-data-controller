@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -31,11 +32,15 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	kubernetesclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -47,6 +52,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(operatorv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -198,6 +204,41 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize AWS clients at startup
+	// TODO: This should be configured via UnstructuredDataProductController CR when available
+	awsSecretName := "aws-secret"
+	awsSecretNamespace := os.Getenv("AWS_SECRET_NAMESPACE")
+	if awsSecretNamespace == "" {
+		awsSecretNamespace = "default"
+	}
+
+	setupLog.Info("Initializing AWS clients at startup",
+		"secret-name", awsSecretName, "secret-namespace", awsSecretNamespace)
+
+	// Create an uncached client to fetch the secret before manager starts
+	uncachedClient, err := kubernetesclient.New(ctrl.GetConfigOrDie(), kubernetesclient.Options{
+		Scheme: scheme,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create uncached client for AWS initialization")
+		os.Exit(1)
+	}
+
+	ctx := context.Background()
+	if err := controller.InitializeAWSClients(ctx, uncachedClient, awsSecretName, awsSecretNamespace); err != nil {
+		setupLog.Error(err, "failed to initialize AWS clients at startup",
+			"secret-name", awsSecretName, "secret-namespace", awsSecretNamespace)
+		os.Exit(1)
+	}
+	setupLog.Info("AWS clients initialized successfully at startup")
+
+	if err := (&controller.SQSConsumerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SQSConsumer")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
