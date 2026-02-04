@@ -33,6 +33,7 @@ import (
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -168,8 +169,15 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	sqsConsumerCR.SetWaiting()
-	if err := r.Status().Update(ctx, sqsConsumerCR); err != nil {
+	key := client.ObjectKeyFromObject(sqsConsumerCR)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		res := &operatorv1alpha1.SQSConsumer{}
+		if err := r.Get(ctx, key, res); err != nil {
+			return err
+		}
+		res.SetWaiting()
+		return r.Status().Update(ctx, res)
+	}); err != nil {
 		logger.Error(err, "failed to update SQSConsumer status")
 		return ctrl.Result{}, err
 	}
@@ -215,8 +223,15 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// reconcile again after some time to check if there are any more messages to read
 	logger.Info("successfully processed all messages, will check again ...")
-	sqsConsumerCR.UpdateStatus("successfully processed all messages, will check again ...", nil)
-	if err := r.Status().Update(ctx, sqsConsumerCR); err != nil {
+	successMessage := "successfully processed all messages, will check again ..."
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		res := &operatorv1alpha1.SQSConsumer{}
+		if err := r.Get(ctx, key, res); err != nil {
+			return err
+		}
+		res.UpdateStatus(successMessage, nil)
+		return r.Status().Update(ctx, res)
+	}); err != nil {
 		logger.Error(err, "failed to update SQSConsumer status")
 		return ctrl.Result{}, err
 	}
@@ -286,13 +301,20 @@ func (r *SQSConsumerReconciler) processMessage(ctx context.Context, message sqst
 func (r *SQSConsumerReconciler) handleError(ctx context.Context, sqsConsumerCR *operatorv1alpha1.SQSConsumer, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
-
-	sqsConsumerCR.UpdateStatus("", err)
-	if err := r.Status().Update(ctx, sqsConsumerCR); err != nil {
+	reconcileErr := err
+	key := client.ObjectKeyFromObject(sqsConsumerCR)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.SQSConsumer{}
+		if getErr := r.Get(ctx, key, latest); getErr != nil {
+			return getErr
+		}
+		latest.UpdateStatus("", reconcileErr)
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
 		logger.Error(err, "failed to update SQSConsumer status")
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, err
+	return ctrl.Result{}, reconcileErr
 }
 
 // SetupWithManager sets up the controller with the Manager.

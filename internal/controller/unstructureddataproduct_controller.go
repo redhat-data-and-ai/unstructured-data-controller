@@ -22,6 +22,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -97,6 +98,24 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	logger.Info("DocumentProcessor CR created/updated", "result", result)
 
+	// create ChunksGenerator CR for this data product here
+	chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dataProductName,
+			Namespace: unstructuredDataProductCR.Namespace,
+		},
+		Spec: operatorv1alpha1.ChunksGeneratorSpec{
+			DataProduct:           dataProductName,
+			ChunksGeneratorConfig: unstructuredDataProductCR.Spec.ChunksGeneratorConfig,
+		},
+	}
+	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, chunksGeneratorCR, func() error { return nil })
+	if err != nil {
+		logger.Error(err, "failed to create/update ChunksGenerator CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	logger.Info("ChunksGenerator CR created/updated", "result", result)
+
 	var source unstructured.DataSource
 	switch unstructuredDataProductCR.Spec.SourceConfig.Type {
 	case operatorv1alpha1.SourceTypeS3:
@@ -160,9 +179,17 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 
 	// all done, let's update the status to ready
-	unstructuredDataProductCR.UpdateStatus(fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName), nil)
-	if err := r.Status().Update(ctx, unstructuredDataProductCR); err != nil {
-		logger.Error(err, "failed to update UnstructuredDataProduct CR status")
+	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
+	key := client.ObjectKeyFromObject(unstructuredDataProductCR)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		res := &operatorv1alpha1.UnstructuredDataProduct{}
+		if err := r.Get(ctx, key, res); err != nil {
+			return err
+		}
+		res.UpdateStatus(successMessage, nil)
+		return r.Status().Update(ctx, res)
+	}); err != nil {
+		logger.Error(err, "failed to update UnstructuredDataProduct CR status", "namespace", key.Namespace, "name", key.Name)
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 	logger.Info("successfully updated UnstructuredDataProduct CR status", "status", unstructuredDataProductCR.Status)
@@ -182,10 +209,18 @@ func (r *UnstructuredDataProductReconciler) SetupWithManager(mgr ctrl.Manager) e
 func (r *UnstructuredDataProductReconciler) handleError(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
-	unstructuredDataProductCR.UpdateStatus("", err)
-	if err := r.Status().Update(ctx, unstructuredDataProductCR); err != nil {
+	reconcileErr := err
+	key := client.ObjectKeyFromObject(unstructuredDataProductCR)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.UnstructuredDataProduct{}
+		if getErr := r.Get(ctx, key, latest); getErr != nil {
+			return getErr
+		}
+		latest.UpdateStatus("", reconcileErr)
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status")
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, err
+	return ctrl.Result{}, reconcileErr
 }

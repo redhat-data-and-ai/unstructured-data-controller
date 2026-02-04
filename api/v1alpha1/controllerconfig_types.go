@@ -31,7 +31,8 @@ type ControllerConfigSpec struct {
 }
 
 type UnstructuredDataProcessingConfigSpec struct {
-	MaxConcurrentDoclingTasks int `json:"maxConcurrentDoclingTasks,omitempty"`
+	MaxConcurrentDoclingTasks   int `json:"maxConcurrentDoclingTasks,omitempty"`
+	MaxConcurrentLangchainTasks int `json:"maxConcurrentLangchainTasks,omitempty"`
 
 	IngestionBucket string `json:"ingestionBucket,omitempty"`
 	DoclingServeURL string `json:"doclingServeURL,omitempty"`

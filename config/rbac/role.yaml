@@ -16,6 +16,7 @@ rules:
 - apiGroups:
   - operator.dataverse.redhat.com
   resources:
+  - chunksgenerators
   - controllerconfigs
   - documentprocessors
   - sqsconsumers
@@ -31,6 +32,7 @@ rules:
 - apiGroups:
   - operator.dataverse.redhat.com
   resources:
+  - chunksgenerators/finalizers
   - controllerconfigs/finalizers
   - documentprocessors/finalizers
   - sqsconsumers/finalizers
@@ -40,6 +42,7 @@ rules:
 - apiGroups:
   - operator.dataverse.redhat.com
   resources:
+  - chunksgenerators/status
   - controllerconfigs/status
   - documentprocessors/status
   - sqsconsumers/status
