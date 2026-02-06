@@ -1,0 +1,11 @@
+{
+  "QueueConfigurations": [
+    {
+      "Id": "S3ToSQSNotification",
+      "QueueArn": "REPLACE_WITH_QUEUE_ARN_FROM_GET_QUEUE_ATTRIBUTES",
+      "Events": [
+        "s3:ObjectCreated:*"
+      ]
+    }
+  ]
+}
