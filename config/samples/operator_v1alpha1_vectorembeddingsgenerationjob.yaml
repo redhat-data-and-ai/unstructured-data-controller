@@ -1,0 +1,41 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: VectorEmbeddingsGenerationJob
+metadata:
+  labels:
+    app.kubernetes.io/name: unstructured-data-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: vectorembeddingsgenerationjob-sample
+spec:
+  # Name of the data product to process
+  dataProduct: "testunstructureddataproduct"
+  
+  # Name of the Kubernetes secret containing the API key
+  apiKey: "embedding-api-secret"
+  
+  # Name of the Kubernetes secret containing AWS credentials
+  awsSecret: "aws-secret"
+  
+  # Embedding generator configuration
+  embeddingGeneratorConfig:
+    # Provider type: "self-hosted-model" or "gemini-model"
+    provider: "self-hosted-model"
+    
+    # Configuration for self-hosted embedding model
+    selfHostedModelConfig:
+      # Model name to use for embeddings
+      model: "nomic-ai/nomic-embed-text-v1.5"
+      
+      # Embedding dimensions
+      dimensions: 1024
+      
+      # Encoding format
+      encodingformat: "float"
+      
+      # Key name in the secret that contains the API key
+      apikeysecretref: "apiKey"
+      
+      # Endpoint URL for the embedding API
+      endpoint: "{MODEL_ENDPOINT}/v1/embeddings"
+      
+      # Path to the TLS certificate for secure communication
+      certificatepath: "certificate.pem"

@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- aws-secret.yaml
+- embedding-api-secret.yaml
+- operator_v1alpha1_vectorembeddingsgenerationjob.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
