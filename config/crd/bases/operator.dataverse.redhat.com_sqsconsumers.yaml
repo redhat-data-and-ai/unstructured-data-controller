@@ -46,10 +46,6 @@ spec:
           spec:
             description: SQSConsumerSpec defines the desired state of SQSConsumer
             properties:
-              awsSecret:
-                type: string
-              awsSecretNamespace:
-                type: string
               queueURL:
                 type: string
             type: object

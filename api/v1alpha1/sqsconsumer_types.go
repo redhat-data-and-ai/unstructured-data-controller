@@ -26,9 +26,7 @@ const (
 
 // SQSConsumerSpec defines the desired state of SQSConsumer
 type SQSConsumerSpec struct {
-	QueueURL           string `json:"queueURL,omitempty"`
-	AWSSecret          string `json:"awsSecret,omitempty"`
-	AWSSecretNamespace string `json:"awsSecretNamespace,omitempty"` // Optional: defaults to CR's namespace if not specified
+	QueueURL string `json:"queueURL,omitempty"`
 }
 
 // SQSConsumerStatus defines the observed state of SQSConsumer

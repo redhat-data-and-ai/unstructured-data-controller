@@ -217,6 +217,14 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "SQSConsumer")
 		os.Exit(1)
 	}
+
+	if err := (&controller.UnstructuredDataProductReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "UnstructuredDataProduct")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {

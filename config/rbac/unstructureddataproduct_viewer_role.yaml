@@ -11,12 +11,12 @@ metadata:
   labels:
     app.kubernetes.io/name: unstructured-data-controller
     app.kubernetes.io/managed-by: kustomize
-  name: controllerconfig-viewer-role
+  name: unstructureddataproduct-viewer-role
 rules:
 - apiGroups:
   - operator.dataverse.redhat.com
   resources:
-  - controllerconfigs
+  - unstructureddataproducts
   verbs:
   - get
   - list
@@ -24,6 +24,6 @@ rules:
 - apiGroups:
   - operator.dataverse.redhat.com
   resources:
-  - controllerconfigs/status
+  - unstructureddataproducts/status
   verbs:
   - get

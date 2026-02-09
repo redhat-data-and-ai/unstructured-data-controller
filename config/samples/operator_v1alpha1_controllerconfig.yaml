@@ -9,3 +9,5 @@ spec:
   awsSecret: aws-secret
   unstructuredDataProcessingConfig:
     ingestionBucket: data-ingestion-bucket
+    dataStorageBucket: data-storage-bucket
+    cacheDirectory: /Users/shikgupt/Unstructured-Data-Initiative/unstructured-data-controller/tmp/cache/

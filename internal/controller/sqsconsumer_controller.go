@@ -32,6 +32,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -128,10 +129,10 @@ type S3EventObject struct {
 	ETag string `json:"etag"`
 }
 
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,resources=sqsconsumers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,resources=sqsconsumers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,resources=sqsconsumers/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsconsumers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsconsumers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsconsumers/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",namespace=unstructured-controller-namespace,resources=secrets,verbs=get;list;watch
 
 // Reconcile reconciles the SQSConsumer CR. It follows these steps:
 // - receive messages from the SQS queue
@@ -190,7 +191,7 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	for _, message := range output.Messages {
-		if messageError := r.processMessage(ctx, message); len(messageError) > 0 {
+		if messageError := r.processMessage(ctx, message, req.Namespace); len(messageError) > 0 {
 			for _, err := range messageError {
 				logger.Error(err, "failed to process message", "MessageId", *message.MessageId)
 				// we will not `continue` here, we will let this continue and the message will be deleted from the queue
@@ -225,7 +226,7 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}, nil
 }
 
-func (r *SQSConsumerReconciler) processMessage(ctx context.Context, message sqstypes.Message) []error {
+func (r *SQSConsumerReconciler) processMessage(ctx context.Context, message sqstypes.Message, namespace string) []error {
 	logger := log.FromContext(ctx)
 	logger.Info("received message", "MessageId", *message.MessageId)
 
@@ -258,25 +259,24 @@ func (r *SQSConsumerReconciler) processMessage(ctx context.Context, message sqst
 			continue
 		}
 
-		// sourceFilePathSplit := strings.Split(objectKey, "/")
-		// dataProductName := sourceFilePathSplit[0]
+		sourceFilePathSplit := strings.Split(objectKey, "/")
+		dataProductName := sourceFilePathSplit[0]
 
 		// now apply a force reconcile label to the unstructured data product
-		// TODO: Uncomment when UnstructuredDataProduct CR is available
-		// unstructuredDataProduct := &operatorv1alpha1.UnstructuredDataProduct{}
-		// if err := r.Client.Get(ctx, types.NamespacedName{
-		// 	Namespace: namespace,
-		// 	Name:      dataProductName,
-		// }, unstructuredDataProduct); err != nil {
-		// 	logger.Error(err, "failed to get unstructured data product", "key", objectKey)
-		// 	errorList = append(errorList, err)
-		// 	continue
-		// }
-		// if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct); err != nil {
-		// 	logger.Error(err, "failed to add force reconcile label", "key", objectKey)
-		// 	errorList = append(errorList, err)
-		// 	continue
-		// }
+		unstructuredDataProduct := &operatorv1alpha1.UnstructuredDataProduct{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Namespace: namespace,
+			Name:      dataProductName,
+		}, unstructuredDataProduct); err != nil {
+			logger.Error(err, "failed to get unstructured data product", "key", objectKey)
+			errorList = append(errorList, err)
+			continue
+		}
+		if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct); err != nil {
+			logger.Error(err, "failed to add force reconcile label", "key", objectKey)
+			errorList = append(errorList, err)
+			continue
+		}
 
 		logger.Info("successfully processed record", "key", objectKey)
 	}

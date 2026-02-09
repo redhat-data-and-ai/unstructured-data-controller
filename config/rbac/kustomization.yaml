@@ -28,4 +28,7 @@ resources:
 - sqsconsumer_admin_role.yaml
 - sqsconsumer_editor_role.yaml
 - sqsconsumer_viewer_role.yaml
+- unstructureddataproduct_admin_role.yaml
+- unstructureddataproduct_editor_role.yaml
+- unstructureddataproduct_viewer_role.yaml
 

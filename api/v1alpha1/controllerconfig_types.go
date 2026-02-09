@@ -34,7 +34,9 @@ type ControllerConfigSpec struct {
 }
 
 type UnstructuredDataProcessingConfigSpec struct {
-	IngestionBucket string `json:"ingestionBucket,omitempty"`
+	IngestionBucket   string `json:"ingestionBucket,omitempty"`
+	DataStorageBucket string `json:"dataStorageBucket,omitempty"`
+	CacheDirectory    string `json:"cacheDirectory,omitempty"`
 }
 
 // ControllerConfigStatus defines the observed state of ControllerConfig.

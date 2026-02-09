@@ -50,6 +50,10 @@ spec:
                 type: string
               unstructuredDataProcessingConfig:
                 properties:
+                  cacheDirectory:
+                    type: string
+                  dataStorageBucket:
+                    type: string
                   ingestionBucket:
                     type: string
                 type: object

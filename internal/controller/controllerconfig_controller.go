@@ -43,9 +43,9 @@ type ControllerConfigReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,resources=controllerconfigs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,resources=controllerconfigs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,resources=controllerconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=controllerconfigs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=controllerconfigs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=controllerconfigs/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -134,6 +134,11 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	ingestionBucket = config.Spec.UnstructuredDataProcessingConfig.IngestionBucket
+	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
+	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
+
+	logger.Info(fmt.Sprintf("Ingestion bucket: %s, Data storage bucket: %s, Cache directory: %s",
+		ingestionBucket, dataStorageBucket, cacheDirectory))
 
 	// update the status of the Config CR to indicate that it is healthy
 	config.UpdateStatus(nil)

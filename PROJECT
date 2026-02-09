@@ -19,6 +19,7 @@ resources:
   group: operator
   kind: ControllerConfig
   kind: SQSConsumer
+  kind: UnstructuredDataProduct
   path: github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1
   version: v1alpha1
 version: "3"

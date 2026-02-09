@@ -1,0 +1,45 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: UnstructuredDataProduct
+metadata:
+  labels:
+    app.kubernetes.io/name: unstructured-data-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: testunstructureddataproduct
+spec:
+  sourceConfig:
+    type: "s3"
+    s3Config:
+      bucket: data-ingestion-bucket
+      prefix: testunstructureddataproduct
+  documentProcessorConfig:
+    type: "docling"
+    doclingConfig:
+      from_formats:
+        - pdf
+        - docx
+        - doc
+        - txt
+        - html
+        - md
+        - csv
+        - xlsx
+      to_formats:
+        - md  
+      image_export_mode: "copy"
+      do_ocr: true
+      force_ocr: false
+      ocr_engine: "tesseract"
+      ocr_lang: ["en"]
+      pdf_backend: "pypdf"
+      table_mode: "none"
+      abort_on_error: true
+      return_as_file: true
+  chunksGeneratorConfig:
+    strategy: "markdownTextSplitter"
+    markdownSplitterConfig:
+      chunkSize: 1000
+      chunkOverlap: 200
+      codeBlocks: true
+      referenceLinks: true
+      headingHierarchy: true
+      joinTableRows: true

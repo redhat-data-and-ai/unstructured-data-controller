@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -106,6 +107,112 @@ func GetPresignedURL(ctx context.Context, bucketName, objectKey string) (string,
 	return request.URL, nil
 }
 
+func GetBucketEncryptionKeyARN(ctx context.Context, bucketName string) (string, error) {
+	s3Client, err := GetS3Client()
+	if err != nil {
+		return "", err
+	}
+
+	bucketEncryption, err := s3Client.GetBucketEncryption(ctx, &s3.GetBucketEncryptionInput{
+		Bucket: aws.String(bucketName),
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if bucketEncryption.ServerSideEncryptionConfiguration == nil ||
+		len(bucketEncryption.ServerSideEncryptionConfiguration.Rules) == 0 {
+		// no encryption key is set for the bucket, that's OK, return empty string
+		return "", nil
+	}
+
+	// we only support one rule for now
+	kmsMasterKeyID := bucketEncryption.ServerSideEncryptionConfiguration.Rules[0].
+		ApplyServerSideEncryptionByDefault.KMSMasterKeyID
+	if kmsMasterKeyID == nil {
+		// no KMS key is set for the bucket, that's OK, return empty string
+		return "", nil
+	}
+
+	// now we need to get the ARN of the KMS key
+	kmsClient, err := GetKMSClient()
+	if err != nil {
+		return "", err
+	}
+
+	kmsKey, err := kmsClient.DescribeKey(ctx, &kms.DescribeKeyInput{
+		KeyId: kmsMasterKeyID,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return *kmsKey.KeyMetadata.Arn, nil
+}
+
+// ApplyTagToObject applies a single tag to an object in an S3 bucket
+func ApplyTagToObject(ctx context.Context, bucketName, objectKey, tagKey, tagValue string) error {
+	logger := log.FromContext(ctx)
+	s3Client, err := GetS3Client()
+	if err != nil {
+		return err
+	}
+
+	newTag := s3types.Tag{
+		Key:   aws.String(tagKey),
+		Value: aws.String(tagValue),
+	}
+
+	tagSet := []s3types.Tag{}
+	// get existing tags first
+	existingTags, err := s3Client.GetObjectTagging(ctx, &s3.GetObjectTaggingInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		// if the object doesn't exist, ignore the error and proceed with empty tag set
+		var noSuchKey *s3types.NoSuchKey
+		if !errors.As(err, &noSuchKey) {
+			return err
+		}
+		logger.Info("object does not exist", "bucketName", bucketName, "objectKey", objectKey)
+	} else {
+		tagSet = existingTags.TagSet
+	}
+
+	// if the tag already exists, update it
+	tagExists := false
+	for i, tag := range tagSet {
+		if tag.Key == nil {
+			continue
+		}
+		if *tag.Key == tagKey {
+			logger.Info("tag already exists", "bucketName", bucketName, "objectKey",
+				objectKey, "tagKey", tagKey, "tagValue", tagValue)
+			tagSet[i] = newTag
+			tagExists = true
+			break
+		}
+	}
+
+	// if the tag doesn't exist, add it
+	if !tagExists {
+		tagSet = append(tagSet, newTag)
+	}
+
+	// Put the combined tags
+	logger.Info("putting tags", "bucketName", bucketName, "objectKey", objectKey, "tagKey", tagKey, "tagValue", tagValue)
+	_, err = s3Client.PutObjectTagging(ctx, &s3.PutObjectTaggingInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(objectKey),
+		Tagging: &s3types.Tagging{
+			TagSet: tagSet,
+		},
+	})
+
+	return err
+}
+
 func ObjectExists(ctx context.Context, bucketName, objectKey string) (bool, error) {
 	s3Client, err := GetS3Client()
 	if err != nil {
@@ -126,6 +233,18 @@ func ObjectExists(ctx context.Context, bucketName, objectKey string) (bool, erro
 	}
 
 	return true, nil
+}
+
+func GetObject(ctx context.Context, bucketName, objectKey string) (*s3.GetObjectOutput, error) {
+	s3Client, err := GetS3Client()
+	if err != nil {
+		return nil, err
+	}
+
+	return s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucketName),
+		Key:    aws.String(objectKey),
+	})
 }
 
 func ListObjectsInPrefix(ctx context.Context, bucketName, prefix string) ([]s3types.Object, error) {
