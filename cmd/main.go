@@ -18,6 +18,7 @@ package main
 
 import (
 	"crypto/tls"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -217,9 +218,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	snowflakeTarget, ok := os.LookupEnv("SNOWFLAKE_TARGET")
+	if !ok {
+		setupLog.Error(errors.New("environment variable SNOWFLAKE_TARGET not set"), "SNOWFLAKE_TARGET env var not set")
+		os.Exit(1)
+	}
 	if err := (&controller.UnstructuredDataProductReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		SnowflakeEnvironment: snowflakeTarget,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "UnstructuredDataProduct")
 		os.Exit(1)

@@ -43,3 +43,9 @@ spec:
       referenceLinks: true
       headingHierarchy: true
       joinTableRows: true
+  destinationConfig:
+    type: "snowflakeInternalStage"
+    snowflakeInternalStageConfig:
+      database: "SNOWPIPE_DB"
+      schema: "TESTUNSTRUCTUREDDATAPRODUCT"
+      stage: "TESTUNSTRUCTUREDDATAPRODUCT_INTERNAL_STG"

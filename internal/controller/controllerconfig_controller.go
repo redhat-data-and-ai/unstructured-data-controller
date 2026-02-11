@@ -18,21 +18,27 @@ package controller
 
 import (
 	"context"
+	"crypto/rsa"
+	"errors"
 	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/keyutil"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/sfclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/langchain"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
+	"github.com/snowflakedb/gosnowflake"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
@@ -124,6 +130,35 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		logger.Info("Presign client created ...")
 
+		// Get the snowflake client config from the ControllerConfig CR
+		snowflakeConfig := config.Spec.SnowflakeConfig
+		snowflakeClientConfig, result, err := r.getSnowflakeConfigFromCR(ctx, req.Namespace, snowflakeConfig)
+		if err != nil {
+			return result, nil
+		}
+
+		logger.Info("creating snowflake client and validating if snowflake connection is healthy for " + snowflakeConfig.Name)
+		sfClient, err := r.createAndValidateSfClient(ctx, *snowflakeClientConfig)
+		if err != nil {
+			logger.Error(err, "failed to ping snowflake for "+snowflakeConfig.Name+". re-attempting to ping snowflake in 10 seconds")
+			config.UpdateStatus(err)
+			if err := r.Status().Update(ctx, &config); err != nil {
+				return ctrl.Result{}, err
+			}
+			logger.Info("re-attempting to ping snowflake in 10 seconds")
+			return ctrl.Result{
+				Requeue:      true,
+				RequeueAfter: 10 * time.Second,
+			}, nil
+		}
+
+		sfclienthandler.SfClients[snowflakeConfig.Name] = &sfclienthandler.SnowflakeClientDetails{
+			Client: sfClient,
+		}
+
+		logger.Info("snowflake connection is healthy for " + snowflakeConfig.Name)
+		logger.Info("Snowflake client created and connection validated ...")
+
 		// TODO: add in the controller where used
 		// // create IAM client
 		// _, err = awsclienthandler.NewIAMClientFromConfig(ctx, &awsConfig)
@@ -174,6 +209,77 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ControllerConfigReconciler) getSnowflakeConfigFromCR(ctx context.Context,
+	namespace string, cfg operatorv1alpha1.SnowflakeConfig) (*gosnowflake.Config, ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("getting snowflake config from CR")
+	snowflakeClientConfig := gosnowflake.Config{
+		Account:          cfg.Account,
+		User:             cfg.User,
+		Role:             cfg.Role,
+		Region:           cfg.Region,
+		Warehouse:        cfg.Warehouse,
+		Database:         cfg.DefaultDatabase,
+		KeepSessionAlive: true,
+		Authenticator:    gosnowflake.AuthTypeJwt,
+	}
+
+	if cfg.PrivateKeySecret != "" {
+		privateKey, err := r.fetchPrivateKeyFromSecret(ctx, cfg.PrivateKeySecret, namespace)
+		if err != nil {
+			logger.Error(err, "failed to fetch private key from secret")
+			if errors.Is(err, errors.New("secret not found")) {
+				return nil, ctrl.Result{
+					Requeue:      true,
+					RequeueAfter: 10 * time.Second,
+				}, nil
+			}
+			return nil, ctrl.Result{}, err
+		}
+		snowflakeClientConfig.PrivateKey = privateKey
+	}
+	return &snowflakeClientConfig, ctrl.Result{}, nil
+}
+
+func (r *ControllerConfigReconciler) fetchPrivateKeyFromSecret(ctx context.Context, privateKeyName, namespace string) (*rsa.PrivateKey, error) {
+	logger := log.FromContext(ctx)
+	logger.Info(fmt.Sprintf("fetching private key from secret %s in namespace %s", privateKeyName, namespace))
+	secret := &corev1.Secret{}
+	if err := r.Client.Get(ctx,
+		types.NamespacedName{Name: privateKeyName, Namespace: namespace}, secret); err != nil {
+		logger.Error(err, fmt.Sprintf("error fetching secret %s, retrying in 10 seconds", privateKeyName))
+		return nil, errors.New("secret not found")
+	}
+	privateKeyData := secret.Data["privateKey"]
+	if len(privateKeyData) == 0 {
+		return nil, fmt.Errorf("secret:%s has empty 'privateKey'", privateKeyName)
+	}
+	privateKeyInterface, err := keyutil.ParsePrivateKeyPEM(privateKeyData)
+	if err != nil {
+		return nil, errors.New("unable to parse the privateKey")
+	}
+	privateKey, ok := privateKeyInterface.(*rsa.PrivateKey)
+	if !ok {
+		return nil, errors.New("privateKey is not a valid RSA key")
+	}
+	return privateKey, nil
+}
+
+func (*ControllerConfigReconciler) createAndValidateSfClient(ctx context.Context, snowflakeClientConfig gosnowflake.Config) (*snowflake.Client, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("creating snowflake client")
+	sfClient, err := snowflake.NewClient(&snowflake.ClientConfig{
+		Config: snowflakeClientConfig,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if sfClient.Ping(ctx) != nil {
+		return nil, err
+	}
+	return sfClient, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

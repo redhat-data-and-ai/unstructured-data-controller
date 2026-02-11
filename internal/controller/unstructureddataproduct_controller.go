@@ -31,7 +31,10 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/sfclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/names"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
@@ -47,8 +50,10 @@ const (
 // UnstructuredDataProductReconciler reconciles a UnstructuredDataProduct object
 type UnstructuredDataProductReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme               *runtime.Scheme
+	fileStore            *filestore.FileStore
+	SnowflakeEnvironment string
+	sf                   *snowflake.Client
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddataproducts,verbs=get;list;watch;create;update;patch;delete
@@ -72,6 +77,14 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status")
 		return ctrl.Result{}, err
 	}
+
+	// Get the snowflake client
+	sf, err := sfclienthandler.SfClients.GetClientFor(r.SnowflakeEnvironment)
+	if err != nil {
+		logger.Error(err, "failed to get snowflake client for environment: "+r.SnowflakeEnvironment)
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	r.sf = sf
 
 	// first, let's create (or update) the DocumentProcessor CR for this data product
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
@@ -177,6 +190,47 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
+
+	// Setup destination
+	var destination unstructured.Destination
+	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
+	case operatorv1alpha1.DestinationTypeInternalStage:
+		putSAName := names.ServiceAccountNameForToolEnv(
+			dataProductName,
+			snowflake.SnowpipeToolName,
+			r.SnowflakeEnvironment,
+		)
+		putSARole := names.ServiceAccountRole(putSAName)
+
+		destination = &unstructured.SnowflakeInternalStage{
+			Client:             sf,
+			ServiceAccountRole: putSARole,
+			Stage:              unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
+			Database:           unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
+			Schema:             unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		}
+	default:
+		err := fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
+		logger.Error(err, "unsupported destination type")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+
+	// list all files in the filestore for the data product
+	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
+	if err != nil {
+		logger.Error(err, "failed to list files in path")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	// extract the chunked files that are to be ingested to destination
+	filterFilePaths := unstructured.FilterConvertedFilePaths(filePaths)
+	logger.Info("files to ingest to destination", "files", filterFilePaths)
+
+	// ingest the chunks files to destination
+	if err := destination.SyncFilesToDestination(ctx, r.fileStore, filterFilePaths); err != nil {
+		logger.Error(err, "failed to ingest chunks files to destination")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	logger.Info("successfully ingested chunks files to destination")
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
