@@ -48,6 +48,32 @@ spec:
             properties:
               awsSecret:
                 type: string
+              snowflakeConfig:
+                properties:
+                  account:
+                    type: string
+                  defaultDatabase:
+                    type: string
+                  name:
+                    type: string
+                  privateKeySecret:
+                    type: string
+                  region:
+                    type: string
+                  role:
+                    type: string
+                  user:
+                    type: string
+                  warehouse:
+                    type: string
+                required:
+                - account
+                - name
+                - privateKeySecret
+                - role
+                - user
+                - warehouse
+                type: object
               unstructuredDataProcessingConfig:
                 properties:
                   cacheDirectory:
