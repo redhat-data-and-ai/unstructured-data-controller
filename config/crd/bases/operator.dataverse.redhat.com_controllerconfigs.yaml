@@ -48,6 +48,10 @@ spec:
             properties:
               awsSecret:
                 type: string
+              disabledControllers:
+                items:
+                  type: string
+                type: array
               unstructuredDataProcessingConfig:
                 properties:
                   cacheDirectory:
