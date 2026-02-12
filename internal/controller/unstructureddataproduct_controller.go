@@ -19,10 +19,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -38,10 +38,6 @@ import (
 var (
 	cacheDirectory    string
 	dataStorageBucket string
-)
-
-const (
-	UnstructuredDataProductControllerName = "UnstructuredDataProduct"
 )
 
 // UnstructuredDataProductReconciler reconciles a UnstructuredDataProduct object
@@ -128,8 +124,16 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, fmt.Errorf("unsupported source type: %s", unstructuredDataProductCR.Spec.SourceConfig.Type))
 	}
 
+	if !IsControllerConfigGlobalsSet(cacheDirectory, dataStorageBucket) {
+		logger.Info("ControllerConfig has not set cacheDirectory/dataStorageBucket yet, will try again in a bit ...")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
 	if err != nil {
+		if IsAWSClientNotInitializedError(err) {
+			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
@@ -164,30 +168,16 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	// fetch the DocumentProcessor CR
-	latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
-	if err := r.Get(ctx, client.ObjectKey{
-		Namespace: unstructuredDataProductCR.Namespace,
-		Name:      dataProductName,
-	}, latestDocumentProcessorCR); err != nil {
-		logger.Error(err, "failed to get DocumentProcessor CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
-	}
-	if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, latestDocumentProcessorCR); err != nil {
+	documentProcessorKey := client.ObjectKey{Namespace: unstructuredDataProductCR.Namespace, Name: dataProductName}
+	if err := controllerutils.AddForceReconcileLabelWithRetry(ctx, r.Client, documentProcessorKey, func() client.Object { return &operatorv1alpha1.DocumentProcessor{} }); err != nil {
 		logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
 	key := client.ObjectKeyFromObject(unstructuredDataProductCR)
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		res := &operatorv1alpha1.UnstructuredDataProduct{}
-		if err := r.Get(ctx, key, res); err != nil {
-			return err
-		}
-		res.UpdateStatus(successMessage, nil)
-		return r.Status().Update(ctx, res)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status", "namespace", key.Namespace, "name", key.Name)
 		return r.handleError(ctx, unstructuredDataProductCR, err)
@@ -211,16 +201,11 @@ func (r *UnstructuredDataProductReconciler) handleError(ctx context.Context, uns
 	logger.Error(err, "encountered error")
 	reconcileErr := err
 	key := client.ObjectKeyFromObject(unstructuredDataProductCR)
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.UnstructuredDataProduct{}
-		if getErr := r.Get(ctx, key, latest); getErr != nil {
-			return getErr
-		}
-		latest.UpdateStatus("", reconcileErr)
-		return r.Status().Update(ctx, latest)
-	}); err != nil {
-		logger.Error(err, "failed to update UnstructuredDataProduct CR status")
-		return ctrl.Result{}, err
+	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus("", reconcileErr)
+	}); updateErr != nil {
+		logger.Error(updateErr, "failed to update UnstructuredDataProduct CR status")
+		return ctrl.Result{}, updateErr
 	}
 	return ctrl.Result{}, reconcileErr
 }

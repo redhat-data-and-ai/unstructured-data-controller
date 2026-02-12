@@ -32,8 +32,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,7 +42,6 @@ import (
 )
 
 const (
-	SQSConsumerControllerName         = "SQSConsumer"
 	intentionalReconcileAgainDuration = 15 * time.Second
 )
 
@@ -144,11 +141,6 @@ type S3EventObject struct {
 func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// if isControllerDisabled(SQSConsumerControllerName) {
-	// 	logger.Info("SQSConsumer controller is disabled, skipping reconciliation")
-	// 	return ctrl.Result{}, nil // no error, just skip the reconciliation
-	// }
-
 	// check if config CR is healthy
 	// TODO: Uncomment when Config CR is available
 	// isHealthy, err := IsConfigCRHealthy(ctx, r.Client, req.Namespace)
@@ -170,13 +162,8 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	key := client.ObjectKeyFromObject(sqsConsumerCR)
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		res := &operatorv1alpha1.SQSConsumer{}
-		if err := r.Get(ctx, key, res); err != nil {
-			return err
-		}
-		res.SetWaiting()
-		return r.Status().Update(ctx, res)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.SQSConsumer).SetWaiting()
 	}); err != nil {
 		logger.Error(err, "failed to update SQSConsumer status")
 		return ctrl.Result{}, err
@@ -184,6 +171,10 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	sqsClient, err := awsclienthandler.GetSQSClient()
 	if err != nil {
+		if IsAWSClientNotInitializedError(err) {
+			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 		return r.handleError(ctx, sqsConsumerCR, err)
 	}
 
@@ -216,21 +207,15 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		logger.Info("deleted message from queue", "MessageId", *message.MessageId)
 	}
 
-	if err := controllerutils.RemoveForceReconcileLabel(ctx, r.Client, sqsConsumerCR); err != nil {
+	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }); err != nil {
 		logger.Error(err, "error removing the force-reconcile label from the SQSConsumer CR")
 		return ctrl.Result{}, err
 	}
 
-	// reconcile again after some time to check if there are any more messages to read
 	logger.Info("successfully processed all messages, will check again ...")
 	successMessage := "successfully processed all messages, will check again ..."
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		res := &operatorv1alpha1.SQSConsumer{}
-		if err := r.Get(ctx, key, res); err != nil {
-			return err
-		}
-		res.UpdateStatus(successMessage, nil)
-		return r.Status().Update(ctx, res)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.SQSConsumer).UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update SQSConsumer status")
 		return ctrl.Result{}, err
@@ -277,17 +262,8 @@ func (r *SQSConsumerReconciler) processMessage(ctx context.Context, message sqst
 		sourceFilePathSplit := strings.Split(objectKey, "/")
 		dataProductName := sourceFilePathSplit[0]
 
-		// now apply a force reconcile label to the unstructured data product
-		unstructuredDataProduct := &operatorv1alpha1.UnstructuredDataProduct{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Namespace: namespace,
-			Name:      dataProductName,
-		}, unstructuredDataProduct); err != nil {
-			logger.Error(err, "failed to get unstructured data product", "key", objectKey)
-			errorList = append(errorList, err)
-			continue
-		}
-		if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct); err != nil {
+		udpKey := client.ObjectKey{Namespace: namespace, Name: dataProductName}
+		if err := controllerutils.AddForceReconcileLabelWithRetry(ctx, r.Client, udpKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }); err != nil {
 			logger.Error(err, "failed to add force reconcile label", "key", objectKey)
 			errorList = append(errorList, err)
 			continue
@@ -303,16 +279,11 @@ func (r *SQSConsumerReconciler) handleError(ctx context.Context, sqsConsumerCR *
 	logger.Error(err, "encountered error")
 	reconcileErr := err
 	key := client.ObjectKeyFromObject(sqsConsumerCR)
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.SQSConsumer{}
-		if getErr := r.Get(ctx, key, latest); getErr != nil {
-			return getErr
-		}
-		latest.UpdateStatus("", reconcileErr)
-		return r.Status().Update(ctx, latest)
-	}); err != nil {
-		logger.Error(err, "failed to update SQSConsumer status")
-		return ctrl.Result{}, err
+	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.SQSConsumer).UpdateStatus("", reconcileErr)
+	}); updateErr != nil {
+		logger.Error(updateErr, "failed to update SQSConsumer status")
+		return ctrl.Result{}, updateErr
 	}
 	return ctrl.Result{}, reconcileErr
 }

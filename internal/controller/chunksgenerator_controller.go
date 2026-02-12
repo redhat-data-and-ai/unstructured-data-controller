@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -36,10 +35,6 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/langchain"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 	"github.com/tmc/langchaingo/textsplitter"
-)
-
-const (
-	ChunksGeneratorControllerName = "ChunksGenerator"
 )
 
 // ChunksGeneratorReconciler reconciles a ChunksGenerator object
@@ -87,15 +82,20 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	// set status to waiting
-	chunksGeneratorCR.SetWaiting()
-	if err := r.Status().Update(ctx, chunksGeneratorCR); err != nil {
+	key := client.ObjectKeyFromObject(chunksGeneratorCR)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.ChunksGenerator).SetWaiting()
+	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status")
 		return ctrl.Result{}, err
 	}
 
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
 	if err != nil {
+		if IsAWSClientNotInitializedError(err) {
+			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
@@ -109,8 +109,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 
-	// now that we have the list of files to process, we may remove the force reconcile label as we are ready to accept more events
-	if err := controllerutils.RemoveForceReconcileLabel(ctx, r.Client, chunksGeneratorCR); err != nil {
+	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }); err != nil {
 		logger.Error(err, "failed to remove force reconcile label from ChunksGenerator CR")
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
@@ -150,14 +149,8 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
-	key := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Name}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		res := &operatorv1alpha1.ChunksGenerator{}
-		if err := r.Get(ctx, key, res); err != nil {
-			return err
-		}
-		res.UpdateStatus(successMessage, nil)
-		return r.Status().Update(ctx, res)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status", "namespace", key.Namespace, "name", key.Name)
 		return r.handleError(ctx, chunksGeneratorCR, err)
@@ -349,16 +342,11 @@ func (r *ChunksGeneratorReconciler) handleError(ctx context.Context, chunksGener
 	logger.Error(err, "encountered error")
 	reconcileErr := err
 	key := client.ObjectKeyFromObject(chunksGeneratorCR)
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.ChunksGenerator{}
-		if getErr := r.Get(ctx, key, latest); getErr != nil {
-			return getErr
-		}
-		latest.UpdateStatus("", reconcileErr)
-		return r.Status().Update(ctx, latest)
-	}); err != nil {
-		logger.Error(err, "failed to update ChunksGenerator CR status")
-		return ctrl.Result{}, err
+	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus("", reconcileErr)
+	}); updateErr != nil {
+		logger.Error(updateErr, "failed to update ChunksGenerator CR status")
+		return ctrl.Result{}, updateErr
 	}
 	return ctrl.Result{}, reconcileErr
 }
