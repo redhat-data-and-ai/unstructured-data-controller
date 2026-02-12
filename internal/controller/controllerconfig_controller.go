@@ -83,11 +83,10 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	config := configList.Items[0]
 
-	// Skip reconciliation if we've already processed this generation successfully
-	if config.Status.LastAppliedGeneration == config.Generation && config.IsHealthy() {
-		logger.Info("config already reconciled for current generation, skipping")
-		return ctrl.Result{}, nil
-	}
+	// Always set globals from config so they are populated on every Reconcile (including after process restart).
+	ingestionBucket = config.Spec.UnstructuredDataProcessingConfig.IngestionBucket
+	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
+	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
 
 	unstructuredSecret := &corev1.Secret{}
 	if config.Spec.UnstructuredSecret != "" {
@@ -101,6 +100,30 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
+	doclingServeURL := config.Spec.UnstructuredDataProcessingConfig.DoclingServeURL
+
+	doclingConfig := &docling.ClientConfig{
+		URL:                   doclingServeURL,
+		MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
+	}
+
+	doclingKey := string(unstructuredSecret.Data["DOCLING_USER_KEY"])
+	if doclingKey != "" {
+		doclingConfig.Key = doclingKey
+	}
+
+	// initialize the docling client
+	doclingClient = docling.NewClientFromURL(doclingConfig)
+
+	langchainClient = langchain.NewClient(
+		langchain.ClientConfig{
+			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentLangchainTasks),
+		},
+	)
+
+	logger.Info(fmt.Sprintf("Ingestion bucket: %s, Data storage bucket: %s, Cache directory: %s",
+		ingestionBucket, dataStorageBucket, cacheDirectory))
+
 	awsEndpoint := string(unstructuredSecret.Data["AWS_ENDPOINT"])
 	if awsEndpoint != "" {
 		// generate AWS clients now
@@ -111,23 +134,15 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			SessionToken:    string(unstructuredSecret.Data["AWS_SESSION_TOKEN"]),
 			Endpoint:        awsEndpoint,
 		}
-		// create SQS client
-		_, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsConfig)
-		if err != nil {
+		if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("SQS client created ...")
-
-		// create S3 client
-		_, err = awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig)
-		if err != nil {
+		if _, err := awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("S3 client created ...")
-
-		// create presign client
-		_, err = awsclienthandler.NewPresignClient(ctx)
-		if err != nil {
+		if _, err := awsclienthandler.NewPresignClient(ctx); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("Presign client created ...")
@@ -172,42 +187,13 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			}
 			return ctrl.Result{}, err
 		}
-
-		logger.Info("snowflake connection is healthy for " + snowflakeConfig.Name)
-		logger.Info("Snowflake client created and connection validated ...")
 	}
 
-	ingestionBucket = config.Spec.UnstructuredDataProcessingConfig.IngestionBucket
-	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
-	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
-
-	logger.Info(fmt.Sprintf("Ingestion bucket: %s, Data storage bucket: %s, Cache directory: %s",
-		ingestionBucket, dataStorageBucket, cacheDirectory))
-
-	doclingServeURL := config.Spec.UnstructuredDataProcessingConfig.DoclingServeURL
-
-	doclingConfig := &docling.ClientConfig{
-		URL:                   doclingServeURL,
-		MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
+	// Skip only status update if we've already processed this generation successfully
+	if config.Status.LastAppliedGeneration == config.Generation && config.IsHealthy() {
+		logger.Info("config already reconciled for current generation, skipping status update")
+		return ctrl.Result{}, nil
 	}
-
-	doclingKey := string(unstructuredSecret.Data["DOCLING_USER_KEY"])
-	if doclingKey != "" {
-		doclingConfig.Key = doclingKey
-	}
-
-	// initialize the docling client
-	doclingClient = docling.NewClientFromURL(doclingConfig)
-
-	// initialze langchain client
-	langchainClient = langchain.NewClient(
-		langchain.ClientConfig{
-			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentLangchainTasks),
-		},
-	)
-
-	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
-	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
 
 	// update the status of the Config CR to indicate that it is healthy
 	config.UpdateStatus(nil)

@@ -39,8 +39,8 @@ import (
 )
 
 const (
-	DocumentProcessorControllerName = "DocumentProcessor"
 	requeueAfter                    = 15 * time.Second
+	DocumentProcessorControllerName = "DocumentProcessor"
 )
 
 var (
@@ -62,7 +62,7 @@ type DocumentProcessorReconciler struct {
 
 func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	logger.Info("reconciling DocumentProcessor")
+	logger.Info("reconciling", "controller", DocumentProcessorControllerName)
 
 	// NOTE: Config CR health check is commented out as requested
 	// This was the original dependency on config.spec
@@ -110,6 +110,10 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
 	if err != nil {
+		if IsAWSClientNotInitializedError(err) {
+			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
@@ -183,7 +187,6 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	logger.Info("all jobs are completed, no need to requeue")
 
-	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", documentProcessorCR.Name)
 	documentProcessorKey := client.ObjectKeyFromObject(documentProcessorCR)
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
