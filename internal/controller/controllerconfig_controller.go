@@ -151,7 +151,6 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// initialize the docling client
 	doclingClient = docling.NewClientFromURL(
-		doclingServeURL,
 		&docling.ClientConfig{
 			URL:                   doclingServeURL,
 			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),

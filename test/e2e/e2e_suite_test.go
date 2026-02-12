@@ -48,7 +48,7 @@ var (
 // CertManager.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting unstructured-data-controller integration test suite\n")
+	_, _ = fmt.Fprint(GinkgoWriter, "Starting unstructured-data-controller integration test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 
@@ -72,10 +72,10 @@ var _ = BeforeSuite(func() {
 		By("checking if cert manager is installed already")
 		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
 		if !isCertManagerAlreadyInstalled {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
+			_, _ = fmt.Fprint(GinkgoWriter, "Installing CertManager...\n")
 			Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
 		} else {
-			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
+			_, _ = fmt.Fprint(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
 })
@@ -83,7 +83,7 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
+		_, _ = fmt.Fprint(GinkgoWriter, "Uninstalling CertManager...\n")
 		utils.UninstallCertManager()
 	}
 })

@@ -2,22 +2,31 @@ name: Lint
 
 on:
   push:
+    branches: [ main ]
   pull_request:
-
 jobs:
   lint:
-    name: Run on Ubuntu
+    name: lint
     runs-on: ubuntu-latest
     steps:
-      - name: Clone the code
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+        name: checkout the code
         with:
-          go-version-file: go.mod
-
-      - name: Run linter
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        name: setup go
+        with:
+          go-version-file: "go.mod"
+          go-version: "1.24.x"
+      - name: gofmt
+        run: |
+          gofmt_out=$(gofmt -d $(find * -name '*.go' ! -path 'vendor/*'))
+          if [[ -n "$gofmt_out" ]]; then
+           failed=1
+          fi
+          echo "$gofmt_out"
+      - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.1.0
+          args: --timeout=10m
