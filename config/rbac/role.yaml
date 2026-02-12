@@ -5,49 +5,30 @@ metadata:
   name: manager-role
   namespace: unstructured-controller-namespace
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - operator.dataverse.redhat.com
-  resources:
-  - chunksgenerators
-  - controllerconfigs
-  - documentprocessors
-  - sqsconsumers
-  - unstructureddataproducts
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - operator.dataverse.redhat.com
-  resources:
-  - chunksgenerators/finalizers
-  - controllerconfigs/finalizers
-  - documentprocessors/finalizers
-  - sqsconsumers/finalizers
-  - unstructureddataproducts/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - operator.dataverse.redhat.com
-  resources:
-  - chunksgenerators/status
-  - controllerconfigs/status
-  - documentprocessors/status
-  - sqsconsumers/status
-  - unstructureddataproducts/status
-  verbs:
-  - get
-  - patch
-  - update
+  - apiGroups: ['']
+    resources: [secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [operator.dataverse.redhat.com]
+    resources:
+      - chunksgenerators
+      - controllerconfigs
+      - documentprocessors
+      - sqsconsumers
+      - unstructureddataproducts
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [operator.dataverse.redhat.com]
+    resources:
+      - chunksgenerators/finalizers
+      - controllerconfigs/finalizers
+      - documentprocessors/finalizers
+      - sqsconsumers/finalizers
+      - unstructureddataproducts/finalizers
+    verbs: [update]
+  - apiGroups: [operator.dataverse.redhat.com]
+    resources:
+      - chunksgenerators/status
+      - controllerconfigs/status
+      - documentprocessors/status
+      - sqsconsumers/status
+      - unstructureddataproducts/status
+    verbs: [get, patch, update]
