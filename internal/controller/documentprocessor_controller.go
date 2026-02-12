@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -141,17 +142,22 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// NOTE: ChunksGenerator CR force reconcile is commented out as requested
-	// This was the original code that triggered the ChunksGenerator CR
-	// chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
-	// if err := r.Get(ctx, client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}, chunksGeneratorCR); err != nil {
-	// 	logger.Error(err, "failed to get ChunksGenerator CR")
-	// 	return r.handleError(ctx, documentProcessorCR, err)
-	// }
-	// if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, chunksGeneratorCR); err != nil {
-	// 	logger.Error(err, "failed to add force reconcile label to ChunksGenerator CR")
-	// 	return r.handleError(ctx, documentProcessorCR, err)
-	// }
+	// Add force-reconcile label to ChunksGenerator so it re-runs. Use RetryOnConflict
+	// because the ChunksGenerator controller may update the same CR (e.g. status) concurrently.
+	chunksGeneratorKey := client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
+		if err := r.Get(ctx, chunksGeneratorKey, chunksGeneratorCR); err != nil {
+			return err
+		}
+		if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, chunksGeneratorCR); err != nil {
+			return err
+		}
+		return r.Update(ctx, chunksGeneratorCR)
+	}); err != nil {
+		logger.Error(err, "failed to add force reconcile label to ChunksGenerator CR")
+		return r.handleError(ctx, documentProcessorCR, err)
+	}
 
 	if len(documentProcessingErrors) > 0 || len(jobProcessingErrors) > 0 {
 		return r.handleError(ctx, documentProcessorCR, fmt.Errorf("failed to process jobs or documents"))
@@ -169,9 +175,17 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	logger.Info("all jobs are completed, no need to requeue")
 
 	// all done, let's update the status to ready
-	documentProcessorCR.UpdateStatus(fmt.Sprintf("successfully reconciled document processor: %s", documentProcessorCR.Name), nil)
-	if err := r.Status().Update(ctx, documentProcessorCR); err != nil {
-		logger.Error(err, "failed to update DocumentProcessor CR status")
+	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", documentProcessorCR.Name)
+	key := client.ObjectKeyFromObject(documentProcessorCR)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		res := &operatorv1alpha1.DocumentProcessor{}
+		if err := r.Get(ctx, key, res); err != nil {
+			return err
+		}
+		res.UpdateStatus(successMessage, nil)
+		return r.Status().Update(ctx, res)
+	}); err != nil {
+		logger.Error(err, "failed to update DocumentProcessor CR status", "namespace", key.Namespace, "name", key.Name)
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
 	logger.Info("successfully updated DocumentProcessor CR status", "status", documentProcessorCR.Status)
@@ -444,10 +458,18 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
-	documentProcessorCR.UpdateStatus("", err)
-	if err := r.Status().Update(ctx, documentProcessorCR); err != nil {
+	reconcileErr := err
+	key := client.ObjectKeyFromObject(documentProcessorCR)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.DocumentProcessor{}
+		if getErr := r.Get(ctx, key, latest); getErr != nil {
+			return getErr
+		}
+		latest.UpdateStatus("", reconcileErr)
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
 		logger.Error(err, "failed to update DocumentProcessor CR status")
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, err
+	return ctrl.Result{}, reconcileErr
 }

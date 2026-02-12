@@ -1,0 +1,9 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: ChunksGenerator
+metadata:
+  labels:
+    app.kubernetes.io/name: unstructured-data-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: chunksgenerator-sample
+spec:
+  # TODO(user): Add fields here

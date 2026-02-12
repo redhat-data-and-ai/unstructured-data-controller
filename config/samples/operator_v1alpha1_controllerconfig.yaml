@@ -13,3 +13,4 @@ spec:
     dataStorageBucket: "data-storage-bucket"
     cacheDirectory: "/home/ppunamiy/unstructured-data-controller/tmp/cache/"
     maxConcurrentDoclingTasks: 5
+    maxConcurrentLangchainTasks: 10

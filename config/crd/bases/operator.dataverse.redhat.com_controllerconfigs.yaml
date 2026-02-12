@@ -60,6 +60,8 @@ spec:
                     type: string
                   maxConcurrentDoclingTasks:
                     type: integer
+                  maxConcurrentLangchainTasks:
+                    type: integer
                 type: object
             type: object
           status:

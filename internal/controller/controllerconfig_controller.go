@@ -32,6 +32,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/langchain"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
@@ -39,7 +40,8 @@ import (
 var (
 	ingestionBucket string
 
-	doclingClient *docling.Client
+	doclingClient   *docling.Client
+	langchainClient *langchain.Client
 )
 
 // ControllerConfigReconciler reconciles a ControllerConfig object
@@ -153,6 +155,13 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		&docling.ClientConfig{
 			URL:                   doclingServeURL,
 			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
+		},
+	)
+
+	// initialze langchain client
+	langchainClient = langchain.NewClient(
+		langchain.ClientConfig{
+			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentLangchainTasks),
 		},
 	)
 
