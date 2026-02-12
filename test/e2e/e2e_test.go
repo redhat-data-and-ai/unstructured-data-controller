@@ -323,7 +323,9 @@ func getMetricsOutput() string {
 // tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
 // containing only the token field that we need to extract.
 type tokenRequest struct {
-	Status struct {
-		Token string `json:"token"`
-	} `json:"status"`
+	Status status `json:"status"`
+}
+
+type status struct {
+	Token string `json:"token"`
 }

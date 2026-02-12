@@ -4,9 +4,14 @@ run:
 linters:
   default: none
   enable:
+    - asciicheck
+    - bidichk
     - copyloopvar
     - dupl
     - errcheck
+    - errchkjson
+    - errname
+    - errorlint
     - ginkgolinter
     - goconst
     - gocyclo
@@ -15,21 +20,61 @@ linters:
     - lll
     - misspell
     - nakedret
+    - nilerr
+    - nolintlint
     - prealloc
     - revive
     - staticcheck
     - unconvert
     - unparam
     - unused
+    - whitespace
   settings:
+    staticcheck:
+      dot-import-whitelist:
+        - github.com/onsi/ginkgo/v2
     revive:
+      enable-all-rules: true
       rules:
         - name: comment-spacings
-        - name: import-shadowing
+          disabled: true
+        - name: line-length-limit
+          disabled: true
+        - name: exported
+          disabled: true
+        - name: add-constant
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: struct-tag
+          arguments:
+            - json,inline
+        - name: dot-imports
+          disabled: false
+          arguments:
+           - allowed-packages: ["github.com/onsi/ginkgo/v2", "github.com/onsi/gomega"]
+        - name: cognitive-complexity
+          disabled: true
+        - name: max-public-structs
+          disabled: true
+        - name: cyclomatic
+          disabled: true
+        - name: function-length
+          disabled: true
+        - name: function-result-limit
+          disabled: true
+        - name: flag-parameter
+          disabled: true
+        - name: max-control-nesting
+          arguments:
+            - 6
+        - name: confusing-results
+          disabled: true
   exclusions:
     generated: lax
     rules:
       - linters:
+          - errchkjson
           - lll
         path: api/*
       - linters:

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -43,7 +44,7 @@ const (
 )
 
 var (
-	maxDoclingConversionAttempts int = 3
+	maxDoclingConversionAttempts = 3
 )
 
 // DocumentProcessorReconciler reconciles a DocumentProcessor object
@@ -160,7 +161,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	if len(documentProcessingErrors) > 0 || len(jobProcessingErrors) > 0 {
-		return r.handleError(ctx, documentProcessorCR, fmt.Errorf("failed to process jobs or documents"))
+		return r.handleError(ctx, documentProcessorCR, errors.New("failed to process jobs or documents"))
 	}
 
 	toRequeue := len(documentProcessorCR.Status.Jobs) > 0

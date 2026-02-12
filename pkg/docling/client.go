@@ -109,7 +109,7 @@ type TaskStatusResponse struct {
 	TaskPosition int        `json:"task_position"`
 }
 
-func NewClientFromURL(doclingServeURL string, clientConfig *ClientConfig) *Client {
+func NewClientFromURL(clientConfig *ClientConfig) *Client {
 	clientConfig.sem = semaphore.NewWeighted(clientConfig.MaxConcurrentRequests)
 	return &Client{
 		ClientConfig: clientConfig,
@@ -247,7 +247,7 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 
 	// if the status code is not 200, we will assume that there is something wrong
 	if resp.StatusCode != http.StatusOK {
-		logger.Error(fmt.Errorf("received non-200 OK response from task status poll endpoint"),
+		logger.Error(errors.New("received non-200 OK response from task status poll endpoint"),
 			"status code", resp.StatusCode, "task id", taskID)
 		return false, nil, nil
 	}
