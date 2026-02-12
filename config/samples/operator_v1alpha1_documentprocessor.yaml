@@ -1,3 +1,4 @@
+---
 apiVersion: operator.dataverse.redhat.com/v1alpha1
 kind: DocumentProcessor
 metadata:
@@ -10,16 +11,11 @@ spec:
   config:
     type: docling
     doclingConfig:
-      from_formats:
-        - pdf
-        - docx
-        - pptx
-        - xlsx
+      from_formats: [pdf, docx, pptx, xlsx]
       image_export_mode: embedded
       do_ocr: true
       force_ocr: false
       ocr_engine: easyocr
-      ocr_lang:
-        - en
+      ocr_lang: [en]
       pdf_backend: dlparse_v4
       table_mode: fast

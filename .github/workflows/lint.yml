@@ -30,3 +30,7 @@ jobs:
         with:
           version: v2.1.0
           args: --timeout=10m
+      - name: yamllint
+        run: |
+          apt update && apt install -y yamllint
+          yamllint $(find . -path ./vendor -prune -o -type f -regex ".*y[a]ml" -print)

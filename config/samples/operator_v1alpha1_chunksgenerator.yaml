@@ -1,3 +1,4 @@
+---
 apiVersion: operator.dataverse.redhat.com/v1alpha1
 kind: ChunksGenerator
 metadata:

@@ -1,3 +1,4 @@
+---
 apiVersion: operator.dataverse.redhat.com/v1alpha1
 kind: ControllerConfig
 metadata:
@@ -8,9 +9,9 @@ metadata:
 spec:
   awsSecret: aws-secret
   unstructuredDataProcessingConfig:
-    doclingServeURL: "http://localhost:5001"
-    ingestionBucket: "data-ingestion-bucket"
-    dataStorageBucket: "data-storage-bucket"
-    cacheDirectory: "/home/ppunamiy/unstructured-data-controller/tmp/cache/"
+    doclingServeURL: http://localhost:5001
+    ingestionBucket: data-ingestion-bucket
+    dataStorageBucket: data-storage-bucket
+    cacheDirectory: /home/ppunamiy/unstructured-data-controller/tmp/cache/
     maxConcurrentDoclingTasks: 5
     maxConcurrentLangchainTasks: 10

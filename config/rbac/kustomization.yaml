@@ -1,41 +1,40 @@
+---
 resources:
 # All RBAC will be applied under this service account in
 # the deployment namespace. You may comment out this resource
 # if your manager will use a service account that exists at
 # runtime. Be sure to update RoleBinding and ClusterRoleBinding
 # subjects if changing service account names.
-- service_account.yaml
-- role.yaml
-- role_binding.yaml
-- leader_election_role.yaml
-- leader_election_role_binding.yaml
+  - service_account.yaml
+  - role.yaml
+  - role_binding.yaml
+  - leader_election_role.yaml
+  - leader_election_role_binding.yaml
 # The following RBAC configurations are used to protect
 # the metrics endpoint with authn/authz. These configurations
 # ensure that only authorized users and service accounts
 # can access the metrics endpoint. Comment the following
 # permissions if you want to disable this protection.
 # More info: https://book.kubebuilder.io/reference/metrics.html
-- metrics_auth_role.yaml
-- metrics_auth_role_binding.yaml
-- metrics_reader_role.yaml
+  - metrics_auth_role.yaml
+  - metrics_auth_role_binding.yaml
+  - metrics_reader_role.yaml
 # For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
 # default, aiding admins in cluster management. Those roles are
 # not used by the unstructured-data-controller itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- controllerconfig_admin_role.yaml
-- controllerconfig_editor_role.yaml
-- controllerconfig_viewer_role.yaml
-- chunksgenerator_admin_role.yaml
-- chunksgenerator_editor_role.yaml
-- chunksgenerator_viewer_role.yaml
-- sqsconsumer_admin_role.yaml
-- sqsconsumer_editor_role.yaml
-- sqsconsumer_viewer_role.yaml
-- unstructureddataproduct_admin_role.yaml
-- unstructureddataproduct_editor_role.yaml
-- unstructureddataproduct_viewer_role.yaml
-- documentprocessor_admin_role.yaml
-- documentprocessor_editor_role.yaml
-- documentprocessor_viewer_role.yaml
-
-
+  - controllerconfig_admin_role.yaml
+  - controllerconfig_editor_role.yaml
+  - controllerconfig_viewer_role.yaml
+  - chunksgenerator_admin_role.yaml
+  - chunksgenerator_editor_role.yaml
+  - chunksgenerator_viewer_role.yaml
+  - sqsconsumer_admin_role.yaml
+  - sqsconsumer_editor_role.yaml
+  - sqsconsumer_viewer_role.yaml
+  - unstructureddataproduct_admin_role.yaml
+  - unstructureddataproduct_editor_role.yaml
+  - unstructureddataproduct_viewer_role.yaml
+  - documentprocessor_admin_role.yaml
+  - documentprocessor_editor_role.yaml
+  - documentprocessor_viewer_role.yaml
