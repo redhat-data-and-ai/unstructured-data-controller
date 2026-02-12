@@ -27,6 +27,7 @@ const (
 // ControllerConfigSpec defines the desired state of ControllerConfig.
 type ControllerConfigSpec struct {
 	AWSSecret                        string                               `json:"awsSecret,omitempty"`
+	DisabledControllers              []string                             `json:"disabledControllers,omitempty"`
 	UnstructuredDataProcessingConfig UnstructuredDataProcessingConfigSpec `json:"unstructuredDataProcessingConfig,omitempty"`
 }
 
