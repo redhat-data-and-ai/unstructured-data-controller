@@ -37,7 +37,6 @@ type SnowflakeConfig struct {
 	User             string `json:"user"`
 	Role             string `json:"role"`
 	Region           string `json:"region,omitempty"`
-	DefaultDatabase  string `json:"defaultDatabase,omitempty"`
 	Warehouse        string `json:"warehouse"`
 	PrivateKeySecret string `json:"privateKeySecret"`
 }

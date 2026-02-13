@@ -131,7 +131,7 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 		// Get the snowflake client config from the ControllerConfig CR
 		snowflakeConfig := config.Spec.SnowflakeConfig
-		snowflakeClientConfig, result, err := r.getSnowflakeConfigFromCR(ctx, req.Namespace, snowflakeConfig)
+		snowflakeClientConfig, result, err := r.createSnowflakeConfig(ctx, req.Namespace, snowflakeConfig)
 		if err != nil {
 			return result, err
 		}
@@ -199,7 +199,7 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
-func (r *ControllerConfigReconciler) getSnowflakeConfigFromCR(ctx context.Context,
+func (r *ControllerConfigReconciler) createSnowflakeConfig(ctx context.Context,
 	namespace string, cfg operatorv1alpha1.SnowflakeConfig) (*gosnowflake.Config, ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("getting snowflake config from CR")
@@ -209,7 +209,6 @@ func (r *ControllerConfigReconciler) getSnowflakeConfigFromCR(ctx context.Contex
 		Role:             cfg.Role,
 		Region:           cfg.Region,
 		Warehouse:        cfg.Warehouse,
-		Database:         cfg.DefaultDatabase,
 		KeepSessionAlive: true,
 		Authenticator:    gosnowflake.AuthTypeJwt,
 	}
@@ -259,13 +258,13 @@ func (r *ControllerConfigReconciler) fetchPrivateKeyFromSecret(ctx context.Conte
 func (*ControllerConfigReconciler) createAndValidateSfClient(ctx context.Context, snowflakeClientConfig gosnowflake.Config) (*snowflake.Client, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("creating snowflake client")
-	sfClient, err := snowflake.NewClient(&snowflake.ClientConfig{
+	sfClient, err := snowflake.NewClient(ctx, &snowflake.ClientConfig{
 		Config: snowflakeClientConfig,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if sfClient.Ping(ctx) != nil {
+	if err := sfClient.Ping(ctx); err != nil {
 		return nil, err
 	}
 	return sfClient, nil

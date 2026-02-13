@@ -33,7 +33,7 @@ kubectl create namespace unstructured-controller-namespace
 
 **AWS Secret:**
 ```bash
-kubectl apply -f config/samples/aws-secret.yaml
+kubectl apply -f config/samples/aws-secret.yaml -n unstructured-controller-namespace
 ```
 
 **Snowflake Private Key:**
@@ -50,33 +50,38 @@ Run in Snowflake SQL (using names from your config):
 ```sql
 -- Use your warehouse and database
 USE WAREHOUSE default;
-USE DATABASE SHIKHAR_TESTING;
+USE DATABASE TESTING_DB;
 
 -- Create schema and stage
 CREATE SCHEMA IF NOT EXISTS TESTINGSCHEMA;
-CREATE OR REPLACE STAGE SHIKHAR_TESTING.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG 
+CREATE OR REPLACE STAGE TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG 
     FILE_FORMAT = (TYPE = 'JSON');
 
 -- Create role and grant permissions
 CREATE ROLE IF NOT EXISTS TESTING_ROLE;
-GRANT USAGE ON DATABASE SHIKHAR_TESTING TO ROLE TESTING_ROLE;
-GRANT USAGE ON SCHEMA SHIKHAR_TESTING.TESTINGSCHEMA TO ROLE TESTING_ROLE;
-GRANT READ, WRITE ON STAGE SHIKHAR_TESTING.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG TO ROLE TESTING_ROLE;
+GRANT USAGE ON DATABASE TESTING_DB TO ROLE TESTING_ROLE;
+GRANT USAGE ON SCHEMA TESTING_DB.TESTINGSCHEMA TO ROLE TESTING_ROLE;
+GRANT READ, WRITE ON STAGE TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG TO ROLE TESTING_ROLE;
 
 -- Grant role to your user (from controllerconfig.yaml)
-GRANT ROLE TESTING_ROLE TO USER shikgupt;
+GRANT ROLE TESTING_ROLE TO USER SNOWFLAKE_USER;
 ```
 
 ### 4. Deploy Controller
 
 **Apply ControllerConfig:**
 ```bash
-kubectl apply -f config/samples/operator_v1alpha1_controllerconfig.yaml
+kubectl apply -f config/samples/operator_v1alpha1_controllerconfig.yaml -n unstructured-controller-namespace
+```
+
+**Apply SQSConsumer:**
+```bash
+kubectl apply -f config/samples/operator_v1alpha1_sqsconsumer.yaml -n unstructured-controller-namespace
 ```
 
 **Apply UnstructuredDataProduct:**
 ```bash
-kubectl apply -f config/samples/operator_v1alpha1_unstructureddataproduct.yaml
+kubectl apply -f config/samples/operator_v1alpha1_unstructureddataproduct.yaml -n unstructured-controller-namespace
 ```
 
 **Run Controller (local dev):**
@@ -108,11 +113,11 @@ aws s3 cp test.pdf s3://data-ingestion-bucket/testunstructureddataproduct/
 USE ROLE TESTING_ROLE;
 
 -- List files in stage
-LIST @SHIKHAR_TESTING.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG;
+LIST @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG;
 
 -- View processed data
 SELECT $1 AS data 
-FROM @SHIKHAR_TESTING.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG 
+FROM @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG 
 LIMIT 1;
 ```
 
@@ -169,7 +174,7 @@ spec:
   destinationConfig:
     type: snowflakeInternalStage
     snowflakeInternalStageConfig:
-      database: SHIKHAR_TESTING
+      database: TESTING_DB
       schema: TESTINGSCHEMA
       stage: TESTINGSCHEMA_INTERNAL_STG
 ```
@@ -186,47 +191,8 @@ After processing, each file produces:
    - `file.pdf-converted.json` - Converted Markdown
    - `file.pdf-chunks.json` - Chunked content
 
-2. **Snowflake Stage** (`SHIKHAR_TESTING.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG`):
+2. **Snowflake Stage** (`TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG`):
    - `testunstructureddataproduct/file.pdf-chunks.json` - Complete processed file with:
      - `convertedDocument`: Original conversion with metadata
      - `chunksDocument`: Chunked text ready for processing
 
----
-
-## Troubleshooting
-
-**Files not processing?**
-```bash
-# Check controller logs
-kubectl logs -f <controller-pod> -n unstructured-controller-namespace
-
-# Check CR status
-kubectl describe unstructureddataproduct testunstructureddataproduct -n unstructured-controller-namespace
-```
-
-**Snowflake connection issues?**
-- Verify private key secret is correct
-- Check Snowflake role has proper permissions
-- Ensure ControllerConfig CR is healthy
-
-**Files stuck in pending?**
-- Check Docling service is running
-- Verify network connectivity
-- Check DocumentProcessor logs for errors
-
----
-
-## Architecture
-
-Simple flow:
-```
-S3 Bucket → UnstructuredDataProduct Controller
-           ↓
-        DocumentProcessor (Docling)
-           ↓
-        ChunksGenerator (Langchain)
-           ↓
-        Snowflake Stage
-```
-
-That's it! The controller handles everything automatically once configured.

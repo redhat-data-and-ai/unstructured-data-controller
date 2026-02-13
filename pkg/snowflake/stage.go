@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+type UploadedFileStatus struct {
+	Source string `db:"source"`
+	Target string `db:"target"`
+	Status string `db:"status"`
+}
+
 // Put facilitates uploading files to the internal stage resource
 func (c *Client) Put(ctx context.Context, roleName, filePath, databaseName,
 	schemaName, stageName, subpath string, resources any) error {
@@ -21,7 +27,7 @@ func (c *Client) Put(ctx context.Context, roleName, filePath, databaseName,
 	return scanRows(rows, resources)
 }
 
-func (c *Client) GetDataFromStage(ctx context.Context, roleName, databaseName,
+func (c *Client) ListFilesFromStage(ctx context.Context, roleName, databaseName,
 	schemaName, stageName string, resources any) error {
 	query := fmt.Sprintf("SELECT $1 AS data FROM @%s.%s.%s;", databaseName, schemaName, stageName)
 	rows, err := c.query(ctx, query, roleName)

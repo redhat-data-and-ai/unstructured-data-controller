@@ -8,13 +8,12 @@ metadata:
 spec:
   awsSecret: aws-secret
   snowflakeConfig:
-    name: "test"
-    account: "gdadclc-test"
-    user: "shikgupt"
+    name: "testing"
+    account: "account-identifier"
+    user: "SNOWFLAKE_USER"
     role: "TESTING_ROLE"
     region: "us-west-2"
     warehouse: "default"
-    defaultDatabase: "DB_DICE"
     privateKeySecret: rhplatformtest-private-key
   unstructuredDataProcessingConfig:
     doclingServeURL: "http://localhost:5002"

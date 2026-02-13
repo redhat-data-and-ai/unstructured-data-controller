@@ -52,8 +52,6 @@ spec:
                 properties:
                   account:
                     type: string
-                  defaultDatabase:
-                    type: string
                   name:
                     type: string
                   privateKeySecret:

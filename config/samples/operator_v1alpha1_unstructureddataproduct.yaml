@@ -46,6 +46,6 @@ spec:
   destinationConfig:
     type: "snowflakeInternalStage"
     snowflakeInternalStageConfig:
-      database: "SHIKHAR_TESTING"
+      database: "TESTING_DB"
       schema: "TESTINGSCHEMA"
       stage: "TESTINGSCHEMA_INTERNAL_STG"
