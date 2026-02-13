@@ -80,23 +80,10 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return ctrl.Result{}, err
 	}
 
-	// get the controller config
-	controllerConfigCR := &operatorv1alpha1.ControllerConfig{}
-	if err := r.Get(ctx, client.ObjectKey{
-		Namespace: unstructuredDataProductCR.Namespace,
-		Name:      "controllerconfig",
-	}, controllerConfigCR); err != nil {
-		logger.Error(err, "failed to get ControllerConfig CR")
-		return ctrl.Result{}, err
-	}
-
-	accountName := controllerConfigCR.Spec.SnowflakeConfig.Account
-	roleName := controllerConfigCR.Spec.SnowflakeConfig.Role
-
-	// get the corresponding snowflake client
-	sf, err := snowflake.GetClient(accountName)
+	// get the snowflake client
+	sf, err := snowflake.GetClient()
 	if err != nil {
-		logger.Error(err, "failed to get snowflake client for account: "+accountName)
+		logger.Error(err, "failed to get snowflake client")
 		return ctrl.Result{}, err
 	}
 	r.sf = sf
@@ -221,7 +208,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 
 		destination = &unstructured.SnowflakeInternalStage{
 			Client:   sf,
-			Role:     roleName,
+			Role:     sf.GetRole(),
 			Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
 			Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
 			Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,

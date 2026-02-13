@@ -35,7 +35,7 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 		Data string `db:"data"`
 	}
 	rows := []row{}
-	err := d.Client.GetDataFromStage(ctx, d.Role, d.Database, d.Schema, d.Stage, &rows)
+	err := d.Client.ListFilesFromStage(ctx, d.Role, d.Database, d.Schema, d.Stage, &rows)
 	if err != nil {
 		return err
 	}

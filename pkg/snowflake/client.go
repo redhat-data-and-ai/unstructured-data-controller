@@ -3,6 +3,7 @@ package snowflake
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 type Client struct {
 	conn  *sql.DB
 	close func() error
+	role  string
 }
 
 type ClientConfig struct {
@@ -22,7 +24,7 @@ type ClientConfig struct {
 }
 
 var (
-	clients     map[string]*Client
+	Sfclient    *Client
 	clientMutex sync.Mutex
 	sqlMutex    sync.Mutex
 )
@@ -33,22 +35,10 @@ const (
 	roleSwitchingFailureMesssage = "Role switching failed"
 )
 
-func NewClient(config *ClientConfig) (*Client, error) {
-	// acquire lock before creating a client in order to
-	// avoid parallel creation of connections
+func NewClient(_ context.Context, config *ClientConfig) (*Client, error) {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
-
-	if clients == nil {
-		clients = make(map[string]*Client, 0)
-	}
-
-	// fetch the existing client, if exists
-	client := clients[config.Account]
-
-	// only create new connection if no current connection or
-	// if current connection is expired
-	if client == nil || client.conn.Ping() != nil {
+	if Sfclient == nil || Sfclient.conn.Ping() != nil {
 		dsn, err := gosnowflake.DSN(&config.Config)
 		if err != nil {
 			return nil, err
@@ -59,25 +49,27 @@ func NewClient(config *ClientConfig) (*Client, error) {
 			return nil, err
 		}
 
-		client = &Client{
+		Sfclient = &Client{
 			conn:  conn,
 			close: conn.Close,
+			role:  config.Role,
 		}
-		clients[config.Account] = client
 	}
-
-	return client, nil
+	return Sfclient, nil
 }
 
-func GetClient(account string) (*Client, error) {
+func (c *Client) GetRole() string {
+	return c.role
+}
+
+func GetClient() (*Client, error) {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
 
-	client, exists := clients[account]
-	if !exists {
-		return nil, fmt.Errorf("no snowflake client found for account: %s", account)
+	if Sfclient == nil {
+		return nil, errors.New("no snowflake client found")
 	}
-	return client, nil
+	return Sfclient, nil
 }
 
 func (c *Client) Ping(ctx context.Context) error {
