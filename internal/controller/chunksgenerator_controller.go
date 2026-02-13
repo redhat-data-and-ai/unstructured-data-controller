@@ -88,8 +88,14 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// set status to waiting
-	chunksGeneratorCR.SetWaiting()
-	if err := r.Status().Update(ctx, chunksGeneratorCR); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.ChunksGenerator{}
+		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+			return err
+		}
+		latest.SetWaiting()
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status")
 		return ctrl.Result{}, err
 	}
@@ -110,8 +116,14 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// now that we have the list of files to process, we may remove the force reconcile label as we are ready to accept more events
-	if err := controllerutils.RemoveForceReconcileLabel(ctx, r.Client, chunksGeneratorCR); err != nil {
-		logger.Error(err, "failed to remove force reconcile label from ChunksGenerator CR")
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.ChunksGenerator{}
+		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+			return err
+		}
+		return controllerutils.RemoveForceReconcileLabel(ctx, r.Client, latest)
+	}); err != nil {
+		logger.Error(err, "failed to remove force reconcile label")
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 

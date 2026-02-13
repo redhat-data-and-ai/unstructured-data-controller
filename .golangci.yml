@@ -81,6 +81,10 @@ linters:
           - dupl
           - lll
         path: internal/*
+      - linters:
+          - revive
+        path: test/
+        text: "var-naming"
     paths:
       - third_party$
       - builtin$

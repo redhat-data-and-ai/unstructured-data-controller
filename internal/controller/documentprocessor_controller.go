@@ -85,8 +85,14 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// set status to waiting
-	documentProcessorCR.SetWaiting()
-	if err := r.Status().Update(ctx, documentProcessorCR); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.DocumentProcessor{}
+		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+			return err
+		}
+		latest.SetWaiting()
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
 		logger.Error(err, "failed to update DocumentProcessor CR status")
 		return ctrl.Result{}, err
 	}
@@ -128,7 +134,13 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// now that we have the list of files to process, we may remove the force reconcile label as we are ready to accept more events
-	if err := controllerutils.RemoveForceReconcileLabel(ctx, r.Client, documentProcessorCR); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.DocumentProcessor{}
+		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+			return err
+		}
+		return controllerutils.RemoveForceReconcileLabel(ctx, r.Client, latest)
+	}); err != nil {
 		logger.Error(err, "failed to remove force reconcile label from DocumentProcessor CR")
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
@@ -143,18 +155,14 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// Add force-reconcile label to ChunksGenerator so it re-runs. Use RetryOnConflict
-	// because the ChunksGenerator controller may update the same CR (e.g. status) concurrently.
+	// add force reconcile label to the ChunksGenerator CR
 	chunksGeneratorKey := client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
 		if err := r.Get(ctx, chunksGeneratorKey, chunksGeneratorCR); err != nil {
 			return err
 		}
-		if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, chunksGeneratorCR); err != nil {
-			return err
-		}
-		return r.Update(ctx, chunksGeneratorCR)
+		return controllerutils.AddForceReconcileLabel(ctx, r.Client, chunksGeneratorCR)
 	}); err != nil {
 		logger.Error(err, "failed to add force reconcile label to ChunksGenerator CR")
 		return r.handleError(ctx, documentProcessorCR, err)
@@ -202,12 +210,20 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 			logger.Info("recovered from panic in processJob, likely stale job from previous session", "panic", panicErr, "taskID", job.TaskID, "filePath", job.FilePath)
 			if panicMessage, ok := panicErr.(string); ok && strings.Contains(panicMessage, docling.SemaphorePanicError) {
 				logger.Info("semaphore panic detected, removing stale job", "taskID", job.TaskID)
-				documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-				if updateErr := r.Status().Update(ctx, documentProcessorCR); updateErr != nil {
+				key := client.ObjectKeyFromObject(documentProcessorCR)
+				if updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					latest := &operatorv1alpha1.DocumentProcessor{}
+					if getErr := r.Get(ctx, key, latest); getErr != nil {
+						return getErr
+					}
+					latest.DeleteJobByFilePath(job.FilePath)
+					return r.Status().Update(ctx, latest)
+				}); updateErr != nil {
 					logger.Error(updateErr, "failed to delete stale job after panic", "filePath", job.FilePath)
 					err = updateErr
 					return
 				}
+
 				logger.Info("successfully removed stale job after semaphore panic", "filePath", job.FilePath)
 				err = fmt.Errorf("reconcileJob() function exited with panic: %v", panicErr)
 				return
@@ -251,10 +267,17 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		logger.Info("successfully stored the converted file in the filestore", "filePath", convertedFilePath)
 
 		// remove the job from the status as nothing needs to be done for this job
-		logger.Info("removing job from status as it has completed successfully", "filePath", job.FilePath)
-		documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-		if err := r.Status().Update(ctx, documentProcessorCR); err != nil {
-			return err
+		key := client.ObjectKeyFromObject(documentProcessorCR)
+		if updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest := &operatorv1alpha1.DocumentProcessor{}
+			if getErr := r.Get(ctx, key, latest); getErr != nil {
+				return getErr
+			}
+			latest.DeleteJobByFilePath(job.FilePath)
+			return r.Status().Update(ctx, latest)
+		}); updateErr != nil {
+			logger.Error(updateErr, "failed to delete job from status as it has completed successfully", "filePath", job.FilePath)
+			return updateErr
 		}
 		logger.Info("successfully removed job from status as it has completed successfully", "filePath", job.FilePath)
 
@@ -262,14 +285,21 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		logger.Info("docling task has failed or skipped, will be retried", "taskID", job.TaskID, "filePath", job.FilePath)
 		// if the attempts > max attempts, remove the job from the status
 		if job.Attempts >= maxDoclingConversionAttempts {
-			// remove the job from the status as nothing needs to be done for this job
 			logger.Error(fmt.Errorf("failed to convert file, max attempts reached for file: %s", job.FilePath), "failed to convert file, max attempts reached")
-			documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
-			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-			if err := r.Status().Update(ctx, documentProcessorCR); err != nil {
-				return err
+			key := client.ObjectKeyFromObject(documentProcessorCR)
+			if updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latest := &operatorv1alpha1.DocumentProcessor{}
+				if getErr := r.Get(ctx, key, latest); getErr != nil {
+					return getErr
+				}
+				latest.AddPermanentlyFailingFile(job.FilePath)
+				latest.DeleteJobByFilePath(job.FilePath)
+				return r.Status().Update(ctx, latest)
+			}); updateErr != nil {
+				logger.Error(updateErr, "failed to delete job from status as it has failed or skipped", "filePath", job.FilePath)
+				return updateErr
 			}
-			logger.Info("successfully added to permanently failing files list", "filePath", job.FilePath)
+			logger.Info("successfully deleted job from status as it has failed or skipped", "filePath", job.FilePath)
 		}
 
 	case docling.TaskStatusPending, docling.TaskStatusStarted:
@@ -324,21 +354,23 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		conversionAttempt = job.Attempts + 1
 	}
 
-	// it is possible that the CR is outdated, so we will fetch the latest version of the CR
-	if err := r.Get(ctx, client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}, documentProcessorCR); err != nil {
-		logger.Error(err, "failed to get DocumentProcessor CR")
-		return err
-	}
-	documentProcessorCR.AddOrUpdateJob(operatorv1alpha1.Job{
-		FilePath:          rawFilePath,
-		DocumentConverter: string(unstructured.DocumentConverterDocling),
-		DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
-		TaskID:            response.TaskID,
-		Status:            response.TaskStatus,
-		CreatedOn:         time.Now().Format(time.RFC3339),
-		Attempts:          conversionAttempt,
-	})
-	if err := r.Status().Update(ctx, documentProcessorCR); err != nil {
+	key := client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.DocumentProcessor{}
+		if getErr := r.Get(ctx, key, latest); getErr != nil {
+			return getErr
+		}
+		latest.AddOrUpdateJob(operatorv1alpha1.Job{
+			FilePath:          rawFilePath,
+			DocumentConverter: string(unstructured.DocumentConverterDocling),
+			DoclingConfig:     latest.Spec.DocumentProcessorConfig.DoclingConfig,
+			TaskID:            response.TaskID,
+			Status:            response.TaskStatus,
+			CreatedOn:         time.Now().Format(time.RFC3339),
+			Attempts:          conversionAttempt,
+		})
+		return r.Status().Update(ctx, latest)
+	}); err != nil {
 		logger.Error(err, "failed to update DocumentProcessor CR status")
 		return err
 	}
@@ -403,7 +435,6 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	job := documentProcessorCR.GetJobByFilePath(rawFilePath)
 	if job != nil {
 		// job already exists for this document
-
 		logger.Info("job already exists for the file, checking if it's the same configuration ...", "filePath", rawFilePath)
 		fileToConvert := unstructured.ConvertedFileMetadata{
 			RawFilePath:       rawFilePath,
@@ -434,8 +465,15 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		// if the current job is not valid (different configuration), then it is of no use to us irrespective of the status
 		// we will delete the job from status and create a new job with the new configuration
 		logger.Info("job already exists, but with a different configuration, let's delete the current job from status", "filePath", rawFilePath)
-		documentProcessorCR.DeleteJobByFilePath(rawFilePath)
-		if err := r.Status().Update(ctx, documentProcessorCR); err != nil {
+		key := client.ObjectKeyFromObject(documentProcessorCR)
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest := &operatorv1alpha1.DocumentProcessor{}
+			if getErr := r.Get(ctx, key, latest); getErr != nil {
+				return getErr
+			}
+			latest.DeleteJobByFilePath(rawFilePath)
+			return r.Status().Update(ctx, latest)
+		}); err != nil {
 			logger.Error(err, "failed to update DocumentProcessor CR status")
 			return false, err
 		}

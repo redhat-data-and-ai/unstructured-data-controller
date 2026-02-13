@@ -43,3 +43,9 @@ spec:
       referenceLinks: true
       headingHierarchy: true
       joinTableRows: true
+  destinationConfig:
+    type: "snowflakeInternalStage"
+    snowflakeInternalStageConfig:
+      database: "TESTING_DB"
+      schema: "TESTINGSCHEMA"
+      stage: "TESTINGSCHEMA_INTERNAL_STG"

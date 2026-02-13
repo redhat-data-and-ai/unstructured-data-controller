@@ -7,10 +7,18 @@ metadata:
   name: controllerconfig
 spec:
   awsSecret: aws-secret
+  snowflakeConfig:
+    name: "testing"
+    account: "gdadclc-testing"
+    user: "SNOWFLAKE_USER"
+    role: "TESTING_ROLE"
+    region: "us-west-2"
+    warehouse: "default"
+    privateKeySecret: rhplatformtest-private-key
   unstructuredDataProcessingConfig:
-    doclingServeURL: "http://localhost:5001"
+    doclingServeURL: "http://localhost:5002"
     ingestionBucket: "data-ingestion-bucket"
     dataStorageBucket: "data-storage-bucket"
-    cacheDirectory: "/home/ppunamiy/unstructured-data-controller/tmp/cache/"
+    cacheDirectory: "/tmp/cache/"
     maxConcurrentDoclingTasks: 5
     maxConcurrentLangchainTasks: 10
