@@ -24,7 +24,7 @@ spec:
         - csv
         - xlsx
       to_formats:
-        - md  
+        - md
       image_export_mode: "copy"
       do_ocr: true
       force_ocr: false

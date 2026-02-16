@@ -37,5 +37,3 @@ resources:
 - documentprocessor_admin_role.yaml
 - documentprocessor_editor_role.yaml
 - documentprocessor_viewer_role.yaml
-
-

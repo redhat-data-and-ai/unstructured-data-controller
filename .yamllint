@@ -1,0 +1,8 @@
+extends: default
+
+rules:
+  comments: {level: error}
+  comments-indentation: {level: error}
+  document-start: disable
+  indentation: {spaces: 2, indent-sequences: consistent}
+  line-length: {max: 120, level: warning}

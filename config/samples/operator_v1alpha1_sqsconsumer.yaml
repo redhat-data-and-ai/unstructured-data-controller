@@ -7,4 +7,3 @@ metadata:
   name: sqsconsumer-sample
 spec:
   queueURL: http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/unstructured-s3-queue
-
