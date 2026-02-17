@@ -79,14 +79,29 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	config := configList.Items[0]
 
-	// Skip reconciliation if we've already processed this generation successfully
-	if config.Status.LastAppliedGeneration == config.Generation && config.IsHealthy() {
-		logger.Info("config already reconciled for current generation, skipping")
-		return ctrl.Result{}, nil
-	}
+	// Always set globals from config so they are populated on every Reconcile (including after process restart).
+	ingestionBucket = config.Spec.UnstructuredDataProcessingConfig.IngestionBucket
+	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
+	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
 
+	doclingServeURL := config.Spec.UnstructuredDataProcessingConfig.DoclingServeURL
+	doclingClient = docling.NewClientFromURL(
+		&docling.ClientConfig{
+			URL:                   doclingServeURL,
+			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
+		},
+	)
+	langchainClient = langchain.NewClient(
+		langchain.ClientConfig{
+			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentLangchainTasks),
+		},
+	)
+
+	logger.Info(fmt.Sprintf("Ingestion bucket: %s, Data storage bucket: %s, Cache directory: %s",
+		ingestionBucket, dataStorageBucket, cacheDirectory))
+
+	// Always ensure AWS clients are initialized when configured (needed after process restart).
 	if config.Spec.AWSSecret != "" {
-		// generate AWS clients now
 		awsSecret := &corev1.Secret{}
 		if err := r.Get(ctx,
 			types.NamespacedName{Name: config.Spec.AWSSecret, Namespace: req.Namespace}, awsSecret); err != nil {
@@ -103,69 +118,25 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			SessionToken:    string(awsSecret.Data["AWS_SESSION_TOKEN"]),
 			Endpoint:        string(awsSecret.Data["AWS_ENDPOINT"]),
 		}
-		// create SQS client
-		_, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsConfig)
-		if err != nil {
+		if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("SQS client created ...")
-
-		// create S3 client
-		_, err = awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig)
-		if err != nil {
+		if _, err := awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("S3 client created ...")
-
-		// create presign client
-		_, err = awsclienthandler.NewPresignClient(ctx)
-		if err != nil {
+		if _, err := awsclienthandler.NewPresignClient(ctx); err != nil {
 			return ctrl.Result{}, err
 		}
 		logger.Info("Presign client created ...")
-
-		// TODO: add in the controller where used
-		// // create IAM client
-		// _, err = awsclienthandler.NewIAMClientFromConfig(ctx, &awsConfig)
-		// if err != nil {
-		// 	return ctrl.Result{}, err
-		// }
-		// logger.Info("IAM client created ...")
-
-		// // create KMS client
-		// _, err = awsclienthandler.NewKMSClientFromConfig(ctx, &awsConfig)
-		// if err != nil {
-		// 	return ctrl.Result{}, err
-		// }
-		// logger.Info("KMS client created ...")
 	}
 
-	ingestionBucket = config.Spec.UnstructuredDataProcessingConfig.IngestionBucket
-	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
-	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
-
-	logger.Info(fmt.Sprintf("Ingestion bucket: %s, Data storage bucket: %s, Cache directory: %s",
-		ingestionBucket, dataStorageBucket, cacheDirectory))
-
-	doclingServeURL := config.Spec.UnstructuredDataProcessingConfig.DoclingServeURL
-
-	// initialize the docling client
-	doclingClient = docling.NewClientFromURL(
-		&docling.ClientConfig{
-			URL:                   doclingServeURL,
-			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
-		},
-	)
-
-	// initialze langchain client
-	langchainClient = langchain.NewClient(
-		langchain.ClientConfig{
-			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentLangchainTasks),
-		},
-	)
-
-	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
-	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
+	// Skip only status update if we've already processed this generation successfully
+	if config.Status.LastAppliedGeneration == config.Generation && config.IsHealthy() {
+		logger.Info("config already reconciled for current generation, skipping status update")
+		return ctrl.Result{}, nil
+	}
 
 	// update the status of the Config CR to indicate that it is healthy
 	config.UpdateStatus(nil)

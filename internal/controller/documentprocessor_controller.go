@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -39,8 +38,7 @@ import (
 )
 
 const (
-	DocumentProcessorControllerName = "DocumentProcessor"
-	requeueAfter                    = 15 * time.Second
+	requeueAfter = 15 * time.Second
 )
 
 var (
@@ -104,6 +102,10 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
 	if err != nil {
+		if IsAWSClientNotInitializedError(err) {
+			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
@@ -143,19 +145,8 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// Add force-reconcile label to ChunksGenerator so it re-runs. Use RetryOnConflict
-	// because the ChunksGenerator controller may update the same CR (e.g. status) concurrently.
 	chunksGeneratorKey := client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
-		if err := r.Get(ctx, chunksGeneratorKey, chunksGeneratorCR); err != nil {
-			return err
-		}
-		if err := controllerutils.AddForceReconcileLabel(ctx, r.Client, chunksGeneratorCR); err != nil {
-			return err
-		}
-		return r.Update(ctx, chunksGeneratorCR)
-	}); err != nil {
+	if err := controllerutils.AddForceReconcileLabelWithRetry(ctx, r.Client, chunksGeneratorKey, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }); err != nil {
 		logger.Error(err, "failed to add force reconcile label to ChunksGenerator CR")
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
@@ -175,16 +166,10 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	logger.Info("all jobs are completed, no need to requeue")
 
-	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", documentProcessorCR.Name)
 	key := client.ObjectKeyFromObject(documentProcessorCR)
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		res := &operatorv1alpha1.DocumentProcessor{}
-		if err := r.Get(ctx, key, res); err != nil {
-			return err
-		}
-		res.UpdateStatus(successMessage, nil)
-		return r.Status().Update(ctx, res)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.DocumentProcessor{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.DocumentProcessor).UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update DocumentProcessor CR status", "namespace", key.Namespace, "name", key.Name)
 		return r.handleError(ctx, documentProcessorCR, err)
@@ -461,16 +446,11 @@ func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentP
 	logger.Error(err, "encountered error")
 	reconcileErr := err
 	key := client.ObjectKeyFromObject(documentProcessorCR)
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.DocumentProcessor{}
-		if getErr := r.Get(ctx, key, latest); getErr != nil {
-			return getErr
-		}
-		latest.UpdateStatus("", reconcileErr)
-		return r.Status().Update(ctx, latest)
-	}); err != nil {
-		logger.Error(err, "failed to update DocumentProcessor CR status")
-		return ctrl.Result{}, err
+	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.DocumentProcessor{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.DocumentProcessor).UpdateStatus("", reconcileErr)
+	}); updateErr != nil {
+		logger.Error(updateErr, "failed to update DocumentProcessor CR status")
+		return ctrl.Result{}, updateErr
 	}
 	return ctrl.Result{}, reconcileErr
 }
