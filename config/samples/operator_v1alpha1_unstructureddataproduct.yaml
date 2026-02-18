@@ -49,3 +49,7 @@ spec:
       database: "TESTING_DB"
       schema: "TESTINGSCHEMA"
       stage: "TESTINGSCHEMA_INTERNAL_STG"
+    # type: "s3"
+    # s3DestinationConfig:
+    #   bucket: output-chunks-bucket
+    #   prefix: testunstructureddataproduct

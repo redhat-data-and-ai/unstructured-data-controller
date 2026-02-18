@@ -29,6 +29,7 @@ type (
 const (
 	SourceTypeS3                       UnstructuredDataSourceType      = "s3"
 	DestinationTypeInternalStage       UnstructuredDataDestinationType = "snowflakeInternalStage"
+	DestinationTypeS3                  UnstructuredDataDestinationType = "s3"
 	ChunkingStrategyRecursiveCharacter ChunkingStrategy                = "recursiveCharacterTextSplitter"
 	ChunkingStrategyMarkdown           ChunkingStrategy                = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy                = "tokenTextSplitter"
@@ -108,6 +109,13 @@ type S3Config struct {
 type DestinationConfig struct {
 	Type                         UnstructuredDataDestinationType `json:"type,omitempty"`
 	SnowflakeInternalStageConfig SnowflakeInternalStageConfig    `json:"snowflakeInternalStageConfig,omitempty"`
+	S3DestinationConfig          S3DestinationConfig             `json:"s3DestinationConfig,omitempty"`
+}
+
+// S3DestinationConfig configures pushing chunked output to an S3 bucket (e.g. LocalStack or AWS).
+type S3DestinationConfig struct {
+	Bucket string `json:"bucket,omitempty"`
+	Prefix string `json:"prefix,omitempty"`
 }
 
 type SnowflakeInternalStageConfig struct {

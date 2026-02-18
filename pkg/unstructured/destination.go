@@ -5,7 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 	"github.com/snowflakedb/gosnowflake"
@@ -147,6 +151,62 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 
 	if len(errorList) > 0 {
 		return fmt.Errorf("encountered errors while syncing files to snowflake internal stage: %v", errorList)
+	}
+
+	return nil
+}
+
+// S3Destination syncs chunk files to an S3 bucket (e.g. LocalStack or AWS).
+type S3Destination struct {
+	S3Client *s3.Client
+	Bucket   string
+	Prefix   string
+}
+
+func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestore.FileStore, chunksFilePaths []string) error {
+	logger := log.FromContext(ctx)
+	logger.Info("syncing data to S3 destination", "bucket", d.Bucket, "prefix", d.Prefix, "filePaths", chunksFilePaths)
+
+	s3Client := d.S3Client
+	if s3Client == nil {
+		var err error
+		s3Client, err = awsclienthandler.GetS3Client()
+		if err != nil {
+			return fmt.Errorf("failed to get S3 client: %w", err)
+		}
+	}
+
+	for _, chunksFilePath := range chunksFilePaths {
+		data, err := fs.Retrieve(ctx, chunksFilePath)
+		if err != nil {
+			logger.Error(err, "failed to retrieve file from filestore", "file", chunksFilePath)
+			return fmt.Errorf("retrieve %s: %w", chunksFilePath, err)
+		}
+
+		// Use only the filename for the S3 key to avoid duplicate path segments
+		// (e.g. dataProductName/dataProductName/chunks/file.json). Result:
+		// - no prefix: "test.pdf-chunks.json"
+		// - with prefix: "myprefix/test.pdf-chunks.json"
+		baseName := filepath.Base(chunksFilePath)
+		key := baseName
+		if d.Prefix != "" {
+			key = filepath.Join(d.Prefix, baseName)
+		}
+		// filepath.Join uses OS path separator; S3 expects forward slashes
+		if filepath.Separator != '/' {
+			key = filepath.ToSlash(key)
+		}
+
+		_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(d.Bucket),
+			Key:    aws.String(key),
+			Body:   bytes.NewReader(data),
+		})
+		if err != nil {
+			logger.Error(err, "failed to upload file to S3", "bucket", d.Bucket, "key", key)
+			return fmt.Errorf("put object s3://%s/%s: %w", d.Bucket, key, err)
+		}
+		logger.Info("uploaded file to S3 destination", "key", key)
 	}
 
 	return nil

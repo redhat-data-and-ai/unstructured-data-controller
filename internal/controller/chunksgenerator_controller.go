@@ -53,6 +53,7 @@ type ChunksGeneratorReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators/finalizers,verbs=update
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddataproducts,verbs=get;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -175,6 +176,19 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 	logger.Info("successfully updated ChunksGenerator CR status", "status", chunksGeneratorCR.Status)
+
+	// Trigger UnstructuredDataProduct to sync chunk files to destination (destination-only reconcile).
+	unstructuredDataProductKey := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Spec.DataProduct}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		unstructuredDataProductCR := &operatorv1alpha1.UnstructuredDataProduct{}
+		if err := r.Get(ctx, unstructuredDataProductKey, unstructuredDataProductCR); err != nil {
+			return err
+		}
+		return controllerutils.AddForceReconcileAndSyncDestinationLabel(ctx, r.Client, unstructuredDataProductCR)
+	}); err != nil {
+		logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
+		return r.handleError(ctx, chunksGeneratorCR, err)
+	}
 
 	return ctrl.Result{}, nil
 }

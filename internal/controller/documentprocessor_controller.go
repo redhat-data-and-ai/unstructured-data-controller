@@ -155,7 +155,27 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// add force reconcile label to the ChunksGenerator CR
+	if len(documentProcessingErrors) > 0 || len(jobProcessingErrors) > 0 {
+		return r.handleError(ctx, documentProcessorCR, errors.New("failed to process jobs or documents"))
+	}
+
+	// Re-get CR so Status.Jobs reflects any jobs just added by processDocument (otherwise we use stale in-memory state).
+	if err := r.Get(ctx, req.NamespacedName, documentProcessorCR); err != nil {
+		logger.Error(err, "failed to get DocumentProcessor CR for job count")
+		return r.handleError(ctx, documentProcessorCR, err)
+	}
+	toRequeue := len(documentProcessorCR.Status.Jobs) > 0
+
+	if toRequeue {
+		logger.Info("some jobs are still pending or running, will requeue after a bit ...")
+		return ctrl.Result{
+			RequeueAfter: requeueAfter,
+		}, nil
+	}
+
+	logger.Info("all jobs are completed, no need to requeue")
+
+	// Only trigger ChunksGenerator when all conversions are done (converted files exist).
 	chunksGeneratorKey := client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
@@ -167,21 +187,6 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to add force reconcile label to ChunksGenerator CR")
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
-
-	if len(documentProcessingErrors) > 0 || len(jobProcessingErrors) > 0 {
-		return r.handleError(ctx, documentProcessorCR, errors.New("failed to process jobs or documents"))
-	}
-
-	toRequeue := len(documentProcessorCR.Status.Jobs) > 0
-
-	if toRequeue {
-		logger.Info("some jobs are still pending or running, will requeue after a bit ...")
-		return ctrl.Result{
-			RequeueAfter: requeueAfter,
-		}, nil
-	}
-
-	logger.Info("all jobs are completed, no need to requeue")
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", documentProcessorCR.Name)
