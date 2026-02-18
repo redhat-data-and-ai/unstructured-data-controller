@@ -81,6 +81,14 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return ctrl.Result{}, err
 	}
 
+	// When sync-destination label is set (by ChunksGenerator after chunks are ready), only sync to destination.
+	// When only force-reconcile is set (e.g. by SQS on new file notification), run full pipeline below.
+	if unstructuredDataProductCR.Labels != nil && unstructuredDataProductCR.Labels[controllerutils.SyncDestinationLabel] != "" {
+		logger.Info("sync-destination label set, syncing to destination only")
+		return r.reconcileDestinationOnly(ctx, req, unstructuredDataProductCR)
+	}
+
+	// Full pipeline: create DocumentProcessor & ChunksGenerator CRs, sync source, trigger DocumentProcessor. Do NOT sync to destination yet.
 	// first, let's create (or update) the DocumentProcessor CR for this data product
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
 		ObjectMeta: metav1.ObjectMeta{
@@ -194,59 +202,67 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	// Setup destination
-	var destination unstructured.Destination
-	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
-	case operatorv1alpha1.DestinationTypeInternalStage:
-		sf, err := snowflake.GetClient()
-		if err != nil {
-			logger.Error(err, "failed to get snowflake client")
-			return r.handleError(ctx, unstructuredDataProductCR, err)
+	// Full pipeline stops here. ChunksGenerator will add force-reconcile to this CR when done; then we run destination-only.
+	successMessage := fmt.Sprintf("source synced and DocumentProcessor triggered for: %s", dataProductName)
+	key := client.ObjectKeyFromObject(unstructuredDataProductCR)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		res := &operatorv1alpha1.UnstructuredDataProduct{}
+		if err := r.Get(ctx, key, res); err != nil {
+			return err
 		}
-		r.sf = sf
-		destination = &unstructured.SnowflakeInternalStage{
-			Client:   sf,
-			Role:     sf.GetRole(),
-			Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
-			Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
-			Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
-		}
-	case operatorv1alpha1.DestinationTypeS3:
-		s3Client, err := awsclienthandler.GetS3Client()
-		if err != nil {
-			logger.Error(err, "failed to get S3 client for destination")
-			return r.handleError(ctx, unstructuredDataProductCR, err)
-		}
-		destCfg := unstructuredDataProductCR.Spec.DestinationConfig.S3DestinationConfig
-		destination = &unstructured.S3Destination{
-			S3Client: s3Client,
-			Bucket:   destCfg.Bucket,
-			Prefix:   destCfg.Prefix,
-		}
-	default:
-		err := fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
-		logger.Error(err, "unsupported destination type")
+		res.UpdateStatus(successMessage, nil)
+		return r.Status().Update(ctx, res)
+	}); err != nil {
+		logger.Error(err, "failed to update UnstructuredDataProduct CR status", "namespace", key.Namespace, "name", key.Name)
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	logger.Info("successfully updated UnstructuredDataProduct CR status (destination sync when ChunksGenerator completes)")
+
+	return ctrl.Result{}, nil
+}
+
+// reconcileDestinationOnly runs when force-reconcile label is set: syncs existing chunk files to destination only.
+func (r *UnstructuredDataProductReconciler) reconcileDestinationOnly(ctx context.Context, req ctrl.Request, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	dataProductName := unstructuredDataProductCR.Name
+
+	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
+	if err != nil {
+		logger.Error(err, "failed to create filestore")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	r.fileStore = fs
+
+	destination, err := r.setupDestination(ctx, unstructuredDataProductCR)
+	if err != nil {
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	// list all files in the filestore for the data product
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
-	// extract the chunked files that are to be ingested to destination
 	filterChunksFiles := unstructured.FilterChunksFilePaths(filePaths)
 	logger.Info("files to ingest to destination", "files", filterChunksFiles)
 
-	// ingest the chunks files to destination
 	if err := destination.SyncFilesToDestination(ctx, r.fileStore, filterChunksFiles); err != nil {
 		logger.Error(err, "failed to ingest chunks files to destination")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 	logger.Info("successfully ingested chunks files to destination")
 
-	// all done, let's update the status to ready
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &operatorv1alpha1.UnstructuredDataProduct{}
+		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
+			return err
+		}
+		return controllerutils.RemoveForceReconcileAndSyncDestinationLabels(ctx, r.Client, latest)
+	}); err != nil {
+		logger.Error(err, "failed to remove force reconcile and sync-destination labels from UnstructuredDataProduct CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
 	key := client.ObjectKeyFromObject(unstructuredDataProductCR)
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -260,9 +276,42 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status", "namespace", key.Namespace, "name", key.Name)
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
-	logger.Info("successfully updated UnstructuredDataProduct CR status", "status", unstructuredDataProductCR.Status)
-
 	return ctrl.Result{}, nil
+}
+
+// setupDestination returns the Destination for the CR (Snowflake or S3).
+func (r *UnstructuredDataProductReconciler) setupDestination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct) (unstructured.Destination, error) {
+	logger := log.FromContext(ctx)
+	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
+	case operatorv1alpha1.DestinationTypeInternalStage:
+		sf, err := snowflake.GetClient()
+		if err != nil {
+			logger.Error(err, "failed to get snowflake client")
+			return nil, err
+		}
+		r.sf = sf
+		return &unstructured.SnowflakeInternalStage{
+			Client:   sf,
+			Role:     sf.GetRole(),
+			Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
+			Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
+			Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		}, nil
+	case operatorv1alpha1.DestinationTypeS3:
+		s3Client, err := awsclienthandler.GetS3Client()
+		if err != nil {
+			logger.Error(err, "failed to get S3 client for destination")
+			return nil, err
+		}
+		destCfg := unstructuredDataProductCR.Spec.DestinationConfig.S3DestinationConfig
+		return &unstructured.S3Destination{
+			S3Client: s3Client,
+			Bucket:   destCfg.Bucket,
+			Prefix:   destCfg.Prefix,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

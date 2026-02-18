@@ -25,8 +25,11 @@ import (
 )
 
 const (
-	// force reconcile label constant
+	// ForceReconcileLabel triggers a reconcile (used by SQS on new file, and by ChunksGenerator when chunks are ready).
 	ForceReconcileLabel string = "operator.dataverse.redhat.com/force-reconcile"
+	// SyncDestinationLabel when set together with ForceReconcileLabel means "only sync to destination" (set by ChunksGenerator when chunks are ready).
+	// If only ForceReconcileLabel is set (e.g. by SQS on new file), UnstructuredDataProduct runs full pipeline instead.
+	SyncDestinationLabel string = "operator.dataverse.redhat.com/sync-destination"
 )
 
 func ForceReconcilePredicate() predicate.Predicate {
@@ -84,6 +87,54 @@ func AddForceReconcileLabel(ctx context.Context, c client.Client, obj client.Obj
 		labels = make(map[string]string)
 	}
 	labels[ForceReconcileLabel] = "true"
+	obj.SetLabels(labels)
+	return c.Update(ctx, obj)
+}
+
+// AddForceReconcileAndSyncDestinationLabel adds both labels so UnstructuredDataProduct runs destination-only (used by ChunksGenerator when chunks are ready).
+func AddForceReconcileAndSyncDestinationLabel(ctx context.Context, c client.Client, obj client.Object) error {
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[ForceReconcileLabel] = "true"
+	labels[SyncDestinationLabel] = "true"
+	obj.SetLabels(labels)
+	return c.Update(ctx, obj)
+}
+
+// RemoveSyncDestinationLabel removes the sync-destination label (call after destination-only reconcile).
+func RemoveSyncDestinationLabel(ctx context.Context, c client.Client, obj client.Object) error {
+	labels := obj.GetLabels()
+	if labels == nil {
+		return nil
+	}
+	if _, ok := labels[SyncDestinationLabel]; !ok {
+		return nil
+	}
+	delete(labels, SyncDestinationLabel)
+	obj.SetLabels(labels)
+	return c.Update(ctx, obj)
+}
+
+// RemoveForceReconcileAndSyncDestinationLabels removes both labels (call after destination-only reconcile).
+func RemoveForceReconcileAndSyncDestinationLabels(ctx context.Context, c client.Client, obj client.Object) error {
+	labels := obj.GetLabels()
+	if labels == nil {
+		return nil
+	}
+	changed := false
+	if _, ok := labels[ForceReconcileLabel]; ok {
+		delete(labels, ForceReconcileLabel)
+		changed = true
+	}
+	if _, ok := labels[SyncDestinationLabel]; ok {
+		delete(labels, SyncDestinationLabel)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
 	obj.SetLabels(labels)
 	return c.Update(ctx, obj)
 }
