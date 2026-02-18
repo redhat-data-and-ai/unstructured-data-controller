@@ -103,8 +103,25 @@ spec:
                 - strategy
                 type: object
               destinationConfig:
+                description: DestinationConfig defines where to write processed data
+                  (e.g. Snowflake internal stage or S3).
                 properties:
+                  s3DestinationConfig:
+                    description: S3DestinationConfig configures pushing chunked output
+                      to an S3 bucket (e.g. LocalStack or AWS).
+                    properties:
+                      bucket:
+                        type: string
+                      prefix:
+                        type: string
+                      s3SecretName:
+                        type: string
+                    required:
+                    - bucket
+                    type: object
                   snowflakeInternalStageConfig:
+                    description: SnowflakeInternalStageConfig configures a Snowflake
+                      database schema and internal stage.
                     properties:
                       database:
                         type: string
@@ -151,8 +168,12 @@ spec:
                     type: string
                 type: object
               sourceConfig:
+                description: SourceConfig defines where to read unstructured data
+                  from (e.g. S3).
                 properties:
                   s3Config:
+                    description: S3Config configures an S3 bucket and optional prefix
+                      as a source.
                     properties:
                       bucket:
                         type: string

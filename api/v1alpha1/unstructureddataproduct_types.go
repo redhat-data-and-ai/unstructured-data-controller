@@ -29,6 +29,7 @@ type (
 const (
 	SourceTypeS3                       UnstructuredDataSourceType      = "s3"
 	DestinationTypeInternalStage       UnstructuredDataDestinationType = "snowflakeInternalStage"
+	DestinationTypeS3                  UnstructuredDataDestinationType = "s3"
 	ChunkingStrategyRecursiveCharacter ChunkingStrategy                = "recursiveCharacterTextSplitter"
 	ChunkingStrategyMarkdown           ChunkingStrategy                = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy                = "tokenTextSplitter"
@@ -94,21 +95,33 @@ type UnstructuredDataProductSpec struct {
 	ChunksGeneratorConfig   ChunksGeneratorConfig   `json:"chunksGeneratorConfig,omitempty"`
 }
 
+// SourceConfig defines where to read unstructured data from (e.g. S3).
 type SourceConfig struct {
 	Type     UnstructuredDataSourceType `json:"type,omitempty"`
 	S3Config S3Config                   `json:"s3Config,omitempty"`
 }
 
+// S3Config configures an S3 bucket and optional prefix as a source.
 type S3Config struct {
 	Bucket string `json:"bucket,omitempty"`
 	Prefix string `json:"prefix,omitempty"`
 }
 
+// DestinationConfig defines where to write processed data (e.g. Snowflake internal stage or S3).
 type DestinationConfig struct {
 	Type                         UnstructuredDataDestinationType `json:"type,omitempty"`
 	SnowflakeInternalStageConfig SnowflakeInternalStageConfig    `json:"snowflakeInternalStageConfig,omitempty"`
+	S3DestinationConfig          S3DestinationConfig             `json:"s3DestinationConfig,omitempty"`
 }
 
+// S3DestinationConfig configures pushing chunked output to an S3 bucket (e.g. LocalStack or AWS).
+type S3DestinationConfig struct {
+	Bucket       string `json:"bucket"`
+	Prefix       string `json:"prefix,omitempty"`
+	S3SecretName string `json:"s3SecretName,omitempty"`
+}
+
+// SnowflakeInternalStageConfig configures a Snowflake database schema and internal stage.
 type SnowflakeInternalStageConfig struct {
 	Stage    string `json:"stage,omitempty"`
 	Database string `json:"database,omitempty"`
