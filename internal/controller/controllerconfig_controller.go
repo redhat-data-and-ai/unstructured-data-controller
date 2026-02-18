@@ -130,37 +130,37 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		logger.Info("Presign client created ...")
 
 		// Get the snowflake client config from the ControllerConfig CR
-		snowflakeConfig := config.Spec.SnowflakeConfig
-		snowflakeClientConfig, result, err := r.createSnowflakeConfig(ctx, req.Namespace, snowflakeConfig)
-		if err != nil {
-			return result, err
-		}
+		// snowflakeConfig := config.Spec.SnowflakeConfig
+		// snowflakeClientConfig, result, err := r.createSnowflakeConfig(ctx, req.Namespace, snowflakeConfig)
+		// if err != nil {
+		// 	return result, err
+		// }
 
-		if snowflakeClientConfig == nil {
-			logger.Info("waiting for snowflake secret to be created, will retry in 10 seconds...")
-			return ctrl.Result{
-				Requeue:      true,
-				RequeueAfter: 10 * time.Second,
-			}, nil
-		}
+		// if snowflakeClientConfig == nil {
+		// 	logger.Info("waiting for snowflake secret to be created, will retry in 10 seconds...")
+		// 	return ctrl.Result{
+		// 		Requeue:      true,
+		// 		RequeueAfter: 10 * time.Second,
+		// 	}, nil
+		// }
 
-		logger.Info("creating snowflake client and validating if snowflake connection is healthy for " + snowflakeConfig.Name)
-		_, err = r.createAndValidateSfClient(ctx, *snowflakeClientConfig)
-		if err != nil {
-			logger.Error(err, "failed to ping snowflake for "+snowflakeConfig.Name+". re-attempting to ping snowflake in 10 seconds")
-			config.UpdateStatus(err)
-			if err := r.Status().Update(ctx, &config); err != nil {
-				return ctrl.Result{}, err
-			}
-			logger.Info("re-attempting to ping snowflake in 10 seconds")
-			return ctrl.Result{
-				Requeue:      true,
-				RequeueAfter: 10 * time.Second,
-			}, nil
-		}
+		// logger.Info("creating snowflake client and validating if snowflake connection is healthy for " + snowflakeConfig.Name)
+		// _, err = r.createAndValidateSfClient(ctx, *snowflakeClientConfig)
+		// if err != nil {
+		// 	logger.Error(err, "failed to ping snowflake for "+snowflakeConfig.Name+". re-attempting to ping snowflake in 10 seconds")
+		// 	config.UpdateStatus(err)
+		// 	if err := r.Status().Update(ctx, &config); err != nil {
+		// 		return ctrl.Result{}, err
+		// 	}
+		// 	logger.Info("re-attempting to ping snowflake in 10 seconds")
+		// 	return ctrl.Result{
+		// 		Requeue:      true,
+		// 		RequeueAfter: 10 * time.Second,
+		// 	}, nil
+		// }
 
-		logger.Info("snowflake connection is healthy for " + snowflakeConfig.Name)
-		logger.Info("Snowflake client created and connection validated ...")
+		// logger.Info("snowflake connection is healthy for " + snowflakeConfig.Name)
+		// logger.Info("Snowflake client created and connection validated ...")
 	}
 
 	ingestionBucket = config.Spec.UnstructuredDataProcessingConfig.IngestionBucket

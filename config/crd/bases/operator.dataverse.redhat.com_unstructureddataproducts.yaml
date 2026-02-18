@@ -104,6 +104,15 @@ spec:
                 type: object
               destinationConfig:
                 properties:
+                  s3DestinationConfig:
+                    description: S3DestinationConfig configures pushing chunked output
+                      to an S3 bucket (e.g. LocalStack or AWS).
+                    properties:
+                      bucket:
+                        type: string
+                      prefix:
+                        type: string
+                    type: object
                   snowflakeInternalStageConfig:
                     properties:
                       database:

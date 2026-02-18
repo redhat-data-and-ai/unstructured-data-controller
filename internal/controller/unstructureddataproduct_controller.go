@@ -31,6 +31,7 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
@@ -79,14 +80,6 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status")
 		return ctrl.Result{}, err
 	}
-
-	// get the snowflake client
-	sf, err := snowflake.GetClient()
-	if err != nil {
-		logger.Error(err, "failed to get snowflake client")
-		return ctrl.Result{}, err
-	}
-	r.sf = sf
 
 	// first, let's create (or update) the DocumentProcessor CR for this data product
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
@@ -205,13 +198,30 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	var destination unstructured.Destination
 	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
 	case operatorv1alpha1.DestinationTypeInternalStage:
-
+		sf, err := snowflake.GetClient()
+		if err != nil {
+			logger.Error(err, "failed to get snowflake client")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+		r.sf = sf
 		destination = &unstructured.SnowflakeInternalStage{
 			Client:   sf,
 			Role:     sf.GetRole(),
 			Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
 			Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
 			Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		}
+	case operatorv1alpha1.DestinationTypeS3:
+		s3Client, err := awsclienthandler.GetS3Client()
+		if err != nil {
+			logger.Error(err, "failed to get S3 client for destination")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+		destCfg := unstructuredDataProductCR.Spec.DestinationConfig.S3DestinationConfig
+		destination = &unstructured.S3Destination{
+			S3Client: s3Client,
+			Bucket:   destCfg.Bucket,
+			Prefix:   destCfg.Prefix,
 		}
 	default:
 		err := fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
