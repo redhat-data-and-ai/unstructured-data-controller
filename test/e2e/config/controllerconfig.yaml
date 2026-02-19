@@ -1,0 +1,23 @@
+# E2E ControllerConfig: applied with -n <testNamespace> by main_test.go.
+# Values match in-cluster e2e (docling-serve, localstack buckets). No script or env vars needed.
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: ControllerConfig
+metadata:
+  name: controllerconfig
+spec:
+  awsSecret: aws-secret
+  snowflakeConfig:
+    name: "e2e"
+    account: "account-identifier"
+    user: "username"
+    role: "testing_role"
+    region: "us-west-2"
+    warehouse: "DEFAULT"
+    privateKeySecret: private-key
+  unstructuredDataProcessingConfig:
+    doclingServeURL: "http://docling-serve:5001"
+    ingestionBucket: "unstructured-bucket"
+    dataStorageBucket: "data-storage-bucket"
+    cacheDirectory: "/tmp/cache/"
+    maxConcurrentDoclingTasks: 5
+    maxConcurrentLangchainTasks: 10

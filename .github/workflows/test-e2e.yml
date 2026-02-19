@@ -2,27 +2,64 @@ name: E2E Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
+    branches: [main]
+
+env:
+  KIND_CLUSTER: unstructured-data-controller-test-e2e
+  NAMESPACE: unstructured-controller-namespace
+  IMG: ghcr.io/${{ github.repository }}/unstructured-data-controller:e2e-${{ github.sha }}
+
 jobs:
   test-e2e:
-    name: Run on Ubuntu
+    name: E2E Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v5
-        name: checkout the code
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
-        name: setup go
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: "go.mod"
-          go-version: "1.24.x"
+          cache: false
 
-      - name: setup the latest version of kind
+      - name: Create Kind cluster
         uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER }}
 
-      - name: verify installation
+      - name: Create test namespace
+        run: |
+          kubectl create namespace ${{ env.NAMESPACE }}
+
+      - name: Verify Kind and kubectl
         run: |
           kind version
-          kubectl version
+
+      - name: Build manager image
+        run: make docker-build IMG=${{ env.IMG }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR
+        run: make docker-push IMG=${{ env.IMG }}
+
+      - name: Run e2e tests
+        env:
+          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
+          IMG: ${{ env.IMG }}
+          SKIP_CLUSTER_SETUP: "true"
+          SKIP_CONTROLLER_CONFIG_READY: "true"
+        run: make test-e2e

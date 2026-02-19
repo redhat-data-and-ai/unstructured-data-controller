@@ -28,8 +28,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/env"
@@ -114,7 +112,7 @@ func TestConfigHealthy(t *testing.T) {
 	t.Log("ControllerConfig is healthy (validated in testSetup)")
 }
 
-func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envconf.Config) error {
+func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.Config) error {
 	// change dir for Makefile or it will fail
 	if err := os.Chdir("../../"); err != nil {
 		log.Printf("Unable to set working directory: %s", err)
@@ -142,6 +140,7 @@ func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envcon
 		log.Printf("Deployment not found: %s", p.Err())
 		return p.Err()
 	}
+
 	log.Printf("Deployment %s found in namespace %s", deploymentName, testNamespace)
 
 	log.Println("Patching controller-manager to add cache directory volume...")
@@ -200,27 +199,27 @@ func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envcon
 		logFile.Close()
 	}
 
-	log.Println("Creating snowflake secret with private key")
-	secretFile := os.Getenv("SNOWFLAKE_SECRET_FILE")
-	if secretFile == "" {
-		return fmt.Errorf("SNOWFLAKE_SECRET_FILE environment variable is required for snowflake secret")
-	}
+	// log.Println("Creating snowflake secret with private key")
+	// secretFile := os.Getenv("SNOWFLAKE_SECRET_FILE")
+	// if secretFile == "" {
+	// 	return fmt.Errorf("SNOWFLAKE_SECRET_FILE environment variable is required for snowflake secret")
+	// }
 
-	// Verify file exists
-	if _, err := os.Stat(secretFile); err != nil {
-		log.Printf("Secret file does not exist or cannot be accessed: %s", err)
-		return fmt.Errorf("secret file not found: %s", secretFile)
-	}
+	// // Verify file exists
+	// if _, err := os.Stat(secretFile); err != nil {
+	// 	log.Printf("Secret file does not exist or cannot be accessed: %s", err)
+	// 	return fmt.Errorf("secret file not found: %s", secretFile)
+	// }
 
-	secretCreateCmd := fmt.Sprintf("kubectl create secret generic %s -n %s --from-file=privateKey=%s",
-		snowflakeSecretName, testNamespace, secretFile)
-	log.Println("Running command to create snowflake secret...")
-	if p := utils.RunCommand(secretCreateCmd); p.Err() != nil {
-		log.Printf("Failed to create snowflake secret: %s", p.Err())
-		log.Printf("Command output: %s", p.Result())
-		return p.Err()
-	}
-	log.Println("Snowflake secret created successfully")
+	// secretCreateCmd := fmt.Sprintf("kubectl create secret generic %s -n %s --from-file=privateKey=%s",
+	// 	snowflakeSecretName, testNamespace, secretFile)
+	// log.Println("Running command to create snowflake secret...")
+	// if p := utils.RunCommand(secretCreateCmd); p.Err() != nil {
+	// 	log.Printf("Failed to create snowflake secret: %s", p.Err())
+	// 	log.Printf("Command output: %s", p.Result())
+	// 	return p.Err()
+	// }
+	// log.Println("Snowflake secret created successfully")
 
 	log.Println("Creating aws-secret from config/samples/aws-secret.yaml")
 	if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f config/samples/aws-secret.yaml", testNamespace)); p.Err() != nil {
@@ -288,16 +287,17 @@ func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envcon
 		*runningProcesses = append(*runningProcesses, *pf)
 	}
 
-	log.Println("Creating ControllerConfig CR...")
-	if err := v1alpha1.AddToScheme(client.Resources(testNamespace).GetScheme()); err != nil {
-		return err
-	}
-	configCR := getControllerConfigResource()
-	if err := client.Resources().Create(ctx, configCR); err != nil {
-		log.Printf("failed to create ControllerConfig: %s", err)
-		return err
+	log.Println("Applying ControllerConfig from test/e2e/config/controllerconfig.yaml...")
+	if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f test/e2e/config/controllerconfig.yaml", testNamespace)); p.Err() != nil {
+		log.Printf("failed to apply ControllerConfig: %s %s", p.Err(), p.Result())
+		return p.Err()
 	}
 
+	skipConfigReady := os.Getenv("SKIP_CONTROLLER_CONFIG_READY")
+	if skipConfigReady == "true" {
+		log.Println("SKIP_CONTROLLER_CONFIG_READY=true: skipping wait for ConfigReady (e.g. CI without Snowflake secret)")
+		return nil
+	}
 	log.Println("Waiting for ControllerConfig to be healthy (ConfigReady=true)...")
 	configWaitCmd := fmt.Sprintf(
 		"kubectl wait --for=condition=ConfigReady=true controllerconfigs.operator.dataverse.redhat.com/controllerconfig -n %s --timeout=2m",
@@ -309,51 +309,6 @@ func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envcon
 	}
 	log.Println("ControllerConfig is healthy")
 	return nil
-}
-
-func getControllerConfigResource() *v1alpha1.ControllerConfig {
-	account := os.Getenv("ACCOUNT")
-	user := os.Getenv("USER")
-	role := os.Getenv("ROLE")
-	warehouse := os.Getenv("WAREHOUSE")
-	if account == "" {
-		account = "account-identifier"
-	}
-	if user == "" {
-		user = "username"
-	}
-	if role == "" {
-		role = "role"
-	}
-	if warehouse == "" {
-		warehouse = "DEFAULT"
-	}
-	return &v1alpha1.ControllerConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "controllerconfig",
-			Namespace: testNamespace,
-		},
-		Spec: v1alpha1.ControllerConfigSpec{
-			AWSSecret: "aws-secret",
-			SnowflakeConfig: v1alpha1.SnowflakeConfig{
-				Name:             "e2e",
-				Account:          account,
-				User:             user,
-				Role:             role,
-				Region:           "us-west-2",
-				Warehouse:        warehouse,
-				PrivateKeySecret: snowflakeSecretName,
-			},
-			UnstructuredDataProcessingConfig: v1alpha1.UnstructuredDataProcessingConfigSpec{
-				DoclingServeURL:             "http://docling-serve:5001",
-				IngestionBucket:             "unstructured-bucket",
-				DataStorageBucket:           "data-storage-bucket",
-				CacheDirectory:              "/tmp/cache/",
-				MaxConcurrentDoclingTasks:   5,
-				MaxConcurrentLangchainTasks: 10,
-			},
-		},
-	}
 }
 
 func testCleanup(_ context.Context, _ *envconf.Config, runningProcesses *[]exec.Cmd) error {
