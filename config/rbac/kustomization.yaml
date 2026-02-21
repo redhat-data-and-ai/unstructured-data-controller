@@ -22,18 +22,3 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the unstructured-data-controller itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- controllerconfig_admin_role.yaml
-- controllerconfig_editor_role.yaml
-- controllerconfig_viewer_role.yaml
-- chunksgenerator_admin_role.yaml
-- chunksgenerator_editor_role.yaml
-- chunksgenerator_viewer_role.yaml
-- sqsconsumer_admin_role.yaml
-- sqsconsumer_editor_role.yaml
-- sqsconsumer_viewer_role.yaml
-- unstructureddataproduct_admin_role.yaml
-- unstructureddataproduct_editor_role.yaml
-- unstructureddataproduct_viewer_role.yaml
-- documentprocessor_admin_role.yaml
-- documentprocessor_editor_role.yaml
-- documentprocessor_viewer_role.yaml

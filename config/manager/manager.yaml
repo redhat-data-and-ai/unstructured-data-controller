@@ -63,8 +63,14 @@ spec:
         args:
         - --leader-elect
         - --health-probe-bind-address=:8081
+        - --watch-namespace=$(WATCH_NAMESPACE)
         image: controller:latest
         name: manager
+        env:
+        - name: WATCH_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

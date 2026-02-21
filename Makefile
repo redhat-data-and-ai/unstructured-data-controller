@@ -28,8 +28,8 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 # This variable is used to construct full image tags for bundle and catalog images.
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
-# dataverse.redhat.com/unstructured-data-controller-bundle:$VERSION and dataverse.redhat.com/unstructured-data-controller-catalog:$VERSION.
-IMAGE_TAG_BASE ?= dataverse.redhat.com/unstructured-data-controller
+# ghcr.io/redhat-data-and-ai/unstructured-data-controller-bundle:$VERSION and ghcr.io/redhat-data-and-ai/unstructured-data-controller-catalog:$VERSION.
+IMAGE_TAG_BASE ?= ghcr.io/redhat-data-and-ai/unstructured-data-controller
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -50,7 +50,7 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.42.0
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= $(IMAGE_TAG_BASE):latest
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -133,8 +133,8 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	esac
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
+test-e2e: setup-test-e2e manifests generate fmt vet
+	go test -count=1 -tags e2e ./test/e2e/ -v
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
