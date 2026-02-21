@@ -161,6 +161,8 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}, nil
 	}
 
+	// add force reconcile to udp here
+
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	key := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Name}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -214,6 +216,20 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 		logger.Error(err, "failed to store chunks file")
 		return err
 	}
+
+	// apply force reconcile label to the unstructured data product
+	unstructuredDataProductKey := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Spec.DataProduct}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		unstructuredDataProduct := &operatorv1alpha1.UnstructuredDataProduct{}
+		if err := r.Get(ctx, unstructuredDataProductKey, unstructuredDataProduct); err != nil {
+			return err
+		}
+		return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct)
+	}); err != nil {
+		logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
+		return err
+	}
+
 	return nil
 }
 

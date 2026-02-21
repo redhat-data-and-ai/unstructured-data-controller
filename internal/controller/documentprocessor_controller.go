@@ -172,10 +172,17 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.handleError(ctx, documentProcessorCR, errors.New("failed to process jobs or documents"))
 	}
 
-	toRequeue := len(documentProcessorCR.Status.Jobs) > 0
+	// Get the latest version of Documeb
+	latestDocumentProcessor := &operatorv1alpha1.DocumentProcessor{}
+	if err := r.Get(ctx, req.NamespacedName, latestDocumentProcessor); err != nil {
+		logger.Error(err, "failed to get latest DocumentProcessor CR")
+		return ctrl.Result{}, err
+	}
+
+	toRequeue := len(latestDocumentProcessor.Status.Jobs) > 0
 
 	if toRequeue {
-		logger.Info("some jobs are still pending or running, will requeue after a bit ...")
+		logger.Info("some jobs are still pending or running, will requeue after a bit ...", "jobCount", len(latestDocumentProcessor.Status.Jobs))
 		return ctrl.Result{
 			RequeueAfter: requeueAfter,
 		}, nil

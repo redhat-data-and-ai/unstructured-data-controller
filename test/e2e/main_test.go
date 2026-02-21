@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
+	operatorUtils "github.com/redhat-data-and-ai/unstructured-data-controller/test/utils"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/env"
@@ -40,12 +42,19 @@ import (
 var (
 	testenv         env.Environment
 	kindClusterName string
+	// doclingServeURL = fmt.Sprintf("http://%s:%s", doclingServeHost, doclingServePort)
+	localstackURL = fmt.Sprintf("http://%s:%s", localstackHost, localstackPort)
 )
 
 const (
 	testNamespace       = "unstructured-controller-namespace"
 	deploymentName      = "unstructured-controller-manager"
 	snowflakeSecretName = "private-key"
+	// doclingServeHost    = "localhost"
+	// doclingServePort    = "5002"
+
+	localstackHost = "localhost"
+	localstackPort = "4566"
 )
 
 func TestMain(m *testing.M) {
@@ -112,7 +121,7 @@ func TestConfigHealthy(t *testing.T) {
 	t.Log("ControllerConfig is healthy (validated in testSetup)")
 }
 
-func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.Config) error {
+func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envconf.Config) error {
 	// change dir for Makefile or it will fail
 	if err := os.Chdir("../../"); err != nil {
 		log.Printf("Unable to set working directory: %s", err)
@@ -140,10 +149,9 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 		log.Printf("Deployment not found: %s", p.Err())
 		return p.Err()
 	}
-
 	log.Printf("Deployment %s found in namespace %s", deploymentName, testNamespace)
 
-	log.Println("Patching controller-manager to add cache directory volume...")
+	log.Println("Patching controller-manager to add cache directory volume and increase memory limits...")
 	patchCommand := fmt.Sprintf(`kubectl patch deployment %s -n %s --type=json -p '[
 	{
 		"op": "replace",
@@ -164,6 +172,20 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 				"mountPath": "/tmp/cache"
 			}
 		]
+	},
+	{
+		"op": "replace",
+		"path": "/spec/template/spec/containers/0/resources",
+		"value": {
+			"limits": {
+				"cpu": "2",
+				"memory": "2Gi"
+			},
+			"requests": {
+				"cpu": "500m",
+				"memory": "512Mi"
+			}
+		}
 	}
 	]'`, deploymentName, testNamespace)
 
@@ -172,7 +194,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 		log.Printf("Command output: %s", p.Result())
 		return p.Err()
 	}
-	log.Println("Successfully patched deployment with cache volume")
+	log.Println("Successfully patched deployment with cache volume and increased memory limits")
 
 	log.Println("Waiting for controller-manager deployment to be available...")
 	client := config.Client()
@@ -199,27 +221,27 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 		logFile.Close()
 	}
 
-	// log.Println("Creating snowflake secret with private key")
-	// secretFile := os.Getenv("SNOWFLAKE_SECRET_FILE")
-	// if secretFile == "" {
-	// 	return fmt.Errorf("SNOWFLAKE_SECRET_FILE environment variable is required for snowflake secret")
-	// }
+	log.Println("Creating snowflake secret with private key")
+	secretFile := os.Getenv("SNOWFLAKE_SECRET_FILE")
+	if secretFile == "" {
+		return fmt.Errorf("SNOWFLAKE_SECRET_FILE environment variable is required for snowflake secret")
+	}
 
-	// // Verify file exists
-	// if _, err := os.Stat(secretFile); err != nil {
-	// 	log.Printf("Secret file does not exist or cannot be accessed: %s", err)
-	// 	return fmt.Errorf("secret file not found: %s", secretFile)
-	// }
+	// Verify file exists
+	if _, err := os.Stat(secretFile); err != nil {
+		log.Printf("Secret file does not exist or cannot be accessed: %s", err)
+		return fmt.Errorf("secret file not found: %s", secretFile)
+	}
 
-	// secretCreateCmd := fmt.Sprintf("kubectl create secret generic %s -n %s --from-file=privateKey=%s",
-	// 	snowflakeSecretName, testNamespace, secretFile)
-	// log.Println("Running command to create snowflake secret...")
-	// if p := utils.RunCommand(secretCreateCmd); p.Err() != nil {
-	// 	log.Printf("Failed to create snowflake secret: %s", p.Err())
-	// 	log.Printf("Command output: %s", p.Result())
-	// 	return p.Err()
-	// }
-	// log.Println("Snowflake secret created successfully")
+	secretCreateCmd := fmt.Sprintf("kubectl create secret generic %s -n %s --from-file=privateKey=%s",
+		snowflakeSecretName, testNamespace, secretFile)
+	log.Println("Running command to create snowflake secret...")
+	if p := utils.RunCommand(secretCreateCmd); p.Err() != nil {
+		log.Printf("Failed to create snowflake secret: %s", p.Err())
+		log.Printf("Command output: %s", p.Result())
+		return p.Err()
+	}
+	log.Println("Snowflake secret created successfully")
 
 	log.Println("Creating aws-secret from config/samples/aws-secret.yaml")
 	if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f config/samples/aws-secret.yaml", testNamespace)); p.Err() != nil {
@@ -267,7 +289,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 			log.Printf("Failed to deploy docling-serve: %s %s", p.Err(), p.Result())
 			return p.Err()
 		}
-		log.Println("Waiting for docling-serve to be ready...")
+		log.Println("Waiting for docling-serve deployment to be available...")
 		if err := wait.For(
 			conditions.New(client.Resources()).DeploymentAvailable("docling-serve", testNamespace),
 			wait.WithTimeout(10*time.Minute),
@@ -276,6 +298,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 			log.Printf("Timed out waiting for docling-serve: %s", err)
 			return err
 		}
+
 		log.Println("Port-forwarding docling-serve to localhost:5002")
 		pf := exec.Command("kubectl", "port-forward", "-n", testNamespace, "services/docling-serve", "5002:5001")
 		pf.Stdout = os.Stdout
@@ -285,12 +308,26 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 			return err
 		}
 		*runningProcesses = append(*runningProcesses, *pf)
+
+		log.Println("Waiting for docling-serve /health endpoint to respond...")
+		healthCheckCmd := `sh -c 'for i in $(seq 1 60); do if curl -sf http://localhost:5002/health > /dev/null 2>&1; then exit 0; fi; sleep 2; done; exit 1'`
+		if p := utils.RunCommand(healthCheckCmd); p.Err() != nil {
+			log.Printf("Health check failed or timed out: %s", p.Err())
+			return fmt.Errorf("docling-serve health endpoint not responding")
+		}
+		log.Println("Health endpoint responding. Waiting additional 3 minutes for model downloads...")
+		time.Sleep(3 * time.Minute)
+		log.Println("docling-serve should be ready!")
 	}
 
-	log.Println("Applying ControllerConfig from test/e2e/config/controllerconfig.yaml...")
-	if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f test/e2e/config/controllerconfig.yaml", testNamespace)); p.Err() != nil {
-		log.Printf("failed to apply ControllerConfig: %s %s", p.Err(), p.Result())
-		return p.Err()
+	log.Println("Creating ControllerConfig from test utils...")
+	if err := v1alpha1.AddToScheme(client.Resources(testNamespace).GetScheme()); err != nil {
+		return fmt.Errorf("add v1alpha1 scheme: %w", err)
+	}
+	controllerConfig := operatorUtils.GetControllerConfigResource()
+	if err := client.Resources(testNamespace).Create(ctx, &controllerConfig); err != nil {
+		log.Printf("failed to create ControllerConfig: %s", err)
+		return err
 	}
 
 	skipConfigReady := os.Getenv("SKIP_CONTROLLER_CONFIG_READY")

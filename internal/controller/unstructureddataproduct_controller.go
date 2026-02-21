@@ -124,7 +124,13 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			ChunksGeneratorConfig: unstructuredDataProductCR.Spec.ChunksGeneratorConfig,
 		},
 	}
-	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, chunksGeneratorCR, func() error { return nil })
+	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, chunksGeneratorCR, func() error {
+		chunksGeneratorCR.Spec = operatorv1alpha1.ChunksGeneratorSpec{
+			DataProduct:           dataProductName,
+			ChunksGeneratorConfig: unstructuredDataProductCR.Spec.ChunksGeneratorConfig,
+		}
+		return nil
+	})
 	if err != nil {
 		logger.Error(err, "failed to create/update ChunksGenerator CR")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
