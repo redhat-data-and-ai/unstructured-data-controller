@@ -47,6 +47,7 @@ type UnstructuredDataProcessingConfigSpec struct {
 
 	IngestionBucket string `json:"ingestionBucket,omitempty"`
 	DoclingServeURL string `json:"doclingServeURL,omitempty"`
+	DoclingSecret   string `json:"doclingSecret,omitempty"`
 
 	CacheDirectory    string `json:"cacheDirectory,omitempty"`
 	DataStorageBucket string `json:"dataStorageBucket,omitempty"`

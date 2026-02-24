@@ -55,9 +55,17 @@ Edit `test/resources/unstructured/aws-secret.yaml` if you need different values 
 - Linux: `http://host.docker.internal:4566` (if the cluster allows it)
 - Or your host machine’s IP and port 4566, or a port-forward to the LocalStack port
 
-## 4. Create the ControllerConfig custom resource
+## 4. Create Docling Secret
 
-Create the ControllerConfig CR so the controller can use the AWS secret and ingestion bucket name. The bucket name in the CR must match the bucket you created in step 2.
+Create the docling secret if the docling is behind bearer token auth, you can skip this if docling service does not require token
+
+```bash
+kubectl apply -f test/resources/unstructured/docling-secret.yaml -n default
+```
+
+## 5. Create the ControllerConfig custom resource
+
+Create the ControllerConfig CR so the controller can use the AWS secret, docling secret and ingestion bucket name. The bucket name in the CR must match the bucket you created in step 2.
 
 Example (from the sample manifest):
 
@@ -73,6 +81,8 @@ spec:
   awsSecret: aws-secret
   unstructuredDataProcessingConfig:
     ingestionBucket: data-ingestion-bucket
+    doclingServeURL: "http://localhost:5002"
+    doclingSecret: docling-secret
 ```
 
 Apply the sample or your own manifest (use the same namespace where you created the secret):

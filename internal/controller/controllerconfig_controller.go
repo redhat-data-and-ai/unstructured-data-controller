@@ -172,13 +172,28 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	doclingServeURL := config.Spec.UnstructuredDataProcessingConfig.DoclingServeURL
 
+	doclingConfig := &docling.ClientConfig{
+		URL:                   doclingServeURL,
+		MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
+	}
+
+	if config.Spec.UnstructuredDataProcessingConfig.DoclingSecret != "" {
+		// get docling secret
+		doclingSecret := &corev1.Secret{}
+		if err := r.Get(ctx,
+			types.NamespacedName{Name: config.Spec.UnstructuredDataProcessingConfig.DoclingSecret, Namespace: req.Namespace}, doclingSecret); err != nil {
+			logger.Error(err, fmt.Sprintf("error fetching docling secret %s, retrying in 10 seconds ", config.Spec.UnstructuredDataProcessingConfig.DoclingSecret))
+			return ctrl.Result{
+				Requeue:      true,
+				RequeueAfter: 10 * time.Second,
+			}, nil
+		}
+
+		doclingConfig.Key = string(doclingSecret.Data["USER_KEY"])
+	}
+
 	// initialize the docling client
-	doclingClient = docling.NewClientFromURL(
-		&docling.ClientConfig{
-			URL:                   doclingServeURL,
-			MaxConcurrentRequests: int64(config.Spec.UnstructuredDataProcessingConfig.MaxConcurrentDoclingTasks),
-		},
-	)
+	doclingClient = docling.NewClientFromURL(doclingConfig)
 
 	// initialze langchain client
 	langchainClient = langchain.NewClient(

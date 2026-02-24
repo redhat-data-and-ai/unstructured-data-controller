@@ -140,8 +140,6 @@ spec:
                         type: array
                       pdf_backend:
                         type: string
-                      return_as_file:
-                        type: boolean
                       table_mode:
                         type: string
                       to_formats:
