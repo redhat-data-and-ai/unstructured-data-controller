@@ -191,7 +191,6 @@ spec:
       pdf_backend: "pypdf"                  # Options: ["pypdf", "pdfminer"]
       table_mode: "none"                    # Options: ["none", "basic", "advanced"]
       abort_on_error: true                  # Stop processing if errors occur - Options: [true, false]
-      return_as_file: true                  # Return processed content as files - Options: [true, false]
 
   # Chunk Generation Configuration
   chunksGeneratorConfig:

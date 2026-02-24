@@ -17,6 +17,7 @@ spec:
     privateKeySecret: rhplatformtest-private-key
   unstructuredDataProcessingConfig:
     doclingServeURL: "http://localhost:5002"
+    doclingSecret: docling-secret
     ingestionBucket: "data-ingestion-bucket"
     dataStorageBucket: "data-storage-bucket"
     cacheDirectory: "/tmp/cache/"

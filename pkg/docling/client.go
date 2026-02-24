@@ -59,19 +59,20 @@ type DoclingConfig struct {
 	PDFBackend      string   `json:"pdf_backend"`
 	TableMode       string   `json:"table_mode"`
 	AbortOnError    bool     `json:"abort_on_error"`
-	ReturnAsFile    bool     `json:"return_as_file"`
 }
 
 type ClientConfig struct {
 	URL                   string
+	Key                   string
 	MaxConcurrentRequests int64
 
 	sem *semaphore.Weighted
 }
 
 type DoclingSource struct {
-	URL  string `json:"url"`
-	Kind string `json:"kind"`
+	URL     string            `json:"url"`
+	Kind    string            `json:"kind"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 type DoclingRequestPayload struct {
@@ -91,6 +92,7 @@ type DoclingResponse struct {
 }
 
 type DoclingResponseDocument struct {
+	FileName       string `json:"filename"`
 	MDContent      string `json:"md_content"`
 	HTMLContent    string `json:"html_content"`
 	TextContent    string `json:"text_content"`
@@ -107,6 +109,7 @@ type TaskStatusResponse struct {
 	TaskID       string     `json:"task_id"`
 	TaskStatus   TaskStatus `json:"task_status"`
 	TaskPosition int        `json:"task_position"`
+	ErrorMessage string     `json:"error_message,omitempty"`
 }
 
 func NewClientFromURL(clientConfig *ClientConfig) *Client {
@@ -139,7 +142,6 @@ func mergeDoclingConfigs(doclingConfig DoclingConfig) (DoclingConfig, error) {
 		PDFBackend:      "dlparse_v4",
 		TableMode:       "fast",
 		AbortOnError:    true,
-		ReturnAsFile:    false,
 	}
 
 	err := mergo.Merge(&doclingConfig, defaultDoclingConfig, mergo.WithOverride)
@@ -147,6 +149,58 @@ func mergeDoclingConfigs(doclingConfig DoclingConfig) (DoclingConfig, error) {
 		return DoclingConfig{}, fmt.Errorf("failed to merge docling configs: %w", err)
 	}
 	return doclingConfig, nil
+}
+
+func (c *Client) createHTTPRequest(ctx context.Context, method, endpoint string, payload []byte, authFormat string) (
+	*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if c.ClientConfig.Key != "" {
+		req.Header.Set("Authorization", fmt.Sprintf(authFormat, c.ClientConfig.Key))
+	}
+	return req, nil
+}
+
+func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint string, payload []byte) (
+	io.ReadCloser, error) {
+	logger := log.FromContext(ctx)
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+	}
+
+	req, err := c.createHTTPRequest(ctx, method, endpoint, payload, "Bearer %s")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	logger.Info("sending request to docling service", "url", endpoint)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusForbidden && c.ClientConfig.Key != "" {
+		req, err = c.createHTTPRequest(ctx, method, endpoint, payload, "%s")
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to send request: %w", err)
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		logger.Error(errors.New("received non-200 OK response from endpoint"),
+			"status code", resp.StatusCode, "url", endpoint)
+		return nil, fmt.Errorf("failed to process request: status code %d", resp.StatusCode)
+	}
+
+	return resp.Body, nil
 }
 
 func (c *Client) ConvertFile(
@@ -183,42 +237,29 @@ func (c *Client) ConvertFile(
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal config to docling payload: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, convertSourceAsyncEndpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
 	logger.Info("sending request to convert file", "url", convertSourceAsyncEndpoint, "http source", fileURL)
-	resp, err := client.Do(req)
+	// convert response to AsyncDoclingResponse
+	var asyncResponse AsyncDoclingResponse
+	responseBody, err := c.createDoclingRequest(ctx, http.MethodPost, convertSourceAsyncEndpoint, payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return nil, fmt.Errorf("failed to get response body: %w", err)
 	}
-	defer func() {
-		if err = resp.Body.Close(); err != nil {
-			err = fmt.Errorf("failed to close response body: %w", err)
-		}
-	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(responseBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-	logger.Info("docling response body", "body", string(body))
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to convert file: status code %d", resp.StatusCode)
-	}
-
-	// convert response to AsyncDoclingResponse
-	var asyncResponse AsyncDoclingResponse
-	if err := json.Unmarshal(body, &asyncResponse); err != nil {
+	if err = json.Unmarshal(body, &asyncResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	defer func() {
+		if err = responseBody.Close(); err != nil {
+			err = fmt.Errorf("failed to close response body: %w", err)
+		}
+	}()
 
 	return &asyncResponse, err
 }
@@ -230,32 +271,24 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 	if err != nil {
 		return false, nil, fmt.Errorf("failed to get task status poll endpoint: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getTaskStatusPollEndpoint, nil)
-	if err != nil {
-		return false, nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
-	// if the status code is not 200, we will assume that there is something wrong
-	if resp.StatusCode != http.StatusOK {
-		logger.Error(errors.New("received non-200 OK response from task status poll endpoint"),
-			"status code", resp.StatusCode, "task id", taskID)
-		return false, nil, nil
-	}
-
+	logger.Info("sending request to get status of task", "url", getTaskStatusPollEndpoint)
 	var taskStatusResponse TaskStatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&taskStatusResponse); err != nil {
+	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, getTaskStatusPollEndpoint, nil)
+	if err != nil {
+		return false, nil, fmt.Errorf("failed to get response body: %w", err)
+	}
+
+	if err := json.NewDecoder(bodyResponse).Decode(&taskStatusResponse); err != nil {
 		return false, nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	defer func() {
+		if err = bodyResponse.Close(); err != nil {
+			err = fmt.Errorf("failed to close response body: %w", err)
+		}
+	}()
+
 	return true, &taskStatusResponse, nil
 }
 
@@ -274,6 +307,12 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 		return "", nil, fmt.Errorf("invalid task status received for task id: %s", taskID)
 	}
 
+	if taskStatus.TaskStatus == TaskStatusFailure {
+		// for some reason invalid task status received, we will return the error and release the semaphore
+		c.ClientConfig.sem.Release(1)
+		return "", nil, fmt.Errorf("task failed: task id: %s", taskID)
+	}
+
 	// if it is started or pending, we will return it as it is
 	if taskStatus.TaskStatus == TaskStatusStarted || taskStatus.TaskStatus == TaskStatusPending {
 		return taskStatus.TaskStatus, nil, nil
@@ -285,32 +324,22 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 		return "", nil, fmt.Errorf("failed to get task result endpoint: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, taskResultURL, nil)
+	logger.Info("sending request to get converted file", "url", taskResultURL)
+	var doclingResponse DoclingResponse
+	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to create request: %w", err)
+		return "", nil, fmt.Errorf("failed to get response body: %w", err)
 	}
-	req.Header.Set("Accept", "application/json")
-	client := &http.Client{
-		Timeout: 10 * time.Second,
+
+	if err := json.NewDecoder(bodyResponse).Decode(&doclingResponse); err != nil {
+		return "", nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to send request: %w", err)
-	}
+
 	defer func() {
-		if err = resp.Body.Close(); err != nil {
+		if err = bodyResponse.Close(); err != nil {
 			err = fmt.Errorf("failed to close response body: %w", err)
 		}
 	}()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("failed to get task result: status code %d", resp.StatusCode)
-	}
-
-	var doclingResponse DoclingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&doclingResponse); err != nil {
-		return "", nil, fmt.Errorf("failed to decode response: %w", err)
-	}
 
 	// now let's free up the semaphore based on task status
 	switch doclingResponse.Status {

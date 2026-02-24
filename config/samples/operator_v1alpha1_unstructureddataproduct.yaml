@@ -33,7 +33,6 @@ spec:
       pdf_backend: "pypdf"
       table_mode: "none"
       abort_on_error: true
-      return_as_file: true
   chunksGeneratorConfig:
     strategy: "markdownTextSplitter"
     markdownSplitterConfig:

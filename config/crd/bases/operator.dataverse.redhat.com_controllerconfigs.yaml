@@ -78,6 +78,8 @@ spec:
                     type: string
                   dataStorageBucket:
                     type: string
+                  doclingSecret:
+                    type: string
                   doclingServeURL:
                     type: string
                   ingestionBucket:

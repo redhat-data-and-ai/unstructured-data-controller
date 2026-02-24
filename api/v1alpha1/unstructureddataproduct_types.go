@@ -52,7 +52,6 @@ type DoclingConfig struct {
 	PDFBackend      string   `json:"pdf_backend,omitempty"`
 	TableMode       string   `json:"table_mode,omitempty"`
 	AbortOnError    bool     `json:"abort_on_error,omitempty"`
-	ReturnAsFile    bool     `json:"return_as_file,omitempty"`
 }
 
 type ChunksGeneratorConfig struct {
