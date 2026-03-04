@@ -1,0 +1,54 @@
+default_install_hook_types: ["pre-commit"]
+exclude: "^vendor/"
+
+repos:
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-json
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: trailing-whitespace
+
+  # Gitleaks - Advanced secret scanning
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.22.1
+    hooks:
+      - id: gitleaks
+
+  # Local project-specific hooks
+  - repo: local
+    hooks:
+      - id: fmt
+        name: "Go Format"
+        entry: make
+        args: ["fmt"]
+        language: system
+        types: [go]
+        pass_filenames: false
+
+      - id: vet
+        name: "Go Vet"
+        entry: make
+        args: ["vet"]
+        language: system
+        types: [go]
+        pass_filenames: false
+
+      - id: lint
+        name: "Go Lint"
+        entry: make
+        args: ["lint"]
+        language: system
+        types: [go]
+        pass_filenames: false
+
+      - id: test
+        name: "Unit Tests"
+        entry: make
+        args: ["test"]
+        language: system
+        types: [go]
+        pass_filenames: false
