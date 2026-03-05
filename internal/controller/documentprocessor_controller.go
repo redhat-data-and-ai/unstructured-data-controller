@@ -78,6 +78,17 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}, nil
 	}
 
+	// Check if required clients and resources are initialized
+	if cacheDirectory == "" || dataStorageBucket == "" || doclingClient == nil {
+		logger.Info("Required resources not yet initialized",
+			"cacheDirectory", cacheDirectory,
+			"dataStorageBucket", dataStorageBucket,
+			"doclingClient", doclingClient != nil)
+		return ctrl.Result{
+			RequeueAfter: 10 * time.Second,
+		}, nil
+	}
+
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
 	if err := r.Get(ctx, req.NamespacedName, documentProcessorCR); err != nil {
 		logger.Error(err, "failed to get DocumentProcessor CR")

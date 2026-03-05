@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -80,11 +81,23 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return ctrl.Result{}, err
 	}
 
-	// get the snowflake client
+	// Check if required resources are initialized
+	if cacheDirectory == "" || dataStorageBucket == "" {
+		logger.Info("Required resources not yet initialized, requeueing...",
+			"cacheDirectory", cacheDirectory,
+			"dataStorageBucket", dataStorageBucket)
+		return ctrl.Result{
+			RequeueAfter: 10 * time.Second,
+		}, nil
+	}
+
+	// Check if snowflake client is initialized
 	sf, err := snowflake.GetClient()
 	if err != nil {
-		logger.Error(err, "failed to get snowflake client")
-		return ctrl.Result{}, err
+		logger.Info("Snowflake client not yet initialized, requeueing...", "error", err.Error())
+		return ctrl.Result{
+			RequeueAfter: 10 * time.Second,
+		}, nil
 	}
 	r.sf = sf
 

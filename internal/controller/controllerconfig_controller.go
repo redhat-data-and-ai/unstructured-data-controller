@@ -84,12 +84,6 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	config := configList.Items[0]
 
-	// Skip reconciliation if we've already processed this generation successfully
-	if config.Status.LastAppliedGeneration == config.Generation && config.IsHealthy() {
-		logger.Info("config already reconciled for current generation, skipping")
-		return ctrl.Result{}, nil
-	}
-
 	if config.Spec.AWSSecret != "" {
 		// generate AWS clients now
 		awsSecret := &corev1.Secret{}

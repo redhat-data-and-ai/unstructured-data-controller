@@ -81,6 +81,17 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}, nil
 	}
 
+	// Check if required clients and resources are initialized
+	if cacheDirectory == "" || dataStorageBucket == "" || langchainClient == nil {
+		logger.Info("Required resources not yet initialized",
+			"cacheDirectory", cacheDirectory,
+			"dataStorageBucket", dataStorageBucket,
+			"langchainClient", langchainClient != nil)
+		return ctrl.Result{
+			RequeueAfter: 10 * time.Second,
+		}, nil
+	}
+
 	chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
 	if err := r.Get(ctx, req.NamespacedName, chunksGeneratorCR); err != nil {
 		logger.Error(err, "failed to get ChunksGenerator CR")
@@ -132,18 +143,19 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	convertedFilePaths := unstructured.FilterConvertedFilePaths(filePaths)
 
+	var chunked bool
 	for _, convertedFilePath := range convertedFilePaths {
 		logger.Info("processing converted file", "file", convertedFilePath)
-
-		if err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR); err != nil {
+		chunked, err = r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR)
+		if err != nil {
 			if strings.Contains(err.Error(), langchain.SemaphoreAcquireError) {
 				logger.Error(err, "failed to process converted file, semaphore acquire error, will try again later", "file", convertedFilePath)
 				skippedFiles = append(skippedFiles, convertedFilePath)
 				continue
 			}
-
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to process converted file", "file", convertedFilePath)
+			continue
 		}
 		logger.Info("successfully processed converted file", "file", convertedFilePath)
 	}
@@ -159,6 +171,24 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{
 			RequeueAfter: requeueAfter,
 		}, nil
+	}
+
+	// Add force reconcile to unstructured data product if any of the file got chunked during this reconciliation
+	if chunked {
+		unstructuredDataProductKey := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Spec.DataProduct}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			unstructuredDataProduct := &operatorv1alpha1.UnstructuredDataProduct{}
+			if err := r.Get(ctx, unstructuredDataProductKey, unstructuredDataProduct); err != nil {
+				return err
+			}
+			return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct)
+		}); err != nil {
+			logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
+			return r.handleError(ctx, chunksGeneratorCR, err)
+		}
+		logger.Info("successfully added force reconcile label to UnstructuredDataProduct CR")
+	} else {
+		logger.Info("no files were chunked, no need to add force reconcile label to UnstructuredDataProduct CR")
 	}
 
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
@@ -179,7 +209,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) error {
+func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("processing converted file", "file", convertedFilePath)
 
@@ -190,31 +220,32 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 	needsChunking, err := r.needsChunking(ctx, convertedFilePath, chunksGeneratorCR)
 	if err != nil {
 		logger.Error(err, "failed to check if file needs chunking")
-		return err
+		return false, err
 	}
 	if !needsChunking {
 		logger.Info("file is already chunked, skipping ...")
-		return nil
+		return false, nil
 	}
 
 	// chunk the file
 	chunksFile, err := r.chunkFile(ctx, convertedFilePath, chunksGeneratorCR)
 	if err != nil {
 		logger.Error(err, "failed to chunk file")
-		return err
+		return false, err
 	}
 
 	// store the chunks in the filestore
 	chunksFileBytes, err := json.Marshal(chunksFile)
 	if err != nil {
 		logger.Error(err, "failed to marshal chunks file")
-		return err
+		return false, err
 	}
 	if err := r.fileStore.Store(ctx, chunksFilePath, chunksFileBytes); err != nil {
 		logger.Error(err, "failed to store chunks file")
-		return err
+		return false, err
 	}
-	return nil
+
+	return true, nil
 }
 
 func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (bool, error) {
@@ -231,11 +262,13 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		return false, err
 	}
 
-	convertedFileMetadata := unstructured.ConvertedFileMetadata{}
-	err = json.Unmarshal(convertedFileRaw, &convertedFileMetadata)
+	convertedFile := unstructured.ConvertedFile{}
+	err = json.Unmarshal(convertedFileRaw, &convertedFile)
 	if err != nil {
 		return false, err
 	}
+
+	convertedFileMetadata := convertedFile.ConvertedDocument.Metadata
 
 	// check if the chunked file does not exist in the filestore then return true
 	chunksFileExists, err := r.fileStore.Exists(ctx, chunksFilePath)
@@ -260,7 +293,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 
 	// now the chunks file should be the same as the current chunks file in filestore
 	newChunksFileMetadata := unstructured.ChunksFileMetadata{
-		ConvertedFileMetadata: &convertedFileMetadata,
+		ConvertedFileMetadata: convertedFileMetadata,
 		ChunkingTool:          unstructured.LangchainChunkingTool,
 		ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
 	}

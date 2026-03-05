@@ -182,9 +182,13 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// Check if SQS client is initialized
 	sqsClient, err := awsclienthandler.GetSQSClient()
 	if err != nil {
-		return r.handleError(ctx, sqsConsumerCR, err)
+		logger.Info("SQS client not yet initialized, requeueing...", "error", err.Error())
+		return ctrl.Result{
+			RequeueAfter: 10 * time.Second,
+		}, nil
 	}
 
 	output, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
