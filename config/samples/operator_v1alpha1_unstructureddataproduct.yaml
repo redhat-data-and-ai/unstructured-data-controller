@@ -4,13 +4,13 @@ metadata:
   labels:
     app.kubernetes.io/name: unstructured-data-controller
     app.kubernetes.io/managed-by: kustomize
-  name: testunstructureddataproduct
+  name: testunstuctureddataproduct
 spec:
   sourceConfig:
     type: "s3"
     s3Config:
-      bucket: data-ingestion-bucket
-      prefix: testunstructureddataproduct
+      bucket: unstructured-bucket
+      prefix: testingschema
   documentProcessorConfig:
     type: "docling"
     doclingConfig:
@@ -46,6 +46,6 @@ spec:
   destinationConfig:
     type: "snowflakeInternalStage"
     snowflakeInternalStageConfig:
-      database: "TESTING_DB"
-      schema: "TESTINGSCHEMA"
-      stage: "TESTINGSCHEMA_INTERNAL_STG"
+      database: testing_db
+      schema: testingschema
+      stage: testingschema_internal_stg

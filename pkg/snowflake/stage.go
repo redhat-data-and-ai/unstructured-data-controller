@@ -51,3 +51,35 @@ func (c *Client) DeleteFilesFromStage(ctx context.Context,
 	}
 	return nil
 }
+
+func (c *Client) QueryTableUsingRole(ctx context.Context, query, warehouseName, role string, resources any) error {
+	if err := c.useWarehouse(ctx, role, warehouseName); err != nil {
+		return err
+	}
+	rows, err := c.query(ctx, query, role)
+	if err != nil {
+		return err
+	}
+	err = scanRows(rows, resources)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *Client) useWarehouse(ctx context.Context, role string, warehouseName string) error {
+	query := fmt.Sprintf(
+		`USE WAREHOUSE %s`,
+		warehouseName,
+	)
+	_, err := c.execute(ctx, query, role)
+	return err
+}
+
+func (c *Client) ExecuteQueryWithRole(ctx context.Context, warehouse, query, role string) error {
+	if err := c.useWarehouse(ctx, role, warehouse); err != nil {
+		return err
+	}
+	_, err := c.execute(ctx, query, role)
+	return err
+}
