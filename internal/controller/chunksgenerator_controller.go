@@ -161,6 +161,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}, nil
 	}
 
+	key := client.ObjectKeyFromObject(chunksGeneratorCR)
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, key, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }, func(obj client.Object) {
 		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus(successMessage, nil)

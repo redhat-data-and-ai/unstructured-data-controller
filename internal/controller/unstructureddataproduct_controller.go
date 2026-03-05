@@ -58,6 +58,20 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling UnstructuredDataProduct")
 
+	// check if config CR is healthy
+	isHealthy, err := IsConfigCRHealthy(ctx, r.Client, req.Namespace)
+	if err != nil {
+		logger.Error(err, "failed to check if ControllerConfig CR is healthy")
+		return ctrl.Result{}, err
+	}
+
+	if !isHealthy {
+		logger.Info("ControllerConfig CR is not ready yet, will try again in a bit ...")
+		return ctrl.Result{
+			RequeueAfter: 10 * time.Second,
+		}, nil
+	}
+
 	unstructuredDataProductCR := &operatorv1alpha1.UnstructuredDataProduct{}
 	if err := r.Get(ctx, req.NamespacedName, unstructuredDataProductCR); err != nil {
 		logger.Error(err, "failed to get UnstructuredDataProduct CR")
