@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: unstructured-datastore-cache
+spec:
+  accessModes:
+    - ReadWriteOncePod
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 10Gi

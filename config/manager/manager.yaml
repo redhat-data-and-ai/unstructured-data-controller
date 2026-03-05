@@ -92,7 +92,12 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts: []
-      volumes: []
+        volumeMounts:
+        - name: unstructured-datastore-cache-storage
+          mountPath: /data/cache
+      volumes:
+      - name: unstructured-datastore-cache-storage
+        persistentVolumeClaim:
+          claimName: unstructured-datastore-cache
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
