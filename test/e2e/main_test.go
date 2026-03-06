@@ -155,6 +155,14 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 		wait.WithInterval(2*time.Second),
 	); err != nil {
 		log.Printf("Timed out waiting for deployment: %s", err)
+		// Diagnostics use only namespace/labels—no secrets. Log output so CI shows why deploy never became ready.
+		log.Println("=== Deployment wait failed: dumping diagnostics ===")
+		log.Printf("--- describe deployment ---\n%s", utils.FetchCommandOutput(fmt.Sprintf("kubectl describe deployment %s -n %s", deploymentName, testNamespace)))
+		log.Printf("--- get pods ---\n%s", utils.FetchCommandOutput(fmt.Sprintf("kubectl get pods -n %s -l control-plane=controller-manager", testNamespace)))
+		log.Printf("--- describe pod (exact CreateContainerConfigError reason) ---\n%s", utils.FetchCommandOutput(fmt.Sprintf("kubectl describe pod -l control-plane=controller-manager -n %s", testNamespace)))
+		log.Printf("--- get pvc ---\n%s", utils.FetchCommandOutput(fmt.Sprintf("kubectl get pvc -n %s", testNamespace)))
+		log.Printf("--- get events ---\n%s", utils.FetchCommandOutput(fmt.Sprintf("kubectl get events -n %s --sort-by='.lastTimestamp'", testNamespace)))
+		log.Printf("--- manager logs (tail=100) ---\n%s", utils.FetchCommandOutput(fmt.Sprintf("kubectl logs -n %s -l control-plane=controller-manager --tail=100", testNamespace)))
 		return err
 	}
 

@@ -3,8 +3,10 @@ kind: PersistentVolumeClaim
 metadata:
   name: unstructured-datastore-cache
 spec:
+  # ReadWriteOnce: required for Kind (rancher.io/local-path) and other clusters that
+  # do not support ReadWriteOncePod. Safe for single-replica controller-manager.
   accessModes:
-    - ReadWriteOncePod
+    - ReadWriteOnce
   storageClassName: standard
   resources:
     requests:

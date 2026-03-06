@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"os"
+
 	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -9,6 +11,26 @@ import (
 const DefaultE2ENamespace = "unstructured-controller-namespace"
 
 func GetControllerConfigResource() *v1alpha1.ControllerConfig {
+	account := os.Getenv("SNOWFLAKE_ACCOUNT")
+	if account == "" {
+		account = "account-identifier"
+	}
+
+	user := os.Getenv("SNOWFLAKE_USER")
+	if user == "" {
+		user = "username"
+	}
+
+	role := os.Getenv("SNOWFLAKE_ROLE")
+	if role == "" {
+		role = "TESTING_ROLE"
+	}
+
+	warehouse := os.Getenv("SNOWFLAKE_WAREHOUSE")
+	if warehouse == "" {
+		warehouse = "DEFAULT"
+	}
+
 	return &v1alpha1.ControllerConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "controllerconfig",
@@ -17,11 +39,11 @@ func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 		Spec: v1alpha1.ControllerConfigSpec{
 			SnowflakeConfig: v1alpha1.SnowflakeConfig{
 				Name:             "e2e",
-				Account:          "account-identifier",
-				User:             "username",
-				Role:             "TESTING_ROLE",
+				Account:          account,
+				User:             user,
+				Role:             role,
 				Region:           "us-west-2",
-				Warehouse:        "DEFAULT",
+				Warehouse:        warehouse,
 				PrivateKeySecret: "private-key",
 			},
 			UnstructuredDataProcessingConfig: v1alpha1.UnstructuredDataProcessingConfigSpec{
