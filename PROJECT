@@ -18,8 +18,32 @@ resources:
   domain: dataverse.redhat.com
   group: operator
   kind: ControllerConfig
+  path: github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: dataverse.redhat.com
+  group: operator
   kind: SQSConsumer
+  path: github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: dataverse.redhat.com
+  group: operator
   kind: UnstructuredDataProduct
+  path: github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: dataverse.redhat.com
+  group: operator
   kind: ChunksGenerator
   path: github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1
   version: v1alpha1
