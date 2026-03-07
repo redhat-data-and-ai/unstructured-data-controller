@@ -68,6 +68,11 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	dataProductName := unstructuredDataProductCR.Name
 
+	if err := unstructuredDataProductCR.Spec.ValidateSpec(); err != nil {
+		logger.Error(err, "spec validation failed")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &operatorv1alpha1.UnstructuredDataProduct{}
 		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
@@ -88,30 +93,31 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	r.sf = sf
 
-	// first, let's create (or update) the DocumentProcessor CR for this data product
-	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      dataProductName,
-			Namespace: unstructuredDataProductCR.Namespace,
-		},
-		Spec: operatorv1alpha1.DocumentProcessorSpec{
-			DataProduct:             dataProductName,
-			DocumentProcessorConfig: unstructuredDataProductCR.Spec.DocumentProcessorConfig,
-		},
-	}
-	// result, err := kubecontrollerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error { return nil })
-	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error {
-		documentProcessorCR.Spec = operatorv1alpha1.DocumentProcessorSpec{
-			DataProduct:             dataProductName,
-			DocumentProcessorConfig: unstructuredDataProductCR.Spec.DocumentProcessorConfig,
+	// create (or update) the DocumentProcessor CR only if DocumentProcessorConfig is specified
+	if unstructuredDataProductCR.Spec.DocumentProcessorConfig != nil {
+		documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      dataProductName,
+				Namespace: unstructuredDataProductCR.Namespace,
+			},
+			Spec: operatorv1alpha1.DocumentProcessorSpec{
+				DataProduct:             dataProductName,
+				DocumentProcessorConfig: *unstructuredDataProductCR.Spec.DocumentProcessorConfig,
+			},
 		}
-		return nil
-	})
-	if err != nil {
-		logger.Error(err, "failed to create/update DocumentProcessor CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		result, err := controllerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error {
+			documentProcessorCR.Spec = operatorv1alpha1.DocumentProcessorSpec{
+				DataProduct:             dataProductName,
+				DocumentProcessorConfig: *unstructuredDataProductCR.Spec.DocumentProcessorConfig,
+			}
+			return nil
+		})
+		if err != nil {
+			logger.Error(err, "failed to create/update DocumentProcessor CR")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+		logger.Info("DocumentProcessor CR created/updated", "result", result)
 	}
-	logger.Info("DocumentProcessor CR created/updated", "result", result)
 
 	// create ChunksGenerator CR for this data product here
 	chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{
@@ -124,12 +130,12 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			ChunksGeneratorConfig: unstructuredDataProductCR.Spec.ChunksGeneratorConfig,
 		},
 	}
-	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, chunksGeneratorCR, func() error { return nil })
+	chunksResult, err := controllerutil.CreateOrUpdate(ctx, r.Client, chunksGeneratorCR, func() error { return nil })
 	if err != nil {
 		logger.Error(err, "failed to create/update ChunksGenerator CR")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
-	logger.Info("ChunksGenerator CR created/updated", "result", result)
+	logger.Info("ChunksGenerator CR created/updated", "result", chunksResult)
 
 	var source unstructured.DataSource
 	switch unstructuredDataProductCR.Spec.SourceConfig.Type {
@@ -185,20 +191,39 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	// add force reconcile label to the DocumentProcessor CR
-	documentProcessorKey := client.ObjectKey{
-		Namespace: unstructuredDataProductCR.Namespace,
-		Name:      dataProductName,
-	}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
-		if err := r.Get(ctx, documentProcessorKey, latestDocumentProcessorCR); err != nil {
-			return err
+	if unstructuredDataProductCR.Spec.DocumentProcessorConfig != nil {
+		// add force reconcile label to the DocumentProcessor CR
+		// DocumentProcessor will in turn trigger ChunksGenerator when conversion is done
+		documentProcessorKey := client.ObjectKey{
+			Namespace: unstructuredDataProductCR.Namespace,
+			Name:      dataProductName,
 		}
-		return controllerutils.AddForceReconcileLabel(ctx, r.Client, latestDocumentProcessorCR)
-	}); err != nil {
-		logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
+			if err := r.Get(ctx, documentProcessorKey, latestDocumentProcessorCR); err != nil {
+				return err
+			}
+			return controllerutils.AddForceReconcileLabel(ctx, r.Client, latestDocumentProcessorCR)
+		}); err != nil {
+			logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+	} else {
+		// No document processing needed — trigger ChunksGenerator directly
+		chunksGeneratorKey := client.ObjectKey{
+			Namespace: unstructuredDataProductCR.Namespace,
+			Name:      dataProductName,
+		}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latestChunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
+			if err := r.Get(ctx, chunksGeneratorKey, latestChunksGeneratorCR); err != nil {
+				return err
+			}
+			return controllerutils.AddForceReconcileLabel(ctx, r.Client, latestChunksGeneratorCR)
+		}); err != nil {
+			logger.Error(err, "failed to add force reconcile label to ChunksGenerator CR")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
 	}
 
 	// Setup destination

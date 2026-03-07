@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -27,14 +29,29 @@ type (
 )
 
 const (
-	SourceTypeS3                       UnstructuredDataSourceType      = "s3"
-	DestinationTypeInternalStage       UnstructuredDataDestinationType = "snowflakeInternalStage"
-	ChunkingStrategyRecursiveCharacter ChunkingStrategy                = "recursiveCharacterTextSplitter"
-	ChunkingStrategyMarkdown           ChunkingStrategy                = "markdownTextSplitter"
-	ChunkingStrategyToken              ChunkingStrategy                = "tokenTextSplitter"
+	SourceTypeS3                        UnstructuredDataSourceType      = "s3"
+	DestinationTypeInternalStage        UnstructuredDataDestinationType = "snowflakeInternalStage"
+	ChunkingStrategyRecursiveCharacter  ChunkingStrategy                = "recursiveCharacterTextSplitter"
+	ChunkingStrategyMarkdown            ChunkingStrategy                = "markdownTextSplitter"
+	ChunkingStrategyToken               ChunkingStrategy                = "tokenTextSplitter"
+	ChunkingStrategyDoclingHierarchical ChunkingStrategy                = "doclingHierarchicalChunker"
+	ChunkingStrategyDoclingHybrid       ChunkingStrategy                = "doclingHybridChunker"
 
 	UnstructuredDataProductCondition = "UnstructuredDataProductReady"
 )
+
+func IsDoclingChunkingStrategy(strategy ChunkingStrategy) bool {
+	return strategy == ChunkingStrategyDoclingHierarchical || strategy == ChunkingStrategyDoclingHybrid
+}
+
+func (s *UnstructuredDataProductSpec) ValidateSpec() error {
+	if IsDoclingChunkingStrategy(s.ChunksGeneratorConfig.Strategy) {
+		if s.DocumentProcessorConfig != nil {
+			return fmt.Errorf("documentProcessorConfig must not be set when using Docling chunking strategy %q; Docling performs conversion and chunking in a single step", s.ChunksGeneratorConfig.Strategy)
+		}
+	}
+	return nil
+}
 
 type DocumentProcessorConfig struct {
 	Type          string        `json:"type,omitempty"`
@@ -59,6 +76,8 @@ type ChunksGeneratorConfig struct {
 	RecursiveCharacterSplitterConfig RecursiveCharacterSplitterConfig `json:"recursiveCharacterSplitterConfig,omitempty"`
 	MarkdownSplitterConfig           MarkdownSplitterConfig           `json:"markdownSplitterConfig,omitempty"`
 	TokenSplitterConfig              TokenSplitterConfig              `json:"tokenSplitterConfig,omitempty"`
+	DoclingHierarchicalChunkerConfig DoclingHierarchicalChunkerConfig `json:"doclingHierarchicalChunkerConfig,omitempty"`
+	DoclingHybridChunkerConfig       DoclingHybridChunkerConfig       `json:"doclingHybridChunkerConfig,omitempty"`
 }
 
 type RecursiveCharacterSplitterConfig struct {
@@ -86,12 +105,22 @@ type TokenSplitterConfig struct {
 	DisallowedSpecial []string `json:"disallowedSpecial,omitempty"`
 }
 
+type DoclingHierarchicalChunkerConfig struct {
+	MergeListItems *bool `json:"mergeListItems,omitempty"`
+}
+
+type DoclingHybridChunkerConfig struct {
+	Tokenizer  string `json:"tokenizer,omitempty"`
+	MaxTokens  int    `json:"maxTokens,omitempty"`
+	MergePeers *bool  `json:"mergePeers,omitempty"`
+}
+
 // UnstructuredDataProductSpec defines the desired state of UnstructuredDataProduct
 type UnstructuredDataProductSpec struct {
-	SourceConfig            SourceConfig            `json:"sourceConfig,omitempty"`
-	DestinationConfig       DestinationConfig       `json:"destinationConfig,omitempty"`
-	DocumentProcessorConfig DocumentProcessorConfig `json:"documentProcessorConfig,omitempty"`
-	ChunksGeneratorConfig   ChunksGeneratorConfig   `json:"chunksGeneratorConfig,omitempty"`
+	SourceConfig            SourceConfig             `json:"sourceConfig,omitempty"`
+	DestinationConfig       DestinationConfig        `json:"destinationConfig,omitempty"`
+	DocumentProcessorConfig *DocumentProcessorConfig `json:"documentProcessorConfig,omitempty"`
+	ChunksGeneratorConfig   ChunksGeneratorConfig    `json:"chunksGeneratorConfig,omitempty"`
 }
 
 type SourceConfig struct {
