@@ -9,6 +9,7 @@ type ChunkingTool string
 
 const (
 	LangchainChunkingTool ChunkingTool = "langchain"
+	DoclingChunkingTool   ChunkingTool = "docling"
 )
 
 type Chunks struct {
@@ -32,7 +33,11 @@ type ChunksFile struct {
 }
 
 func (c *ChunksFileMetadata) Equal(other *ChunksFileMetadata) bool {
-	if !c.ConvertedFileMetadata.Equal(other.ConvertedFileMetadata) {
+	if c.ConvertedFileMetadata == nil && other.ConvertedFileMetadata == nil {
+		// both nil, equal in this regard
+	} else if c.ConvertedFileMetadata == nil || other.ConvertedFileMetadata == nil {
+		return false
+	} else if !c.ConvertedFileMetadata.Equal(other.ConvertedFileMetadata) {
 		return false
 	}
 	if c.ChunkingTool != other.ChunkingTool {

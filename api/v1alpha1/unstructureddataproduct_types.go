@@ -27,14 +27,20 @@ type (
 )
 
 const (
-	SourceTypeS3                       UnstructuredDataSourceType      = "s3"
-	DestinationTypeInternalStage       UnstructuredDataDestinationType = "snowflakeInternalStage"
-	ChunkingStrategyRecursiveCharacter ChunkingStrategy                = "recursiveCharacterTextSplitter"
-	ChunkingStrategyMarkdown           ChunkingStrategy                = "markdownTextSplitter"
-	ChunkingStrategyToken              ChunkingStrategy                = "tokenTextSplitter"
+	SourceTypeS3                        UnstructuredDataSourceType      = "s3"
+	DestinationTypeInternalStage        UnstructuredDataDestinationType = "snowflakeInternalStage"
+	ChunkingStrategyRecursiveCharacter  ChunkingStrategy                = "recursiveCharacterTextSplitter"
+	ChunkingStrategyMarkdown            ChunkingStrategy                = "markdownTextSplitter"
+	ChunkingStrategyToken               ChunkingStrategy                = "tokenTextSplitter"
+	ChunkingStrategyDoclingHierarchical ChunkingStrategy                = "doclingHierarchicalChunker"
+	ChunkingStrategyDoclingHybrid       ChunkingStrategy                = "doclingHybridChunker"
 
 	UnstructuredDataProductCondition = "UnstructuredDataProductReady"
 )
+
+func IsDoclingChunkingStrategy(strategy ChunkingStrategy) bool {
+	return strategy == ChunkingStrategyDoclingHierarchical || strategy == ChunkingStrategyDoclingHybrid
+}
 
 type DocumentProcessorConfig struct {
 	Type          string        `json:"type,omitempty"`
@@ -59,6 +65,8 @@ type ChunksGeneratorConfig struct {
 	RecursiveCharacterSplitterConfig RecursiveCharacterSplitterConfig `json:"recursiveCharacterSplitterConfig,omitempty"`
 	MarkdownSplitterConfig           MarkdownSplitterConfig           `json:"markdownSplitterConfig,omitempty"`
 	TokenSplitterConfig              TokenSplitterConfig              `json:"tokenSplitterConfig,omitempty"`
+	DoclingHierarchicalChunkerConfig DoclingHierarchicalChunkerConfig `json:"doclingHierarchicalChunkerConfig,omitempty"`
+	DoclingHybridChunkerConfig       DoclingHybridChunkerConfig       `json:"doclingHybridChunkerConfig,omitempty"`
 }
 
 type RecursiveCharacterSplitterConfig struct {
@@ -84,6 +92,16 @@ type TokenSplitterConfig struct {
 	EncodingName      string   `json:"encodingName,omitempty"`
 	AllowedSpecial    []string `json:"allowedSpecial,omitempty"`
 	DisallowedSpecial []string `json:"disallowedSpecial,omitempty"`
+}
+
+type DoclingHierarchicalChunkerConfig struct {
+	MergeListItems *bool `json:"mergeListItems,omitempty"`
+}
+
+type DoclingHybridChunkerConfig struct {
+	Tokenizer  string `json:"tokenizer,omitempty"`
+	MaxTokens  int    `json:"maxTokens,omitempty"`
+	MergePeers *bool  `json:"mergePeers,omitempty"`
 }
 
 // UnstructuredDataProductSpec defines the desired state of UnstructuredDataProduct

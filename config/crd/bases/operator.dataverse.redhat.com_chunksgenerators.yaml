@@ -48,6 +48,20 @@ spec:
             properties:
               config:
                 properties:
+                  doclingHierarchicalChunkerConfig:
+                    properties:
+                      mergeListItems:
+                        type: boolean
+                    type: object
+                  doclingHybridChunkerConfig:
+                    properties:
+                      maxTokens:
+                        type: integer
+                      mergePeers:
+                        type: boolean
+                      tokenizer:
+                        type: string
+                    type: object
                   markdownSplitterConfig:
                     properties:
                       chunkOverlap:
