@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"time"
 
@@ -36,7 +35,7 @@ const (
 	ChunkTypeHierarchical ChunkType = "hierarchical"
 	ChunkTypeHybrid       ChunkType = "hybrid"
 
-	chunkingHTTPTimeout = 300 * time.Second
+	chunkPollInterval = 2 * time.Second
 )
 
 // HierarchicalChunkingOptions are options for the Docling HierarchicalChunker.
@@ -58,21 +57,23 @@ type DoclingChunkRequestPayload struct {
 	ChunkingOptions any             `json:"chunking_options,omitempty"`
 }
 
-// DoclingChunk represents a single chunk in the Docling chunk response.
-type DoclingChunk struct {
+// ChunkedDocumentResultItem represents a single chunk returned by the Docling chunk API.
+type ChunkedDocumentResultItem struct {
 	Text string `json:"text"`
 }
 
-// DoclingChunkResponse is the response from the Docling chunk endpoint.
-type DoclingChunkResponse struct {
-	Chunks []DoclingChunk `json:"chunks"`
+// ChunkDocumentResponse is the response from GET /v1/result/{task_id} for chunk tasks.
+type ChunkDocumentResponse struct {
+	Chunks         []ChunkedDocumentResultItem `json:"chunks"`
+	ProcessingTime float64                     `json:"processing_time"`
 }
 
-func (c *Client) chunkSourceEndpoint(chunkType ChunkType) (string, error) {
-	return url.JoinPath(c.ClientConfig.URL, "/v1/chunk", string(chunkType), "source")
+func (c *Client) chunkSourceAsyncEndpoint(chunkType ChunkType) (string, error) {
+	return url.JoinPath(c.ClientConfig.URL, "/v1/chunk", string(chunkType), "source", "async")
 }
 
-// ChunkFile sends a document to the Docling chunk endpoint and returns the chunk texts.
+// ChunkFile sends a document to the Docling async chunk endpoint and returns the chunk texts.
+// It submits the task, polls for completion, then fetches the result.
 // It uses TryAcquire on the semaphore to avoid blocking the reconciliation loop.
 func (c *Client) ChunkFile(
 	ctx context.Context,
@@ -88,9 +89,10 @@ func (c *Client) ChunkFile(
 	}
 	defer c.ClientConfig.sem.Release(1)
 
-	endpoint, err := c.chunkSourceEndpoint(chunkType)
+	// Step 1: Submit async chunk request
+	endpoint, err := c.chunkSourceAsyncEndpoint(chunkType)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get chunk endpoint: %w", err)
+		return nil, fmt.Errorf("failed to get async chunk endpoint: %w", err)
 	}
 
 	payload, err := json.Marshal(DoclingChunkRequestPayload{
@@ -103,26 +105,90 @@ func (c *Client) ChunkFile(
 		return nil, fmt.Errorf("failed to marshal chunk request payload: %w", err)
 	}
 
-	logger.Info("sending chunk request to docling", "url", endpoint, "source", fileURL, "chunkType", string(chunkType))
+	logger.Info("submitting async chunk request to docling", "url", endpoint, "source", fileURL, "chunkType", string(chunkType))
 
-	responseBody, err := c.createDoclingChunkRequest(ctx, http.MethodPost, endpoint, payload)
+	responseBody, err := c.createDoclingRequest(ctx, "POST", endpoint, payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send chunk request: %w", err)
+		return nil, fmt.Errorf("failed to submit async chunk request: %w", err)
 	}
-	defer func() {
-		if closeErr := responseBody.Close(); closeErr != nil {
-			logger.Error(closeErr, "failed to close chunk response body")
-		}
-	}()
 
 	body, err := io.ReadAll(responseBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read chunk response body: %w", err)
+		responseBody.Close()
+		return nil, fmt.Errorf("failed to read async chunk response body: %w", err)
+	}
+	responseBody.Close()
+
+	var taskStatus TaskStatusResponse
+	if err = json.Unmarshal(body, &taskStatus); err != nil {
+		return nil, fmt.Errorf("failed to decode async chunk response: %w", err)
 	}
 
-	var chunkResponse DoclingChunkResponse
+	taskID := taskStatus.TaskID
+	logger.Info("async chunk task submitted", "taskID", taskID, "status", taskStatus.TaskStatus)
+
+	// Step 2: Poll for completion
+	if err := c.pollUntilComplete(ctx, taskID); err != nil {
+		return nil, fmt.Errorf("chunk task failed: %w", err)
+	}
+
+	// Step 3: Fetch result
+	return c.getChunkResult(ctx, taskID)
+}
+
+func (c *Client) pollUntilComplete(ctx context.Context, taskID string) error {
+	logger := log.FromContext(ctx)
+
+	for {
+		_, taskStatus, err := c.getTaskStatus(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("failed to poll task status: %w", err)
+		}
+
+		switch taskStatus.TaskStatus {
+		case TaskStatusSuccess:
+			logger.Info("chunk task completed successfully", "taskID", taskID)
+			return nil
+		case TaskStatusFailure:
+			return fmt.Errorf("task failed: task id: %s", taskID)
+		case TaskStatusPending, TaskStatusStarted:
+			logger.Info("chunk task still in progress, polling again", "taskID", taskID, "status", taskStatus.TaskStatus)
+		default:
+			return fmt.Errorf("unexpected task status %q for task id: %s", taskStatus.TaskStatus, taskID)
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(chunkPollInterval):
+		}
+	}
+}
+
+func (c *Client) getChunkResult(ctx context.Context, taskID string) ([]string, error) {
+	logger := log.FromContext(ctx)
+
+	taskResultURL, err := c.getTaskResultEndpoint(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get task result endpoint: %w", err)
+	}
+
+	logger.Info("fetching chunk result", "url", taskResultURL)
+	responseBody, err := c.createDoclingRequest(ctx, "GET", taskResultURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get chunk result: %w", err)
+	}
+
+	body, err := io.ReadAll(responseBody)
+	if err != nil {
+		responseBody.Close()
+		return nil, fmt.Errorf("failed to read chunk result body: %w", err)
+	}
+	responseBody.Close()
+
+	var chunkResponse ChunkDocumentResponse
 	if err = json.Unmarshal(body, &chunkResponse); err != nil {
-		return nil, fmt.Errorf("failed to decode chunk response: %w", err)
+		return nil, fmt.Errorf("failed to decode chunk result: %w", err)
 	}
 
 	chunks := make([]string, 0, len(chunkResponse.Chunks))
@@ -132,44 +198,4 @@ func (c *Client) ChunkFile(
 
 	logger.Info("successfully chunked file via docling", "chunkCount", len(chunks))
 	return chunks, nil
-}
-
-// createDoclingChunkRequest is like createDoclingRequest but with a longer timeout
-// suitable for synchronous chunking (which includes conversion + chunking).
-func (c *Client) createDoclingChunkRequest(ctx context.Context, method, endpoint string, payload []byte) (
-	io.ReadCloser, error) {
-	logger := log.FromContext(ctx)
-	client := &http.Client{
-		Timeout: chunkingHTTPTimeout,
-	}
-
-	req, err := c.createHTTPRequest(ctx, method, endpoint, payload, "Bearer %s")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	logger.Info("sending chunk request to docling service", "url", endpoint)
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-
-	if resp.StatusCode == http.StatusForbidden && c.ClientConfig.Key != "" {
-		req, err = c.createHTTPRequest(ctx, method, endpoint, payload, "%s")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-		resp, err = client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to send request: %w", err)
-		}
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Error(errors.New("received non-200 OK response from chunk endpoint"),
-			"status code", resp.StatusCode, "url", endpoint)
-		return nil, fmt.Errorf("failed to chunk file: status code %d", resp.StatusCode)
-	}
-
-	return resp.Body, nil
 }

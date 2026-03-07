@@ -37,8 +37,9 @@ func newTestClient(serverURL string, maxConcurrent int64) *Client {
 }
 
 func TestChunkFile_Hierarchical(t *testing.T) {
-	response := DoclingChunkResponse{
-		Chunks: []DoclingChunk{
+	taskID := "test-task-123"
+	chunkResult := ChunkDocumentResponse{
+		Chunks: []ChunkedDocumentResultItem{
 			{Text: "This is the first chunk."},
 			{Text: "This is the second chunk."},
 			{Text: "This is the third chunk."},
@@ -46,23 +47,32 @@ func TestChunkFile_Hierarchical(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if r.URL.Path != "/v1/chunk/hierarchical/source" {
-			t.Errorf("expected /v1/chunk/hierarchical/source, got %s", r.URL.Path)
-		}
-
-		var payload DoclingChunkRequestPayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("failed to decode request body: %v", err)
-		}
-		if len(payload.Sources) != 1 || payload.Sources[0].URL != "https://example.com/doc.pdf" {
-			t.Errorf("unexpected sources: %+v", payload.Sources)
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chunk/hierarchical/source/async":
+			var payload DoclingChunkRequestPayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("failed to decode request body: %v", err)
+			}
+			if len(payload.Sources) != 1 || payload.Sources[0].URL != "https://example.com/doc.pdf" {
+				t.Errorf("unexpected sources: %+v", payload.Sources)
+			}
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: TaskStatusSuccess,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/status/poll/"+taskID:
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: TaskStatusSuccess,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/result/"+taskID:
+			_ = json.NewEncoder(w).Encode(chunkResult)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -90,25 +100,34 @@ func TestChunkFile_Hierarchical(t *testing.T) {
 }
 
 func TestChunkFile_Hybrid(t *testing.T) {
-	response := DoclingChunkResponse{
-		Chunks: []DoclingChunk{
+	taskID := "test-hybrid-456"
+	chunkResult := ChunkDocumentResponse{
+		Chunks: []ChunkedDocumentResultItem{
 			{Text: "Hybrid chunk one."},
 			{Text: "Hybrid chunk two."},
 		},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chunk/hybrid/source" {
-			t.Errorf("expected /v1/chunk/hybrid/source, got %s", r.URL.Path)
-		}
-
-		var payload DoclingChunkRequestPayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("failed to decode request body: %v", err)
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chunk/hybrid/source/async":
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: TaskStatusSuccess,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/status/poll/"+taskID:
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: TaskStatusSuccess,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/result/"+taskID:
+			_ = json.NewEncoder(w).Encode(chunkResult)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
 	}))
 	defer server.Close()
 
@@ -164,22 +183,106 @@ func TestChunkFile_HTTPError(t *testing.T) {
 	}
 }
 
-func TestChunkSourceEndpoint(t *testing.T) {
-	client := newTestClient("http://localhost:5001", 1)
+func TestChunkFile_AsyncPolling(t *testing.T) {
+	taskID := "poll-task-789"
+	pollCount := 0
+	chunkResult := ChunkDocumentResponse{
+		Chunks: []ChunkedDocumentResultItem{
+			{Text: "polled chunk"},
+		},
+	}
 
-	hierarchicalEndpoint, err := client.chunkSourceEndpoint(ChunkTypeHierarchical)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chunk/hierarchical/source/async":
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: TaskStatusPending,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/status/poll/"+taskID:
+			pollCount++
+			status := TaskStatusStarted
+			if pollCount >= 2 {
+				status = TaskStatusSuccess
+			}
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: status,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/result/"+taskID:
+			_ = json.NewEncoder(w).Encode(chunkResult)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, 5)
+
+	chunks, err := client.ChunkFile(context.Background(), "https://example.com/doc.pdf", ChunkTypeHierarchical, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if hierarchicalEndpoint != "http://localhost:5001/v1/chunk/hierarchical/source" {
+
+	if len(chunks) != 1 || chunks[0] != "polled chunk" {
+		t.Errorf("unexpected chunks: %v", chunks)
+	}
+	if pollCount < 2 {
+		t.Errorf("expected at least 2 poll calls, got %d", pollCount)
+	}
+}
+
+func TestChunkFile_AsyncTaskFailure(t *testing.T) {
+	taskID := "fail-task-000"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chunk/hierarchical/source/async":
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: TaskStatusPending,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/status/poll/"+taskID:
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: TaskStatusFailure,
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL, 5)
+
+	_, err := client.ChunkFile(context.Background(), "https://example.com/doc.pdf", ChunkTypeHierarchical, nil)
+	if err == nil {
+		t.Fatal("expected error for failed task, got nil")
+	}
+}
+
+func TestChunkSourceAsyncEndpoint(t *testing.T) {
+	client := newTestClient("http://localhost:5001", 1)
+
+	hierarchicalEndpoint, err := client.chunkSourceAsyncEndpoint(ChunkTypeHierarchical)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hierarchicalEndpoint != "http://localhost:5001/v1/chunk/hierarchical/source/async" {
 		t.Errorf("unexpected endpoint: %s", hierarchicalEndpoint)
 	}
 
-	hybridEndpoint, err := client.chunkSourceEndpoint(ChunkTypeHybrid)
+	hybridEndpoint, err := client.chunkSourceAsyncEndpoint(ChunkTypeHybrid)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if hybridEndpoint != "http://localhost:5001/v1/chunk/hybrid/source" {
+	if hybridEndpoint != "http://localhost:5001/v1/chunk/hybrid/source/async" {
 		t.Errorf("unexpected endpoint: %s", hybridEndpoint)
 	}
 }
@@ -262,13 +365,22 @@ func TestChunkRequestPayload_HybridSerialization(t *testing.T) {
 }
 
 func TestChunkFile_EmptyResponse(t *testing.T) {
-	response := DoclingChunkResponse{
-		Chunks: []DoclingChunk{},
+	taskID := "empty-task"
+	chunkResult := ChunkDocumentResponse{
+		Chunks: []ChunkedDocumentResultItem{},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
+
+		switch {
+		case r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{TaskID: taskID, TaskStatus: TaskStatusSuccess})
+		case r.URL.Path == "/v1/status/poll/"+taskID:
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{TaskID: taskID, TaskStatus: TaskStatusSuccess})
+		case r.URL.Path == "/v1/result/"+taskID:
+			_ = json.NewEncoder(w).Encode(chunkResult)
+		}
 	}))
 	defer server.Close()
 
@@ -285,12 +397,23 @@ func TestChunkFile_EmptyResponse(t *testing.T) {
 }
 
 func TestChunkFile_AuthHeader(t *testing.T) {
+	taskID := "auth-task"
 	var receivedAuthHeader string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedAuthHeader = r.Header.Get("Authorization")
+		if r.Method == http.MethodPost {
+			receivedAuthHeader = r.Header.Get("Authorization")
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(DoclingChunkResponse{Chunks: []DoclingChunk{}})
+
+		switch {
+		case r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{TaskID: taskID, TaskStatus: TaskStatusSuccess})
+		case r.URL.Path == "/v1/status/poll/"+taskID:
+			_ = json.NewEncoder(w).Encode(TaskStatusResponse{TaskID: taskID, TaskStatus: TaskStatusSuccess})
+		case r.URL.Path == "/v1/result/"+taskID:
+			_ = json.NewEncoder(w).Encode(ChunkDocumentResponse{Chunks: []ChunkedDocumentResultItem{}})
+		}
 	}))
 	defer server.Close()
 

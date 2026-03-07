@@ -33,21 +33,43 @@ func newTestDoclingClient(serverURL string) *docling.Client {
 	})
 }
 
+// asyncChunkServer creates a test server that handles the async chunk flow:
+// POST /v1/chunk/{type}/source/async -> TaskStatusResponse
+// GET /v1/status/poll/{taskID} -> TaskStatusResponse (success)
+// GET /v1/result/{taskID} -> ChunkDocumentResponse
+func asyncChunkServer(t *testing.T, expectedPath string, taskID string, chunks []docling.ChunkedDocumentResultItem) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == expectedPath:
+			_ = json.NewEncoder(w).Encode(docling.TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: docling.TaskStatusSuccess,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/status/poll/"+taskID:
+			_ = json.NewEncoder(w).Encode(docling.TaskStatusResponse{
+				TaskID:     taskID,
+				TaskStatus: docling.TaskStatusSuccess,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/result/"+taskID:
+			_ = json.NewEncoder(w).Encode(docling.ChunkDocumentResponse{
+				Chunks: chunks,
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
 func TestDoclingHierarchicalChunker_ImplementsChunker(t *testing.T) {
-	response := docling.DoclingChunkResponse{
-		Chunks: []docling.DoclingChunk{
+	server := asyncChunkServer(t, "/v1/chunk/hierarchical/source/async", "hier-task-1",
+		[]docling.ChunkedDocumentResultItem{
 			{Text: "chunk one"},
 			{Text: "chunk two"},
-		},
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chunk/hierarchical/source" {
-			t.Errorf("expected /v1/chunk/hierarchical/source, got %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
-	}))
+		})
 	defer server.Close()
 
 	mergeListItems := true
@@ -75,21 +97,12 @@ func TestDoclingHierarchicalChunker_ImplementsChunker(t *testing.T) {
 }
 
 func TestDoclingHybridChunker_ImplementsChunker(t *testing.T) {
-	response := docling.DoclingChunkResponse{
-		Chunks: []docling.DoclingChunk{
+	server := asyncChunkServer(t, "/v1/chunk/hybrid/source/async", "hybrid-task-1",
+		[]docling.ChunkedDocumentResultItem{
 			{Text: "hybrid one"},
 			{Text: "hybrid two"},
 			{Text: "hybrid three"},
-		},
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chunk/hybrid/source" {
-			t.Errorf("expected /v1/chunk/hybrid/source, got %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(response)
-	}))
+		})
 	defer server.Close()
 
 	mergePeers := false
