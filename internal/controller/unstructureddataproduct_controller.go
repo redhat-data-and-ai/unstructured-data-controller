@@ -20,8 +20,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -31,6 +34,7 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
@@ -56,6 +60,7 @@ type UnstructuredDataProductReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddataproducts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddataproducts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddataproducts/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",namespace=unstructured-controller-namespace,resources=secrets,verbs=get
 
 func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -79,14 +84,6 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status")
 		return ctrl.Result{}, err
 	}
-
-	// get the snowflake client
-	sf, err := snowflake.GetClient()
-	if err != nil {
-		logger.Error(err, "failed to get snowflake client")
-		return ctrl.Result{}, err
-	}
-	r.sf = sf
 
 	// first, let's create (or update) the DocumentProcessor CR for this data product
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
@@ -205,13 +202,16 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	var destination unstructured.Destination
 	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
 	case operatorv1alpha1.DestinationTypeInternalStage:
-
-		destination = &unstructured.SnowflakeInternalStage{
-			Client:   sf,
-			Role:     sf.GetRole(),
-			Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
-			Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
-			Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+		var err error
+		destination, err = r.setupSnowflakeDestination(ctx, unstructuredDataProductCR)
+		if err != nil {
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+	case operatorv1alpha1.DestinationTypeS3:
+		var err error
+		destination, err = r.setupS3Destination(ctx, unstructuredDataProductCR, dataProductName)
+		if err != nil {
+			return r.handleError(ctx, unstructuredDataProductCR, err)
 		}
 	default:
 		err := fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
@@ -253,6 +253,64 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	logger.Info("successfully updated UnstructuredDataProduct CR status", "status", unstructuredDataProductCR.Status)
 
 	return ctrl.Result{}, nil
+}
+
+// setupSnowflakeDestination returns a Snowflake internal stage destination for the given CR.
+func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct) (unstructured.Destination, error) {
+	logger := log.FromContext(ctx)
+	sf, err := snowflake.GetClient()
+	if err != nil {
+		logger.Error(err, "failed to get snowflake client")
+		return nil, err
+	}
+	r.sf = sf
+	return &unstructured.SnowflakeInternalStage{
+		Client:   sf,
+		Role:     sf.GetRole(),
+		Stage:    unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Stage,
+		Database: unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Database,
+		Schema:   unstructuredDataProductCR.Spec.DestinationConfig.SnowflakeInternalStageConfig.Schema,
+	}, nil
+}
+
+// setupS3Destination returns an S3 destination for the given CR
+func (r *UnstructuredDataProductReconciler) setupS3Destination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, dataProductName string) (unstructured.Destination, error) {
+	logger := log.FromContext(ctx)
+	destCfg := unstructuredDataProductCR.Spec.DestinationConfig.S3DestinationConfig
+	var s3Client *s3.Client
+	if destCfg.S3SecretName != "" {
+		awsSecret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Name: destCfg.S3SecretName, Namespace: unstructuredDataProductCR.Namespace}, awsSecret); err != nil {
+			logger.Error(err, "failed to get AWS secret for S3 destination", "secret", destCfg.S3SecretName)
+			return nil, fmt.Errorf("failed to get AWS secret %s: %w", destCfg.S3SecretName, err)
+		}
+		awsConfig := awsclienthandler.AWSConfig{
+			Region:          string(awsSecret.Data["AWS_REGION"]),
+			AccessKeyID:     string(awsSecret.Data["AWS_ACCESS_KEY_ID"]),
+			SecretAccessKey: string(awsSecret.Data["AWS_SECRET_ACCESS_KEY"]),
+			SessionToken:    string(awsSecret.Data["AWS_SESSION_TOKEN"]),
+			Endpoint:        string(awsSecret.Data["AWS_ENDPOINT"]),
+		}
+		var err error
+		s3Client, err = awsclienthandler.NewS3ClientFromConfig(ctx, &awsConfig)
+		if err != nil {
+			logger.Error(err, "failed to create S3 client from secret")
+			return nil, err
+		}
+	} else {
+		var err error
+		s3Client, err = awsclienthandler.GetS3Client()
+		if err != nil {
+			logger.Error(err, "failed to get S3 client for destination")
+			return nil, err
+		}
+	}
+	return &unstructured.S3Destination{
+		S3Client:        s3Client,
+		Bucket:          destCfg.Bucket,
+		Prefix:          destCfg.Prefix,
+		DataProductName: dataProductName,
+	}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
