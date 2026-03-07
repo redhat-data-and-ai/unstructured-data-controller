@@ -4,7 +4,8 @@
       "Id": "S3ToSQSNotification",
       "QueueArn": "arn:aws:sqs:us-east-1:000000000000:unstructured-s3-queue",
       "Events": [
-        "s3:ObjectCreated:*"
+        "s3:ObjectCreated:*",
+        "s3:ObjectRemoved:*"
       ]
     }
   ]
