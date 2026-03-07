@@ -315,6 +315,9 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 	}
 
 	var chunker unstructured.Chunker
+	var chunkingTool unstructured.ChunkingTool
+	var input string
+
 	switch chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy {
 	case operatorv1alpha1.ChunkingStrategyRecursiveCharacter:
 		chunker = &unstructured.RecursiveCharacterSplitter{
@@ -326,6 +329,8 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 				KeepSeparator: chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.KeepSeparator,
 			},
 		}
+		chunkingTool = unstructured.LangchainChunkingTool
+		input = convertedFile.ConvertedDocument.Content.Markdown
 	case operatorv1alpha1.ChunkingStrategyMarkdown:
 		chunker = &unstructured.MarkdownSplitter{
 			LangchainClient: langchainClient,
@@ -338,6 +343,8 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 				JoinTableRows:        chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.JoinTableRows,
 			},
 		}
+		chunkingTool = unstructured.LangchainChunkingTool
+		input = convertedFile.ConvertedDocument.Content.Markdown
 	case operatorv1alpha1.ChunkingStrategyToken:
 		chunker = &unstructured.TokenSplitter{
 			LangchainClient: langchainClient,
@@ -350,65 +357,43 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 				DisallowedSpecial: chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.DisallowedSpecial,
 			},
 		}
+		chunkingTool = unstructured.LangchainChunkingTool
+		input = convertedFile.ConvertedDocument.Content.Markdown
 	case operatorv1alpha1.ChunkingStrategyDoclingHierarchical:
 		rawFilePath := unstructured.GetRawFilePathFromConvertedFilePath(convertedFilePath)
 		fileURL, err := r.fileStore.GetFileURL(ctx, rawFilePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get presigned URL for raw file: %w", err)
 		}
-		chunkingOptions := &docling.HierarchicalChunkingOptions{
-			MergeListItems: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHierarchicalChunkerConfig.MergeListItems,
-		}
-		chunks, err := doclingClient.ChunkFile(ctx, fileURL, docling.ChunkTypeHierarchical, chunkingOptions)
-		if err != nil {
-			return nil, err
-		}
-		return &unstructured.ChunksFile{
-			ConvertedDocument: convertedFile.ConvertedDocument,
-			ChunksDocument: &unstructured.ChunksDocument{
-				Metadata: &unstructured.ChunksFileMetadata{
-					ChunkingTool:          unstructured.DoclingChunkingTool,
-					ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
-					ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
-				},
-				Chunks: &unstructured.Chunks{
-					Text: chunks,
-				},
+		chunker = &unstructured.DoclingHierarchicalChunker{
+			DoclingClient: doclingClient,
+			Options: &docling.HierarchicalChunkingOptions{
+				MergeListItems: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHierarchicalChunkerConfig.MergeListItems,
 			},
-		}, nil
+		}
+		chunkingTool = unstructured.DoclingChunkingTool
+		input = fileURL
 	case operatorv1alpha1.ChunkingStrategyDoclingHybrid:
 		rawFilePath := unstructured.GetRawFilePathFromConvertedFilePath(convertedFilePath)
 		fileURL, err := r.fileStore.GetFileURL(ctx, rawFilePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get presigned URL for raw file: %w", err)
 		}
-		chunkingOptions := &docling.HybridChunkingOptions{
-			Tokenizer:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.Tokenizer,
-			MaxTokens:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MaxTokens,
-			MergePeers: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MergePeers,
-		}
-		chunks, err := doclingClient.ChunkFile(ctx, fileURL, docling.ChunkTypeHybrid, chunkingOptions)
-		if err != nil {
-			return nil, err
-		}
-		return &unstructured.ChunksFile{
-			ConvertedDocument: convertedFile.ConvertedDocument,
-			ChunksDocument: &unstructured.ChunksDocument{
-				Metadata: &unstructured.ChunksFileMetadata{
-					ChunkingTool:          unstructured.DoclingChunkingTool,
-					ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
-					ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
-				},
-				Chunks: &unstructured.Chunks{
-					Text: chunks,
-				},
+		chunker = &unstructured.DoclingHybridChunker{
+			DoclingClient: doclingClient,
+			Options: &docling.HybridChunkingOptions{
+				Tokenizer:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.Tokenizer,
+				MaxTokens:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MaxTokens,
+				MergePeers: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MergePeers,
 			},
-		}, nil
+		}
+		chunkingTool = unstructured.DoclingChunkingTool
+		input = fileURL
 	default:
 		return nil, fmt.Errorf("invalid strategy: %s", chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy)
 	}
 
-	chunks, err := chunker.Chunk(convertedFile.ConvertedDocument.Content.Markdown)
+	chunks, err := chunker.Chunk(ctx, input)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +402,7 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 		ConvertedDocument: convertedFile.ConvertedDocument,
 		ChunksDocument: &unstructured.ChunksDocument{
 			Metadata: &unstructured.ChunksFileMetadata{
-				ChunkingTool:          unstructured.LangchainChunkingTool,
+				ChunkingTool:          chunkingTool,
 				ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
 				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
 			},
@@ -508,27 +493,30 @@ func (r *ChunksGeneratorReconciler) chunkRawFile(ctx context.Context, rawFilePat
 		return nil, fmt.Errorf("failed to get presigned URL for raw file: %w", err)
 	}
 
-	var chunkType docling.ChunkType
-	var chunkingOptions any
+	var chunker unstructured.Chunker
 
 	switch chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy {
 	case operatorv1alpha1.ChunkingStrategyDoclingHierarchical:
-		chunkType = docling.ChunkTypeHierarchical
-		chunkingOptions = &docling.HierarchicalChunkingOptions{
-			MergeListItems: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHierarchicalChunkerConfig.MergeListItems,
+		chunker = &unstructured.DoclingHierarchicalChunker{
+			DoclingClient: doclingClient,
+			Options: &docling.HierarchicalChunkingOptions{
+				MergeListItems: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHierarchicalChunkerConfig.MergeListItems,
+			},
 		}
 	case operatorv1alpha1.ChunkingStrategyDoclingHybrid:
-		chunkType = docling.ChunkTypeHybrid
-		chunkingOptions = &docling.HybridChunkingOptions{
-			Tokenizer:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.Tokenizer,
-			MaxTokens:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MaxTokens,
-			MergePeers: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MergePeers,
+		chunker = &unstructured.DoclingHybridChunker{
+			DoclingClient: doclingClient,
+			Options: &docling.HybridChunkingOptions{
+				Tokenizer:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.Tokenizer,
+				MaxTokens:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MaxTokens,
+				MergePeers: chunksGeneratorCR.Spec.ChunksGeneratorConfig.DoclingHybridChunkerConfig.MergePeers,
+			},
 		}
 	default:
 		return nil, fmt.Errorf("chunkRawFile called with non-Docling strategy: %s", chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy)
 	}
 
-	chunks, err := doclingClient.ChunkFile(ctx, fileURL, chunkType, chunkingOptions)
+	chunks, err := chunker.Chunk(ctx, fileURL)
 	if err != nil {
 		return nil, err
 	}
