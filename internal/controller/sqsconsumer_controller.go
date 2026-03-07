@@ -65,6 +65,7 @@ type SQSMessage struct {
 // S3EventRecord represents a single S3 event record
 type S3EventRecord struct {
 	AWSRegion    string              `json:"awsRegion"`
+	EventName    string              `json:"eventName"`
 	EventTime    string              `json:"eventTime"`
 	UserIdentity S3EventUserIdentity `json:"userIdentity"`
 	S3           S3EventData         `json:"s3"`
@@ -79,6 +80,21 @@ func (r *S3EventRecord) validate(ctx context.Context) bool {
 		return false
 	}
 
+	// check path structure (needed to extract data product name)
+	// example: "dataproduct/path/to/file.pdf"
+	filePathSplit := strings.Split(r.S3.Object.Key, "/")
+	if len(filePathSplit) < 2 {
+		logger.Info("skipping record", "key", r.S3.Object.Key, "reason", "file path should be at least 2 levels deep like 'dataproduct/filename'")
+		return false
+	}
+
+	// For deletion events, we only need bucket and path validation
+	// The file is already deleted, so format/existence checks don't make sense
+	if strings.HasPrefix(r.EventName, "ObjectRemoved") {
+		return true
+	}
+
+	// For creation events, perform additional validation
 	// verify the file actually exists
 	// it's possible that the file is deleted after the message is received but before the message is processed
 	exists, err := awsclienthandler.ObjectExists(ctx, r.S3.Bucket.Name, r.S3.Object.Key)
@@ -87,22 +103,14 @@ func (r *S3EventRecord) validate(ctx context.Context) bool {
 		return false
 	}
 	if !exists {
-		logger.Info("skipping record", "key", r.S3.Object.Key, "object does not exist")
+		logger.Info("skipping record", "key", r.S3.Object.Key, "reason", "object does not exist")
 		return false
 	}
 
-	// example record.s3.object.key: bookingsmaster/pexels.pdf
+	// check if file format is supported by docling
 	recordExt := strings.ReplaceAll(path.Ext(r.S3.Object.Key), ".", "")
 	if !slices.Contains(doclingSupportedFormats, recordExt) {
-		logger.Info("skipping record", "key", r.S3.Object.Key, "file not in supported formats", recordExt, "supported formats", doclingSupportedFormats)
-		return false
-	}
-
-	filePathSplit := strings.Split(r.S3.Object.Key, "/")
-
-	// length of filePathSplit should be at least 3, ["dataproduct","rest/of/the/path"]
-	if len(filePathSplit) < 2 {
-		logger.Info("skipping record", "key", r.S3.Object.Key, "message", "file path should be at least 2 levels deep like 'bucket/prefix/filename'")
+		logger.Info("skipping record", "key", r.S3.Object.Key, "reason", "unsupported format", "extension", recordExt, "supported formats", doclingSupportedFormats)
 		return false
 	}
 
