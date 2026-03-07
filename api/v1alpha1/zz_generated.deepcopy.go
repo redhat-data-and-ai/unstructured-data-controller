@@ -763,7 +763,11 @@ func (in *UnstructuredDataProductSpec) DeepCopyInto(out *UnstructuredDataProduct
 	*out = *in
 	out.SourceConfig = in.SourceConfig
 	out.DestinationConfig = in.DestinationConfig
-	in.DocumentProcessorConfig.DeepCopyInto(&out.DocumentProcessorConfig)
+	if in.DocumentProcessorConfig != nil {
+		in, out := &in.DocumentProcessorConfig, &out.DocumentProcessorConfig
+		*out = new(DocumentProcessorConfig)
+		(*in).DeepCopyInto(*out)
+	}
 	in.ChunksGeneratorConfig.DeepCopyInto(&out.ChunksGeneratorConfig)
 }
 

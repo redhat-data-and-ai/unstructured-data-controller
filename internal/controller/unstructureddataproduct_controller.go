@@ -68,6 +68,11 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	dataProductName := unstructuredDataProductCR.Name
 
+	if err := unstructuredDataProductCR.Spec.ValidateSpec(); err != nil {
+		logger.Error(err, "spec validation failed")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &operatorv1alpha1.UnstructuredDataProduct{}
 		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
@@ -88,9 +93,8 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	r.sf = sf
 
-	// create (or update) the DocumentProcessor CR only if NOT using Docling chunking strategies
-	// Docling chunking performs conversion+chunking in a single call, so document processing is not needed
-	if !operatorv1alpha1.IsDoclingChunkingStrategy(unstructuredDataProductCR.Spec.ChunksGeneratorConfig.Strategy) {
+	// create (or update) the DocumentProcessor CR only if DocumentProcessorConfig is specified
+	if unstructuredDataProductCR.Spec.DocumentProcessorConfig != nil {
 		documentProcessorCR := &operatorv1alpha1.DocumentProcessor{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      dataProductName,
@@ -98,13 +102,13 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			},
 			Spec: operatorv1alpha1.DocumentProcessorSpec{
 				DataProduct:             dataProductName,
-				DocumentProcessorConfig: unstructuredDataProductCR.Spec.DocumentProcessorConfig,
+				DocumentProcessorConfig: *unstructuredDataProductCR.Spec.DocumentProcessorConfig,
 			},
 		}
 		result, err := controllerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error {
 			documentProcessorCR.Spec = operatorv1alpha1.DocumentProcessorSpec{
 				DataProduct:             dataProductName,
-				DocumentProcessorConfig: unstructuredDataProductCR.Spec.DocumentProcessorConfig,
+				DocumentProcessorConfig: *unstructuredDataProductCR.Spec.DocumentProcessorConfig,
 			}
 			return nil
 		})
@@ -187,7 +191,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 
-	if !operatorv1alpha1.IsDoclingChunkingStrategy(unstructuredDataProductCR.Spec.ChunksGeneratorConfig.Strategy) {
+	if unstructuredDataProductCR.Spec.DocumentProcessorConfig != nil {
 		// add force reconcile label to the DocumentProcessor CR
 		// DocumentProcessor will in turn trigger ChunksGenerator when conversion is done
 		documentProcessorKey := client.ObjectKey{
@@ -205,8 +209,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			return r.handleError(ctx, unstructuredDataProductCR, err)
 		}
 	} else {
-		// For Docling chunking strategies, trigger ChunksGenerator directly
-		// (no document processing needed — Docling chunk endpoint handles conversion internally)
+		// No document processing needed — trigger ChunksGenerator directly
 		chunksGeneratorKey := client.ObjectKey{
 			Namespace: unstructuredDataProductCR.Namespace,
 			Name:      dataProductName,

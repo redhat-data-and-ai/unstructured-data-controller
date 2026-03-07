@@ -16,7 +16,90 @@ limitations under the License.
 
 package v1alpha1
 
-import "testing"
+import (
+	"testing"
+)
+
+func TestValidateSpec(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    UnstructuredDataProductSpec
+		wantErr bool
+	}{
+		{
+			name: "docling hierarchical with DocumentProcessorConfig set returns error",
+			spec: UnstructuredDataProductSpec{
+				ChunksGeneratorConfig: ChunksGeneratorConfig{
+					Strategy: ChunkingStrategyDoclingHierarchical,
+				},
+				DocumentProcessorConfig: &DocumentProcessorConfig{
+					Type: "docling",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "docling hybrid with DocumentProcessorConfig set returns error",
+			spec: UnstructuredDataProductSpec{
+				ChunksGeneratorConfig: ChunksGeneratorConfig{
+					Strategy: ChunkingStrategyDoclingHybrid,
+				},
+				DocumentProcessorConfig: &DocumentProcessorConfig{
+					Type: "docling",
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "docling hierarchical without DocumentProcessorConfig returns no error",
+			spec: UnstructuredDataProductSpec{
+				ChunksGeneratorConfig: ChunksGeneratorConfig{
+					Strategy: ChunkingStrategyDoclingHierarchical,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "docling hybrid without DocumentProcessorConfig returns no error",
+			spec: UnstructuredDataProductSpec{
+				ChunksGeneratorConfig: ChunksGeneratorConfig{
+					Strategy: ChunkingStrategyDoclingHybrid,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "non-docling strategy with DocumentProcessorConfig set returns no error",
+			spec: UnstructuredDataProductSpec{
+				ChunksGeneratorConfig: ChunksGeneratorConfig{
+					Strategy: ChunkingStrategyRecursiveCharacter,
+				},
+				DocumentProcessorConfig: &DocumentProcessorConfig{
+					Type: "docling",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "non-docling strategy without DocumentProcessorConfig returns no error",
+			spec: UnstructuredDataProductSpec{
+				ChunksGeneratorConfig: ChunksGeneratorConfig{
+					Strategy: ChunkingStrategyMarkdown,
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.spec.ValidateSpec()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateSpec() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
 
 func TestIsDoclingChunkingStrategy(t *testing.T) {
 	tests := []struct {

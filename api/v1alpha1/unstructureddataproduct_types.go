@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -40,6 +42,15 @@ const (
 
 func IsDoclingChunkingStrategy(strategy ChunkingStrategy) bool {
 	return strategy == ChunkingStrategyDoclingHierarchical || strategy == ChunkingStrategyDoclingHybrid
+}
+
+func (s *UnstructuredDataProductSpec) ValidateSpec() error {
+	if IsDoclingChunkingStrategy(s.ChunksGeneratorConfig.Strategy) {
+		if s.DocumentProcessorConfig != nil {
+			return fmt.Errorf("documentProcessorConfig must not be set when using Docling chunking strategy %q; Docling performs conversion and chunking in a single step", s.ChunksGeneratorConfig.Strategy)
+		}
+	}
+	return nil
 }
 
 type DocumentProcessorConfig struct {
@@ -106,10 +117,10 @@ type DoclingHybridChunkerConfig struct {
 
 // UnstructuredDataProductSpec defines the desired state of UnstructuredDataProduct
 type UnstructuredDataProductSpec struct {
-	SourceConfig            SourceConfig            `json:"sourceConfig,omitempty"`
-	DestinationConfig       DestinationConfig       `json:"destinationConfig,omitempty"`
-	DocumentProcessorConfig DocumentProcessorConfig `json:"documentProcessorConfig,omitempty"`
-	ChunksGeneratorConfig   ChunksGeneratorConfig   `json:"chunksGeneratorConfig,omitempty"`
+	SourceConfig            SourceConfig             `json:"sourceConfig,omitempty"`
+	DestinationConfig       DestinationConfig        `json:"destinationConfig,omitempty"`
+	DocumentProcessorConfig *DocumentProcessorConfig `json:"documentProcessorConfig,omitempty"`
+	ChunksGeneratorConfig   ChunksGeneratorConfig    `json:"chunksGeneratorConfig,omitempty"`
 }
 
 type SourceConfig struct {
