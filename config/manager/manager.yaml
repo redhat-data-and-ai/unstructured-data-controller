@@ -77,6 +77,8 @@ spec:
           capabilities:
             drop:
             - "ALL"
+          # Required when runAsNonRoot is true and image runs as root (avoids CreateContainerConfigError in CI).
+          runAsUser: 65534
         livenessProbe:
           httpGet:
             path: /healthz

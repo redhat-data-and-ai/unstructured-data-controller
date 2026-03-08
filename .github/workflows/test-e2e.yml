@@ -1,28 +1,101 @@
 name: E2E Tests
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  pull_request_target:
+    branches: [main]
+
+env:
+  KIND_CLUSTER: unstructured-data-controller-test-e2e
+  NAMESPACE: unstructured-controller-namespace
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+  SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+  SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+  SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_KEY }}
+
 jobs:
   test-e2e:
-    name: Run on Ubuntu
+    name: E2E Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
     steps:
-      - uses: actions/checkout@v5
-        name: checkout the code
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        name: setup go
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: "go.mod"
-          go-version: "1.24.x"
+          cache: false
 
-      - name: setup the latest version of kind
-        uses: helm/kind-action@v1
+      - name: Wait for build-and-push to succeed
+        uses: fountainhead/action-wait-for-check@v1.2.0
+        id: wait-for-build
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checkName: build-and-push
+          ref: ${{ github.event.pull_request.head.sha }}
+          timeoutSeconds: 600
+          intervalSeconds: 10
 
-      - name: verify installation
+      - name: Determine image tag
+        id: image-tag
         run: |
-          kind version
-          kubectl version
+          echo "tag=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER }}
+          # Match local Kind default (kind create cluster → kindest/node:v1.33.1)
+          node_image: kindest/node:v1.33.1
+
+      - name: Set up kubectl (match Kind server version to avoid skew)
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.33.1'
+
+      - name: Create Namespace
+        run: kubectl create namespace ${{ env.NAMESPACE }}
+
+      - name: Cluster and storage info (for CI vs local comparison)
+        run: |
+          kubectl version --short 2>/dev/null || kubectl version
+          echo "=== StorageClasses ==="
+          kubectl get storageclass -o wide
+          echo "=== Default storage class (if any) ==="
+          kubectl get storageclass -o jsonpath='{range .items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")]}{.metadata.name}{"\n"}{end}'
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load image into Kind
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
+          docker pull ${IMG}
+          kind load docker-image ${IMG} --name ${{ env.KIND_CLUSTER }}
+
+      - name: Verify image loaded
+        run: |
+          echo "=== Images in Docker ==="
+          docker images | grep unstructured-data-controller || echo "No images found in docker"
+
+          echo "=== Images in Kind cluster ==="
+          docker exec ${{ env.KIND_CLUSTER }}-control-plane crictl images | grep unstructured || echo "No images found in kind"
+
+      - name: Run e2e tests
+        if: steps.wait-for-build.outputs.conclusion == 'success'
+        env:
+          SKIP_CLUSTER_SETUP: "true"
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
+          make test-e2e IMG=${IMG}
