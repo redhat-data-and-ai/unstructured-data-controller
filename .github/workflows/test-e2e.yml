@@ -1,28 +1,78 @@
 name: E2E Tests
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    branches: [main]
+
+env:
+  KIND_CLUSTER: unstructured-data-controller-test-e2e
+  NAMESPACE: unstructured-controller-namespace
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
   test-e2e:
-    name: Run on Ubuntu
+    name: E2E Tests
     runs-on: ubuntu-latest
+    environment: e2e-tests
+    permissions:
+      contents: read
+      packages: read
+
     steps:
-      - uses: actions/checkout@v5
-        name: checkout the code
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        name: setup go
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: "go.mod"
-          go-version: "1.24.x"
+          cache: false
 
-      - name: setup the latest version of kind
-        uses: helm/kind-action@v1
+      - name: Wait for build-and-push to succeed
+        uses: fountainhead/action-wait-for-check@v1.2.0
+        id: wait-for-build
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checkName: build-and-push
+          ref: ${{ github.event.pull_request.head.sha }}
+          timeoutSeconds: 600
+          intervalSeconds: 10
 
-      - name: verify installation
+      - name: Determine image tag
+        id: image-tag
         run: |
-          kind version
-          kubectl version
+          echo "tag=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.KIND_CLUSTER }}
+
+      - name: Create Namespace
+        run: kubectl create namespace ${{ env.NAMESPACE }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load image into Kind
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
+          docker pull ${IMG}
+          kind load docker-image ${IMG} --name ${{ env.KIND_CLUSTER }}
+
+      - name: Run e2e tests
+        if: steps.wait-for-build.outputs.conclusion == 'success'
+        env:
+          SKIP_CLUSTER_SETUP: "true"
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
+          make test-e2e IMG=${IMG} SNOWFLAKE_PRIVATE_KEY=${{ secrets.SNOWFLAKE_KEY }} SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE }} SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE }}
