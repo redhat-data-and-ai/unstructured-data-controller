@@ -41,6 +41,9 @@ import (
 var (
 	testenv         env.Environment
 	kindClusterName string
+	localstackHost  = "localhost"
+	localstackPort  = "4566"
+	localstackURL   = fmt.Sprintf("http://%s:%s", localstackHost, localstackPort)
 )
 
 const (
