@@ -117,7 +117,7 @@ func (c *Client) switchRoles(ctx context.Context, role string) error {
 	return nil
 }
 
-func (c *Client) execute(ctx context.Context, query, role string) (int64, error) {
+func (c *Client) execute(ctx context.Context, query, role string) error {
 	sqlMutex.Lock()
 	defer sqlMutex.Unlock()
 
@@ -130,25 +130,25 @@ func (c *Client) execute(ctx context.Context, query, role string) (int64, error)
 
 	if err := c.switchRoles(ctx, role); err != nil {
 		logger.Error(err, roleSwitchingFailureMesssage)
-		return 0, err
+		return err
 	}
 
 	result, err := c.conn.ExecContext(ctx, query)
 	if err != nil {
 		logger.Error(err, failureMessage)
-		return 0, fmt.Errorf("query failed: %w", err)
+		return fmt.Errorf("query failed: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		if err.Error() != "no RowsAffected available after DDL statement" {
-			return 0, fmt.Errorf("failed to get rows affected: %w", err)
+			return fmt.Errorf("failed to get rows affected: %w", err)
 		}
 		rowsAffected = 0
 	}
 
 	logger.Info(successMessage, "rowsAffected", rowsAffected, "duration", time.Since(start))
-	return rowsAffected, nil
+	return nil
 }
 
 func (c *Client) executeBatch(ctx context.Context, queries []string, role string) error {
@@ -161,7 +161,7 @@ func (c *Client) executeBatch(ctx context.Context, queries []string, role string
 	for i, query := range queries {
 		logger := logger.WithValues("queryIndex", i, "query", query)
 
-		if _, err := c.execute(ctx, query, role); err != nil {
+		if err := c.execute(ctx, query, role); err != nil {
 			logger.Error(err, failureMessage)
 			return fmt.Errorf("query %d failed: %w", i, err)
 		}
