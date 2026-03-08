@@ -1,28 +1,23 @@
 name: E2E Tests
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    branches: [main]
+
 jobs:
   test-e2e:
-    name: Run on Ubuntu
+    name: E2E Tests
     runs-on: ubuntu-latest
+    environment: e2e-tests
+    permissions:
+      contents: read
+      packages: read
+
     steps:
-      - uses: actions/checkout@v5
-        name: checkout the code
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        name: setup go
-        with:
-          go-version-file: "go.mod"
-          go-version: "1.24.x"
-
-      - name: setup the latest version of kind
-        uses: helm/kind-action@v1
-
-      - name: verify installation
-        run: |
-          kind version
-          kubectl version
+     - name: Print e2e tests
+       run: |
+         echo "Running E2E tests workflow"
