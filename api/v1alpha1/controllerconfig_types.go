@@ -26,19 +26,18 @@ const (
 
 // ControllerConfigSpec defines the desired state of ControllerConfig.
 type ControllerConfigSpec struct {
-	SnowflakeConfig                  SnowflakeConfig                      `json:"snowflakeConfig,omitempty"`
-	AWSSecret                        string                               `json:"awsSecret,omitempty"`
+	SnowflakeConfig                  *SnowflakeConfig                     `json:"snowflakeConfig,omitempty"`
+	UnstructuredSecret               string                               `json:"unstructuredSecret,omitempty"`
 	UnstructuredDataProcessingConfig UnstructuredDataProcessingConfigSpec `json:"unstructuredDataProcessingConfig,omitempty"`
 }
 
 type SnowflakeConfig struct {
-	Name             string `json:"name"`
-	Account          string `json:"account"`
-	User             string `json:"user"`
-	Role             string `json:"role"`
-	Region           string `json:"region,omitempty"`
-	Warehouse        string `json:"warehouse"`
-	PrivateKeySecret string `json:"privateKeySecret"`
+	Name      string `json:"name"`
+	Account   string `json:"account"`
+	User      string `json:"user"`
+	Role      string `json:"role"`
+	Region    string `json:"region,omitempty"`
+	Warehouse string `json:"warehouse"`
 }
 
 type UnstructuredDataProcessingConfigSpec struct {
@@ -47,7 +46,6 @@ type UnstructuredDataProcessingConfigSpec struct {
 
 	IngestionBucket string `json:"ingestionBucket,omitempty"`
 	DoclingServeURL string `json:"doclingServeURL,omitempty"`
-	DoclingSecret   string `json:"doclingSecret,omitempty"`
 
 	CacheDirectory    string `json:"cacheDirectory,omitempty"`
 	DataStorageBucket string `json:"dataStorageBucket,omitempty"`

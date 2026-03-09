@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: controllerconfig
 spec:
-  awsSecret: aws-secret
+  unstructuredSecret: unstructured-secret
   snowflakeConfig:
     name: "testing"
     account: "account-identifier"
@@ -14,12 +14,10 @@ spec:
     role: "TESTING_ROLE"
     region: "us-west-2"
     warehouse: "default"
-    privateKeySecret: rhplatformtest-private-key
   unstructuredDataProcessingConfig:
-    doclingServeURL: "http://localhost:5002"
-    doclingSecret: docling-secret
+    doclingServeURL: "http://localhost:5001"
     ingestionBucket: "data-ingestion-bucket"
     dataStorageBucket: "data-storage-bucket"
-    cacheDirectory: "/tmp/cache/"
+    cacheDirectory: "tmp/cache/"
     maxConcurrentDoclingTasks: 5
     maxConcurrentLangchainTasks: 10

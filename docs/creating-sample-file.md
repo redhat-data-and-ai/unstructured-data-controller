@@ -1,6 +1,6 @@
 # Unstructured Data Controller - Quick Start Guide
 
-Simple guide to get the Unstructured Data Controller up and running.
+Simple guide to get the first file processed by unstructured controller
 
 ## What It Does
 
@@ -14,36 +14,13 @@ The controller automatically processes unstructured files from S3:
 
 ## Prerequisites
 
-- Kubernetes cluster (or Kind for local dev)
-- AWS/S3 access
-- Snowflake account
-- Go 1.24+ (for local development)
+- Have local controller running using [Unstructured Data Controller with LocalStack](setup-unstructured-controller.md)
 
 ---
 
 ## Quick Setup
 
-### 1. Create Namespace
-
-```bash
-kubectl create namespace unstructured-controller-namespace
-```
-
-### 2. Create Secrets
-
-**AWS Secret:**
-```bash
-kubectl apply -f config/samples/aws-secret.yaml -n unstructured-controller-namespace
-```
-
-**Snowflake Private Key:**
-```bash
-kubectl create secret generic rhplatformtest-private-key \
-  -n unstructured-controller-namespace \
-  --from-file=privateKey=/path/to/rsa_key.p8
-```
-
-### 3. Setup Snowflake
+### 1. Setup Snowflake
 
 Run in Snowflake SQL (using names from your config):
 
@@ -54,7 +31,7 @@ USE DATABASE TESTING_DB;
 
 -- Create schema and stage
 CREATE SCHEMA IF NOT EXISTS TESTINGSCHEMA;
-CREATE OR REPLACE STAGE TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG 
+CREATE OR REPLACE STAGE TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG
     FILE_FORMAT = (TYPE = 'JSON');
 
 -- Create role and grant permissions
@@ -67,26 +44,11 @@ GRANT READ, WRITE ON STAGE TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG T
 GRANT ROLE TESTING_ROLE TO USER SNOWFLAKE_USER;
 ```
 
-### 4. Deploy Controller
-
-**Apply ControllerConfig:**
-```bash
-kubectl apply -f config/samples/operator_v1alpha1_controllerconfig.yaml -n unstructured-controller-namespace
-```
-
-**Apply SQSConsumer:**
-```bash
-kubectl apply -f config/samples/operator_v1alpha1_sqsconsumer.yaml -n unstructured-controller-namespace
-```
+### 4. Create Unstructured Data Product
 
 **Apply UnstructuredDataProduct:**
 ```bash
 kubectl apply -f config/samples/operator_v1alpha1_unstructureddataproduct.yaml -n unstructured-controller-namespace
-```
-
-**Run Controller (local dev):**
-```bash
-make run
 ```
 
 ---
@@ -116,8 +78,8 @@ USE ROLE TESTING_ROLE;
 LIST @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG;
 
 -- View processed data
-SELECT $1 AS data 
-FROM @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG 
+SELECT $1 AS data
+FROM @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG
 LIMIT 1;
 ```
 
@@ -155,21 +117,21 @@ spec:
     s3Config:
       bucket: data-ingestion-bucket
       prefix: testunstructureddataproduct
-  
+
   # How to convert files
   documentProcessorConfig:
     type: docling
     doclingConfig:
       from_formats: [pdf, docx, md]
       do_ocr: true
-  
+
   # How to chunk content
   chunksGeneratorConfig:
     strategy: markdownTextSplitter
     markdownSplitterConfig:
       chunkSize: 1000
       chunkOverlap: 200
-  
+
   # Where to store results
   destinationConfig:
     type: snowflakeInternalStage
@@ -185,7 +147,7 @@ spec:
 
 After processing, each file produces:
 
-1. **Local Cache** (`/tmp/cache/testunstructureddataproduct/`):
+1. **Local Cache** (`tmp/cache/testunstructureddataproduct/`):
    - `file.pdf` - Original file
    - `file.pdf-metadata.json` - File metadata
    - `file.pdf-converted.json` - Converted Markdown

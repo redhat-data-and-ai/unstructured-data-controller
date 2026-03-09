@@ -46,15 +46,11 @@ spec:
           spec:
             description: ControllerConfigSpec defines the desired state of ControllerConfig.
             properties:
-              awsSecret:
-                type: string
               snowflakeConfig:
                 properties:
                   account:
                     type: string
                   name:
-                    type: string
-                  privateKeySecret:
                     type: string
                   region:
                     type: string
@@ -67,7 +63,6 @@ spec:
                 required:
                 - account
                 - name
-                - privateKeySecret
                 - role
                 - user
                 - warehouse
@@ -78,8 +73,6 @@ spec:
                     type: string
                   dataStorageBucket:
                     type: string
-                  doclingSecret:
-                    type: string
                   doclingServeURL:
                     type: string
                   ingestionBucket:
@@ -89,6 +82,8 @@ spec:
                   maxConcurrentLangchainTasks:
                     type: integer
                 type: object
+              unstructuredSecret:
+                type: string
             type: object
           status:
             description: ControllerConfigStatus defines the observed state of ControllerConfig.
