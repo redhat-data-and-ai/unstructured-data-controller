@@ -181,6 +181,16 @@ spec:
                   type:
                     type: string
                 type: object
+              vectorEmbeddingsGeneratorConfig:
+                properties:
+                  modelName:
+                    type: string
+                  nomicEmbedTextV15Config:
+                    properties:
+                      encodingformat:
+                        type: string
+                    type: object
+                type: object
             type: object
           status:
             description: UnstructuredDataProductStatus defines the observed state

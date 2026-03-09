@@ -34,19 +34,21 @@ spec:
       table_mode: "none"
       abort_on_error: true
   chunksGeneratorConfig:
-    strategy: "markdownTextSplitter"
-    markdownSplitterConfig:
+    strategy: "recursiveCharacterTextSplitter"
+    recursiveCharacterSplitterConfig:
       chunkSize: 1000
-      chunkOverlap: 200
-      codeBlocks: true
-      referenceLinks: true
-      headingHierarchy: true
-      joinTableRows: true
+      chunkOverlap: 5
+      keepSeparator: true
+      separators: ["\n\n", "\n", " ", ""]
+  vectorEmbeddingsGeneratorConfig:
+    modelName: "MODEL_NAME"
+    nomicEmbedTextV15Config:
+      encodingformat: "float"
   destinationConfig:
     type: "snowflakeInternalStage"
     snowflakeInternalStageConfig:
       database: "TESTING_DB"
-      schema: "TESTINGSCHEMA"
+      schema: "TESTINGSCHEMA2"
       stage: "TESTINGSCHEMA_INTERNAL_STG"
       # type: "s3"
       # s3DestinationConfig:

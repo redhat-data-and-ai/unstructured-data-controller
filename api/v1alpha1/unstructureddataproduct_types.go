@@ -85,12 +85,22 @@ type TokenSplitterConfig struct {
 	DisallowedSpecial []string `json:"disallowedSpecial,omitempty"`
 }
 
+type VectorEmbeddingsGeneratorConfig struct {
+	ModelName               string                  `json:"modelName,omitempty"`
+	NomicEmbedTextV15Config NomicEmbedTextV15Config `json:"nomicEmbedTextV15Config,omitempty"`
+}
+
+type NomicEmbedTextV15Config struct {
+	EncodingFormat string `json:"encodingformat,omitempty"`
+}
+
 // UnstructuredDataProductSpec defines the desired state of UnstructuredDataProduct
 type UnstructuredDataProductSpec struct {
-	SourceConfig            SourceConfig            `json:"sourceConfig,omitempty"`
-	DestinationConfig       DestinationConfig       `json:"destinationConfig,omitempty"`
-	DocumentProcessorConfig DocumentProcessorConfig `json:"documentProcessorConfig,omitempty"`
-	ChunksGeneratorConfig   ChunksGeneratorConfig   `json:"chunksGeneratorConfig,omitempty"`
+	SourceConfig                    SourceConfig                    `json:"sourceConfig,omitempty"`
+	DestinationConfig               DestinationConfig               `json:"destinationConfig,omitempty"`
+	DocumentProcessorConfig         DocumentProcessorConfig         `json:"documentProcessorConfig,omitempty"`
+	ChunksGeneratorConfig           ChunksGeneratorConfig           `json:"chunksGeneratorConfig,omitempty"`
+	VectorEmbeddingsGeneratorConfig VectorEmbeddingsGeneratorConfig `json:"vectorEmbeddingsGeneratorConfig,omitempty"`
 }
 
 // SourceConfig defines where to read unstructured data from (e.g. S3).

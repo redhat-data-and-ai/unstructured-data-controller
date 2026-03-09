@@ -152,6 +152,31 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	logger.Info("ChunksGenerator CR created/updated", "result", result)
 
+	// create vector embeddings generator cr
+	vectorEmbeddingsGeneratorCR := &operatorv1alpha1.VectorEmbeddingsGenerator{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dataProductName,
+			Namespace: unstructuredDataProductCR.Namespace,
+		},
+		Spec: operatorv1alpha1.VectorEmbeddingsGeneratorSpec{
+			DataProduct:                     dataProductName,
+			VectorEmbeddingsGeneratorConfig: unstructuredDataProductCR.Spec.VectorEmbeddingsGeneratorConfig,
+		},
+	}
+
+	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, vectorEmbeddingsGeneratorCR, func() error {
+		vectorEmbeddingsGeneratorCR.Spec = operatorv1alpha1.VectorEmbeddingsGeneratorSpec{
+			DataProduct:                     dataProductName,
+			VectorEmbeddingsGeneratorConfig: unstructuredDataProductCR.Spec.VectorEmbeddingsGeneratorConfig,
+		}
+		return nil
+	})
+	if err != nil {
+		logger.Error(err, "failed to create/update VectorEmbeddingsGenerator CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err)
+	}
+	logger.Info("VectorEmbeddingsGenerator CR created/updated", "result", result)
+
 	var source unstructured.DataSource
 	switch unstructuredDataProductCR.Spec.SourceConfig.Type {
 	case operatorv1alpha1.TypeS3:
@@ -249,16 +274,16 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
-	// extract the chunked files that are to be ingested to destination
-	filterChunksFiles := unstructured.FilterChunksFilePaths(filePaths)
-	logger.Info("files to ingest to destination", "files", filterChunksFiles)
+	// extract the vector embeddings files that are to be ingested to destination
+	filterEmbeddingsFiles := unstructured.FilterVectorEmbeddingsFilePaths(filePaths)
+	logger.Info("files to ingest to destination", "files", filterEmbeddingsFiles)
 
-	// ingest the chunks files to destination
-	if err := destination.SyncFilesToDestination(ctx, r.fileStore, filterChunksFiles); err != nil {
-		logger.Error(err, "failed to ingest chunks files to destination")
+	// ingest the embeddings files to destination
+	if err := destination.SyncFilesToDestination(ctx, r.fileStore, filterEmbeddingsFiles); err != nil {
+		logger.Error(err, "failed to ingest embeddings files to destination")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
-	logger.Info("successfully ingested chunks files to destination")
+	logger.Info("successfully ingested embeddings files to destination")
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)

@@ -44,9 +44,23 @@ import (
 var (
 	ingestionBucket string
 
-	doclingClient   *docling.Client
-	langchainClient *langchain.Client
+	doclingClient      *docling.Client
+	langchainClient    *langchain.Client
+	unstructuredSecret *corev1.Secret
 )
+
+type Model string
+type ModelCredentials struct {
+	Endpoint string
+	APIKey   string
+}
+
+var modelMap = map[Model]ModelCredentials{
+	Model("nomic-ai/nomic-embed-text-v1.5"): {
+		Endpoint: "NOMIC_ENDPOINT",
+		APIKey:   "NOMIC_API_KEY",
+	},
+}
 
 // ControllerConfigReconciler reconciles a ControllerConfig object
 type ControllerConfigReconciler struct {
@@ -88,7 +102,7 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	dataStorageBucket = config.Spec.UnstructuredDataProcessingConfig.DataStorageBucket
 	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
 
-	unstructuredSecret := &corev1.Secret{}
+	unstructuredSecret = &corev1.Secret{}
 	if config.Spec.UnstructuredSecret != "" {
 		if err := r.Get(ctx,
 			types.NamespacedName{Name: config.Spec.UnstructuredSecret, Namespace: req.Namespace}, unstructuredSecret); err != nil {
