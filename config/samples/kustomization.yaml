@@ -5,4 +5,5 @@ resources:
 - operator_v1alpha1_unstructureddataproduct.yaml
 - operator_v1alpha1_documentprocessor.yaml
 - operator_v1alpha1_chunksgenerator.yaml
+- operator_v1alpha1_vectorembeddingsgenerationjob.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

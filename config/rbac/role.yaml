@@ -21,6 +21,7 @@ rules:
   - documentprocessors
   - sqsconsumers
   - unstructureddataproducts
+  - vectorembeddingsgenerationjobs
   verbs:
   - create
   - delete
@@ -37,6 +38,7 @@ rules:
   - documentprocessors/finalizers
   - sqsconsumers/finalizers
   - unstructureddataproducts/finalizers
+  - vectorembeddingsgenerationjobs/finalizers
   verbs:
   - update
 - apiGroups:
@@ -47,6 +49,7 @@ rules:
   - documentprocessors/status
   - sqsconsumers/status
   - unstructureddataproducts/status
+  - vectorembeddingsgenerationjobs/status
   verbs:
   - get
   - patch

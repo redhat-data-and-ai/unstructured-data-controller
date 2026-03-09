@@ -47,4 +47,13 @@ resources:
   kind: ChunksGenerator
   path: github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: dataverse.redhat.com
+  group: operator
+  kind: VectorEmbeddingsGenerationJob
+  path: github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1
+  version: v1alpha1
 version: "3"
