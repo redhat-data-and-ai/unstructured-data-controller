@@ -75,4 +75,4 @@ jobs:
           SKIP_CLUSTER_SETUP: "true"
         run: |
           IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
-          make test-e2e IMG=${IMG} SNOWFLAKE_PRIVATE_KEY=${{ secrets.SNOWFLAKE_KEY }} SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE }} SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          make test-e2e IMG=${IMG} SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE }} SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE }} SNOWFLAKE_PRIVATE_KEY=${{ secrets.SNOWFLAKE_KEY }}
