@@ -1,0 +1,40 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: docling-serve
+  labels:
+    app: docling-serve
+    component: docling-serve-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docling-serve
+  template:
+    metadata:
+      labels:
+        app: docling-serve
+        component: docling-serve-api
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: api
+          image: ghcr.io/docling-project/docling-serve-cpu:v1.2.0
+          resources:
+            requests:
+              cpu: "1"
+              memory: "4Gi"
+            limits:
+              cpu: "2"
+              memory: "6Gi"
+          env:
+            - name: DOCLING_SERVE_ENABLE_UI
+              value: 'true'
+            # this is where the detection models are downloaded at runtime and stored
+            - name: DOCLING_SERVE_ARTIFACTS_PATH
+              value: ""
+          ports:
+            - name: http
+              containerPort: 5001
+              protocol: TCP
+          imagePullPolicy: Always
