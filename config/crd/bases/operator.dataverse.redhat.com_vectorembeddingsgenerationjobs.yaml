@@ -4,28 +4,28 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: unstructureddataproducts.operator.dataverse.redhat.com
+  name: vectorembeddingsgenerationjobs.operator.dataverse.redhat.com
 spec:
   group: operator.dataverse.redhat.com
   names:
-    kind: UnstructuredDataProduct
-    listKind: UnstructuredDataProductList
-    plural: unstructureddataproducts
-    singular: unstructureddataproduct
+    kind: VectorEmbeddingsGenerationJob
+    listKind: VectorEmbeddingsGenerationJobList
+    plural: vectorembeddingsgenerationjobs
+    singular: vectorembeddingsgenerationjob
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataProductReady")].status
+    - jsonPath: .status.conditions[?(@.type=="VectorEmbeddingGenerationReady")].status
       name: Status
       type: string
-    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataProductReady")].message
+    - jsonPath: .status.conditions[?(@.type=="VectorEmbeddingGenerationReady")].message
       name: Message
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: UnstructuredDataProduct is the Schema for the unstructureddataproducts
-          API
+        description: VectorEmbeddingsGenerationJob is the Schema for the vectorembeddingsgenerationjobs
+          API.
         properties:
           apiVersion:
             description: |-
@@ -45,124 +45,12 @@ spec:
           metadata:
             type: object
           spec:
-            description: UnstructuredDataProductSpec defines the desired state of
-              UnstructuredDataProduct
+            description: VectorEmbeddingsGenerationJobSpec defines the desired state
+              of VectorEmbeddingsGenerationJob.
             properties:
-              chunksGeneratorConfig:
-                properties:
-                  markdownSplitterConfig:
-                    properties:
-                      chunkOverlap:
-                        type: integer
-                      chunkSize:
-                        type: integer
-                      codeBlocks:
-                        type: boolean
-                      headingHierarchy:
-                        type: boolean
-                      joinTableRows:
-                        type: boolean
-                      referenceLinks:
-                        type: boolean
-                    type: object
-                  recursiveCharacterSplitterConfig:
-                    properties:
-                      chunkOverlap:
-                        type: integer
-                      chunkSize:
-                        type: integer
-                      keepSeparator:
-                        type: boolean
-                      separators:
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                  strategy:
-                    type: string
-                  tokenSplitterConfig:
-                    properties:
-                      allowedSpecial:
-                        items:
-                          type: string
-                        type: array
-                      chunkOverlap:
-                        type: integer
-                      chunkSize:
-                        type: integer
-                      disallowedSpecial:
-                        items:
-                          type: string
-                        type: array
-                      encodingName:
-                        type: string
-                      modelName:
-                        type: string
-                    type: object
-                required:
-                - strategy
-                type: object
-              destinationConfig:
-                properties:
-                  snowflakeInternalStageConfig:
-                    properties:
-                      database:
-                        type: string
-                      schema:
-                        type: string
-                      stage:
-                        type: string
-                    type: object
-                  type:
-                    type: string
-                type: object
-              documentProcessorConfig:
-                properties:
-                  doclingConfig:
-                    properties:
-                      abort_on_error:
-                        type: boolean
-                      do_ocr:
-                        type: boolean
-                      force_ocr:
-                        type: boolean
-                      from_formats:
-                        items:
-                          type: string
-                        type: array
-                      image_export_mode:
-                        type: string
-                      ocr_engine:
-                        type: string
-                      ocr_lang:
-                        items:
-                          type: string
-                        type: array
-                      pdf_backend:
-                        type: string
-                      table_mode:
-                        type: string
-                      to_formats:
-                        items:
-                          type: string
-                        type: array
-                    type: object
-                  type:
-                    type: string
-                type: object
-              sourceConfig:
-                properties:
-                  s3Config:
-                    properties:
-                      bucket:
-                        type: string
-                      prefix:
-                        type: string
-                    type: object
-                  type:
-                    type: string
-                type: object
-              vectorEmbeddingsJobConfig:
+              dataProduct:
+                type: string
+              embeddingGeneratorConfig:
                 properties:
                   geminiModelConfig:
                     description: create gemini model config
@@ -194,8 +82,8 @@ spec:
                 type: object
             type: object
           status:
-            description: UnstructuredDataProductStatus defines the observed state
-              of UnstructuredDataProduct
+            description: VectorEmbeddingsGenerationJobStatus defines the observed
+              state of VectorEmbeddingsGenerationJob.
             properties:
               conditions:
                 items:

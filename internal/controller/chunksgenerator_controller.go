@@ -136,10 +136,9 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	convertedFilePaths := unstructured.FilterConvertedFilePaths(filePaths)
 
-	var chunked bool
 	for _, convertedFilePath := range convertedFilePaths {
 		logger.Info("processing converted file", "file", convertedFilePath)
-		fileChunked, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR)
+		_, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR)
 		if err != nil {
 			if strings.Contains(err.Error(), langchain.SemaphoreAcquireError) {
 				logger.Error(err, "failed to process converted file, semaphore acquire error, will try again later", "file", convertedFilePath)
@@ -149,9 +148,6 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to process converted file", "file", convertedFilePath)
 			continue
-		}
-		if fileChunked {
-			chunked = true
 		}
 		logger.Info("successfully processed converted file", "file", convertedFilePath)
 	}
@@ -169,22 +165,17 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}, nil
 	}
 
-	// Add force reconcile to unstructured data product if any of the file got chunked during this reconciliation
-	if chunked {
-		unstructuredDataProductKey := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Spec.DataProduct}
-		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			unstructuredDataProduct := &operatorv1alpha1.UnstructuredDataProduct{}
-			if err := r.Get(ctx, unstructuredDataProductKey, unstructuredDataProduct); err != nil {
-				return err
-			}
-			return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct)
-		}); err != nil {
-			logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
-			return r.handleError(ctx, chunksGeneratorCR, err)
+	// Add force reconcile to VectorEmbeddingsGenerationJob CR
+	vectorEmbeddingsJobKey := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Spec.DataProduct}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		vectorEmbeddingsJobCR := &operatorv1alpha1.VectorEmbeddingsGenerationJob{}
+		if err := r.Get(ctx, vectorEmbeddingsJobKey, vectorEmbeddingsJobCR); err != nil {
+			return err
 		}
-		logger.Info("successfully added force reconcile label to UnstructuredDataProduct CR")
-	} else {
-		logger.Info("no files were chunked, no need to add force reconcile label to UnstructuredDataProduct CR")
+		return controllerutils.AddForceReconcileLabel(ctx, r.Client, vectorEmbeddingsJobCR)
+	}); err != nil {
+		logger.Error(err, "failed to add force reconcile label to VectorEmbeddingsGenerationJob CR")
+		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 
 	chunksGeneratorKey := client.ObjectKeyFromObject(chunksGeneratorCR)

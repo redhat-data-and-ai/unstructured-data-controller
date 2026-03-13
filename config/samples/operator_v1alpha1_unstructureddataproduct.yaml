@@ -34,14 +34,21 @@ spec:
       table_mode: "none"
       abort_on_error: true
   chunksGeneratorConfig:
-    strategy: "markdownTextSplitter"
-    markdownSplitterConfig:
+    strategy: "recursiveCharacterTextSplitter"
+    recursiveCharacterSplitterConfig:
       chunkSize: 1000
-      chunkOverlap: 200
-      codeBlocks: true
-      referenceLinks: true
-      headingHierarchy: true
-      joinTableRows: true
+      chunkOverlap: 5
+      keepSeparator: true
+      separators: ["\n\n", "\n", " ", ""]
+  vectorEmbeddingsJobConfig:
+    provider: "self-hosted-model"
+    selfHostedModelConfig:
+      model: "model-name"
+      dimensions: 768
+      encodingformat: "float"
+      apikeysecretref: "NOMIC_API_KEY"
+      endpoint: "https://endpoint-url/v1/embeddings"
+      certificatepath: "path-to-certificate.pem"
   destinationConfig:
     type: "snowflakeInternalStage"
     snowflakeInternalStageConfig:

@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -88,10 +89,11 @@ type TokenSplitterConfig struct {
 
 // UnstructuredDataProductSpec defines the desired state of UnstructuredDataProduct
 type UnstructuredDataProductSpec struct {
-	SourceConfig            SourceConfig            `json:"sourceConfig,omitempty"`
-	DestinationConfig       DestinationConfig       `json:"destinationConfig,omitempty"`
-	DocumentProcessorConfig DocumentProcessorConfig `json:"documentProcessorConfig,omitempty"`
-	ChunksGeneratorConfig   ChunksGeneratorConfig   `json:"chunksGeneratorConfig,omitempty"`
+	SourceConfig              SourceConfig                       `json:"sourceConfig,omitempty"`
+	DestinationConfig         DestinationConfig                  `json:"destinationConfig,omitempty"`
+	DocumentProcessorConfig   DocumentProcessorConfig            `json:"documentProcessorConfig,omitempty"`
+	ChunksGeneratorConfig     ChunksGeneratorConfig              `json:"chunksGeneratorConfig,omitempty"`
+	VectorEmbeddingsJobConfig embedding.EmbeddingGeneratorConfig `json:"vectorEmbeddingsJobConfig,omitempty"`
 }
 
 type SourceConfig struct {

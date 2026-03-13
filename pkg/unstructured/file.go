@@ -74,6 +74,16 @@ func FilterChunksFilePaths(filePaths []string) []string {
 	return chunksFilePaths
 }
 
+func FilterVectorEmbeddingsFilePaths(filePaths []string) []string {
+	embeddingsFilePaths := []string{}
+	for _, filePath := range filePaths {
+		if strings.HasSuffix(filePath, VectorEmbeddingsFileSuffix) {
+			embeddingsFilePaths = append(embeddingsFilePaths, filePath)
+		}
+	}
+	return embeddingsFilePaths
+}
+
 func FilterRawFilePaths(filePaths []string) []string {
 	rawFilePaths := []string{}
 	for _, filePath := range filePaths {
