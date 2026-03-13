@@ -400,6 +400,9 @@ github.com/google/pprof/profile
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
+# github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+## explicit; go 1.20
+github.com/gorilla/websocket
 # github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3
 ## explicit; go 1.23.0
 github.com/grpc-ecosystem/grpc-gateway/v2/internal/httprule
@@ -450,6 +453,10 @@ github.com/minio/asm2plan9s
 # github.com/minio/c2goasm v0.0.0-20190812172519-36a3d3bbc4f3
 ## explicit
 github.com/minio/c2goasm
+# github.com/moby/spdystream v0.5.0
+## explicit; go 1.13
+github.com/moby/spdystream
+github.com/moby/spdystream/spdy
 # github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd
 ## explicit
 github.com/modern-go/concurrent
@@ -462,6 +469,9 @@ github.com/mtibben/percent
 # github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
 ## explicit
 github.com/munnerz/goautoneg
+# github.com/mxk/go-flowrate v0.0.0-20140419014527-cca7078d478f
+## explicit
+github.com/mxk/go-flowrate/flowrate
 # github.com/onsi/ginkgo/v2 v2.27.2
 ## explicit; go 1.23.0
 github.com/onsi/ginkgo/v2
@@ -558,6 +568,16 @@ github.com/stoewer/go-strcase
 github.com/tmc/langchaingo/llms
 github.com/tmc/langchaingo/schema
 github.com/tmc/langchaingo/textsplitter
+# github.com/vladimirvivien/gexe v0.4.1
+## explicit; go 1.23
+github.com/vladimirvivien/gexe
+github.com/vladimirvivien/gexe/exec
+github.com/vladimirvivien/gexe/fs
+github.com/vladimirvivien/gexe/http
+github.com/vladimirvivien/gexe/net
+github.com/vladimirvivien/gexe/prog
+github.com/vladimirvivien/gexe/str
+github.com/vladimirvivien/gexe/vars
 # github.com/x448/float16 v0.8.4
 ## explicit; go 1.11
 github.com/x448/float16
@@ -687,7 +707,9 @@ golang.org/x/net/http2
 golang.org/x/net/http2/hpack
 golang.org/x/net/idna
 golang.org/x/net/internal/httpcommon
+golang.org/x/net/internal/socks
 golang.org/x/net/internal/timeseries
+golang.org/x/net/proxy
 golang.org/x/net/trace
 golang.org/x/net/websocket
 # golang.org/x/oauth2 v0.30.0
@@ -1020,6 +1042,7 @@ k8s.io/apimachinery/pkg/util/dump
 k8s.io/apimachinery/pkg/util/errors
 k8s.io/apimachinery/pkg/util/framer
 k8s.io/apimachinery/pkg/util/httpstream
+k8s.io/apimachinery/pkg/util/httpstream/spdy
 k8s.io/apimachinery/pkg/util/httpstream/wsstream
 k8s.io/apimachinery/pkg/util/intstr
 k8s.io/apimachinery/pkg/util/json
@@ -1029,6 +1052,7 @@ k8s.io/apimachinery/pkg/util/mergepatch
 k8s.io/apimachinery/pkg/util/naming
 k8s.io/apimachinery/pkg/util/net
 k8s.io/apimachinery/pkg/util/portforward
+k8s.io/apimachinery/pkg/util/proxy
 k8s.io/apimachinery/pkg/util/remotecommand
 k8s.io/apimachinery/pkg/util/runtime
 k8s.io/apimachinery/pkg/util/sets
@@ -1042,6 +1066,7 @@ k8s.io/apimachinery/pkg/util/yaml
 k8s.io/apimachinery/pkg/version
 k8s.io/apimachinery/pkg/watch
 k8s.io/apimachinery/third_party/forked/golang/json
+k8s.io/apimachinery/third_party/forked/golang/netutil
 k8s.io/apimachinery/third_party/forked/golang/reflect
 # k8s.io/apiserver v0.34.1
 ## explicit; go 1.24.0
@@ -1358,11 +1383,15 @@ k8s.io/client-go/tools/pager
 k8s.io/client-go/tools/record
 k8s.io/client-go/tools/record/util
 k8s.io/client-go/tools/reference
+k8s.io/client-go/tools/remotecommand
 k8s.io/client-go/transport
+k8s.io/client-go/transport/spdy
+k8s.io/client-go/transport/websocket
 k8s.io/client-go/util/apply
 k8s.io/client-go/util/cert
 k8s.io/client-go/util/connrotation
 k8s.io/client-go/util/consistencydetector
+k8s.io/client-go/util/exec
 k8s.io/client-go/util/flowcontrol
 k8s.io/client-go/util/homedir
 k8s.io/client-go/util/keyutil
@@ -1471,6 +1500,26 @@ sigs.k8s.io/controller-runtime/pkg/webhook/admission/metrics
 sigs.k8s.io/controller-runtime/pkg/webhook/conversion
 sigs.k8s.io/controller-runtime/pkg/webhook/conversion/metrics
 sigs.k8s.io/controller-runtime/pkg/webhook/internal/metrics
+# sigs.k8s.io/e2e-framework v0.4.0
+## explicit; go 1.22.3
+sigs.k8s.io/e2e-framework/klient
+sigs.k8s.io/e2e-framework/klient/conf
+sigs.k8s.io/e2e-framework/klient/decoder
+sigs.k8s.io/e2e-framework/klient/k8s
+sigs.k8s.io/e2e-framework/klient/k8s/resources
+sigs.k8s.io/e2e-framework/klient/k8s/watcher
+sigs.k8s.io/e2e-framework/klient/wait
+sigs.k8s.io/e2e-framework/klient/wait/conditions
+sigs.k8s.io/e2e-framework/pkg/env
+sigs.k8s.io/e2e-framework/pkg/envconf
+sigs.k8s.io/e2e-framework/pkg/envfuncs
+sigs.k8s.io/e2e-framework/pkg/featuregate
+sigs.k8s.io/e2e-framework/pkg/features
+sigs.k8s.io/e2e-framework/pkg/flags
+sigs.k8s.io/e2e-framework/pkg/types
+sigs.k8s.io/e2e-framework/support
+sigs.k8s.io/e2e-framework/support/kind
+sigs.k8s.io/e2e-framework/support/utils
 # sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8
 ## explicit; go 1.23
 sigs.k8s.io/json
