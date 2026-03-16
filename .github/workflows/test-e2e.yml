@@ -2,7 +2,7 @@ name: Build Image and Run E2E Tests
 
 on:
   push:
-    branches: [ main, release-* ]
+    branches: [main, release-*]
     tags:
       - "v*"
   pull_request_target:
@@ -10,7 +10,7 @@ on:
       - opened
       - reopened
       - synchronize
-    branches: [ main ]
+    branches: [main]
 
 env:
   KIND_CLUSTER: unstructured-data-controller-test-e2e
@@ -28,8 +28,10 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout base
         uses: actions/checkout@v6
+        with:
+          ref: ${{github.event.pull_request.head.ref}}
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -69,8 +71,10 @@ jobs:
       packages: read
 
     steps:
-      - name: Checkout
+      - name: Checkout base
         uses: actions/checkout@v6
+        with:
+          ref: ${{github.event.pull_request.head.ref}}
 
       - name: Set up Go
         uses: actions/setup-go@v5
