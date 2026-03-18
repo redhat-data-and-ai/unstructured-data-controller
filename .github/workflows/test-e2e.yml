@@ -40,6 +40,13 @@ jobs:
           username: ${{github.actor}}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Determine commit SHA
+        id: commit
+        run: |
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHA::7}" >> $GITHUB_OUTPUT
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -52,7 +59,7 @@ jobs:
             type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/release-') }}
             type=ref,event=pr
             type=ref,event=tag
-            type=sha,enable=${{ github.ref_type != 'tag' }}
+            type=raw,value=sha-${{ steps.commit.outputs.short_sha }},enable=${{ github.ref_type != 'tag' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -82,15 +89,17 @@ jobs:
           go-version-file: "go.mod"
           cache: false
 
-      - name: Extract metadata
+      - name: Determine commit SHA
+        id: commit
+        run: |
+          SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Set image tag
         id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: |
-            latest=false
-          tags: |
-            type=sha
+        run: |
+          echo "tags=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ steps.commit.outputs.short_sha }}" >> $GITHUB_OUTPUT
 
       - name: Create Kind cluster
         uses: helm/kind-action@v1
