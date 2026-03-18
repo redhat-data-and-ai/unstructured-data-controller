@@ -104,3 +104,16 @@ jobs:
           IMG="${{ steps.meta.outputs.tags }}"
           kubectl create namespace ${{ env.NAMESPACE }}
           make test-e2e IMG=${IMG} SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE }} SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE }} SNOWFLAKE_PRIVATE_KEY=${{ secrets.SNOWFLAKE_KEY }}
+
+      - name: Collect controller pod logs
+        if: always()
+        run: |
+          mkdir -p artifacts
+          kubectl logs -n ${{ env.NAMESPACE }} -l control-plane=controller-manager --all-containers --tail=-1 > artifacts/controller-pod-logs.txt 2>&1 || true
+
+      - name: Upload controller logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controller-pod-logs
+          path: artifacts/controller-pod-logs.txt
