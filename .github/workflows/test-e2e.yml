@@ -85,7 +85,7 @@ jobs:
       - name: Determine image tag
         id: image-tag
         run: |
-          echo "tag=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "tag=sha-${{ github.sha::0:7 }}" >> $GITHUB_OUTPUT
 
       - name: Create Kind cluster
         uses: helm/kind-action@v1
