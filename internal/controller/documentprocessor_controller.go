@@ -176,9 +176,13 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.handleError(ctx, documentProcessorCR, errors.New("failed to process jobs or documents"))
 	}
 
-	toRequeue := len(documentProcessorCR.Status.Jobs) > 0
+	latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
+	if err := r.Get(ctx, req.NamespacedName, latestDocumentProcessorCR); err != nil {
+		logger.Error(err, "failed to get DocumentProcessor CR")
+		return ctrl.Result{}, err
+	}
 
-	if toRequeue {
+	if len(latestDocumentProcessorCR.Status.Jobs) > 0 {
 		logger.Info("some jobs are still pending or running, will requeue after a bit ...")
 		return ctrl.Result{
 			RequeueAfter: requeueAfter,
@@ -187,8 +191,8 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	logger.Info("all jobs are completed, no need to requeue")
 
-	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", documentProcessorCR.Name)
-	documentProcessorKey := client.ObjectKeyFromObject(documentProcessorCR)
+	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", latestDocumentProcessorCR.Name)
+	documentProcessorKey := client.ObjectKeyFromObject(latestDocumentProcessorCR)
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		res := &operatorv1alpha1.DocumentProcessor{}
 		if err := r.Get(ctx, documentProcessorKey, res); err != nil {
@@ -197,10 +201,10 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		res.UpdateStatus(successMessage, nil)
 		return r.Status().Update(ctx, res)
 	}); err != nil {
-		logger.Error(err, "failed to update DocumentProcessor CR status", "namespace", documentProcessorKey.Namespace, "name", documentProcessorKey.Name)
+		logger.Error(err, "failed to update DocumentProcessor CR status", "namespace", latestDocumentProcessorCR.Namespace, "name", latestDocumentProcessorCR.Name)
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
-	logger.Info("successfully updated DocumentProcessor CR status", "status", documentProcessorCR.Status)
+	logger.Info("successfully updated DocumentProcessor CR status", "status", latestDocumentProcessorCR.Status)
 
 	return ctrl.Result{}, nil
 }
