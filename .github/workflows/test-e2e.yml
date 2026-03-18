@@ -82,10 +82,15 @@ jobs:
           go-version-file: "go.mod"
           cache: false
 
-      - name: Determine image tag
-        id: image-tag
-        run: |
-          echo "tag=sha-${{ github.sha::0:7 }}" >> $GITHUB_OUTPUT
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=sha
 
       - name: Create Kind cluster
         uses: helm/kind-action@v1
@@ -96,6 +101,6 @@ jobs:
         env:
           SKIP_CLUSTER_SETUP: "true"
         run: |
-          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
+          IMG="${{ steps.meta.outputs.tags }}"
           kubectl create namespace ${{ env.NAMESPACE }}
           make test-e2e IMG=${IMG} SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} SNOWFLAKE_ROLE=${{ secrets.SNOWFLAKE_ROLE }} SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE }} SNOWFLAKE_PRIVATE_KEY=${{ secrets.SNOWFLAKE_KEY }}
