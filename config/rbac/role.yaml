@@ -19,7 +19,7 @@ rules:
   - chunksgenerators
   - controllerconfigs
   - documentprocessors
-  - sqsconsumers
+  - sqsinformers
   - unstructureddataproducts
   verbs:
   - create
@@ -35,7 +35,7 @@ rules:
   - chunksgenerators/finalizers
   - controllerconfigs/finalizers
   - documentprocessors/finalizers
-  - sqsconsumers/finalizers
+  - sqsinformers/finalizers
   - unstructureddataproducts/finalizers
   verbs:
   - update
@@ -45,7 +45,7 @@ rules:
   - chunksgenerators/status
   - controllerconfigs/status
   - documentprocessors/status
-  - sqsconsumers/status
+  - sqsinformers/status
   - unstructureddataproducts/status
   verbs:
   - get

@@ -161,26 +161,26 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// create SQSConsumer CR
-			sqsConsumer := &v1alpha1.SQSConsumer{
+			// create SQSInformer CR
+			SQSInformer := &v1alpha1.SQSInformer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-sqs-consumer",
+					Name:      "test-sqs-informer",
 					Namespace: testNamespace,
 				},
-				Spec: v1alpha1.SQSConsumerSpec{
+				Spec: v1alpha1.SQSInformerSpec{
 					QueueURL: queueURL,
 				},
 			}
-			err = kubeClient.Resources(testNamespace).Create(ctx, sqsConsumer)
+			err = kubeClient.Resources(testNamespace).Create(ctx, SQSInformer)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			// wait for SQSConsumer CR to be ready
+			// wait for SQSInformer CR to be ready
 			waitCommand := fmt.Sprintf(
-				"kubectl wait --for=condition=%s sqsconsumers.operator.dataverse.redhat.com/%s -n %s --timeout=10m",
-				v1alpha1.SQSConsumerCondition,
-				"test-sqs-consumer",
+				"kubectl wait --for=condition=%s SQSInformers.operator.dataverse.redhat.com/%s -n %s --timeout=10m",
+				v1alpha1.SQSInformerCondition,
+				"test-sqs-informer",
 				testNamespace,
 			)
 			if p := utils.RunCommand(waitCommand); p.Err() != nil {
@@ -851,14 +851,14 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 	feature.Teardown(
 		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			// delete SQSConsumer CR
-			sqsConsumer := &v1alpha1.SQSConsumer{
+			// delete SQSInformer CR
+			SQSInformer := &v1alpha1.SQSInformer{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-sqs-consumer",
+					Name:      "test-sqs-informer",
 					Namespace: testNamespace,
 				},
 			}
-			if err := kubeClient.Resources(testNamespace).Delete(ctx, sqsConsumer); err != nil {
+			if err := kubeClient.Resources(testNamespace).Delete(ctx, SQSInformer); err != nil {
 				t.Fatal(err)
 			}
 

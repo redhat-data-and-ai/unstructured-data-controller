@@ -4,27 +4,27 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: sqsconsumers.operator.dataverse.redhat.com
+  name: sqsinformers.operator.dataverse.redhat.com
 spec:
   group: operator.dataverse.redhat.com
   names:
-    kind: SQSConsumer
-    listKind: SQSConsumerList
-    plural: sqsconsumers
-    singular: sqsconsumer
+    kind: SQSInformer
+    listKind: SQSInformerList
+    plural: sqsinformers
+    singular: sqsinformer
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="SQSConsumerReady")].status
+    - jsonPath: .status.conditions[?(@.type=="SQSInformerReady")].status
       name: Status
       type: string
-    - jsonPath: .status.conditions[?(@.type=="SQSConsumerReady")].message
+    - jsonPath: .status.conditions[?(@.type=="SQSInformerReady")].message
       name: Message
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: SQSConsumer is the Schema for the sqsconsumers API
+        description: SQSInformer is the Schema for the sqsinformers API.
         properties:
           apiVersion:
             description: |-
@@ -44,13 +44,13 @@ spec:
           metadata:
             type: object
           spec:
-            description: SQSConsumerSpec defines the desired state of SQSConsumer
+            description: SQSInformerSpec defines the desired state of SQSInformer.
             properties:
               queueURL:
                 type: string
             type: object
           status:
-            description: SQSConsumerStatus defines the observed state of SQSConsumer
+            description: SQSInformerStatus defines the observed state of SQSInformer.
             properties:
               conditions:
                 items:

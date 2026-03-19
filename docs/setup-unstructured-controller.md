@@ -102,20 +102,20 @@ Apply the sample or your own manifest (use the same namespace where you created 
 kubectl apply -f config/samples/operator_v1alpha1_controllerconfig.yaml -n unstructured-controller-namespace
 ```
 
-## 7. Create the SQSConsumer custom resource
+## 7. Create the SQSInformer custom resource
 
-Create the SQSConsumer CR so the controller can consume messages from the queue. The queue URL must match the one used with LocalStack (same region and host).
+Create the SQSInformer CR so the controller can consume messages from the queue. The queue URL must match the one used with LocalStack (same region and host).
 
 Example (from the sample manifest):
 
 ```yaml
 apiVersion: operator.dataverse.redhat.com/v1alpha1
-kind: SQSConsumer
+kind: SQSInformer
 metadata:
   labels:
     app.kubernetes.io/name: unstructured-data-controller
     app.kubernetes.io/managed-by: kustomize
-  name: sqsconsumer-sample
+  name: sqsinformer-sample
 spec:
   queueURL: http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/unstructured-s3-queue
 ```
@@ -123,13 +123,13 @@ spec:
 Apply the sample or your own manifest:
 
 ```bash
-kubectl apply -f config/samples/operator_v1alpha1_sqsconsumer.yaml
+kubectl apply -f config/samples/operator_v1alpha1_sqsinformer.yaml
 ```
 
 ## Verifying
 
-- **Controller**: Ensure the controller is running and check its logs for reconciliation of the SQSConsumer.
-- **CR status**: Inspect the SQSConsumer status:
+- **Controller**: Ensure the controller is running and check its logs for reconciliation of the SQSInformer.
+- **CR status**: Inspect the SQSInformer status:
 
   ```bash
   kubectl get controllerconfig controllerconfig-sample -o yaml
@@ -138,7 +138,7 @@ kubectl apply -f config/samples/operator_v1alpha1_sqsconsumer.yaml
   The status should show `ConfigReady` with condition `status: "True"` and message "Config is healthy" when reconciliation succeeds.
 
   ```bash
-  kubectl get sqsconsumer sqsconsumer-sample -o yaml
+  kubectl get sqsinformer sqsinformer-sample -o yaml
   ```
 
-  The status should show `SQSConsumerReady` with condition `status: "True"` when reconciliation succeeds.
+  The status should show `SQSInformerReady` with condition `status: "True"` when reconciliation succeeds.

@@ -218,14 +218,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.SQSConsumerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "SQSConsumer")
-		os.Exit(1)
-	}
-
 	if err := (&controller.UnstructuredDataProductReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -247,6 +239,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ChunksGenerator")
+		os.Exit(1)
+	}
+	if err := (&controller.SQSInformerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SQSInformer")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

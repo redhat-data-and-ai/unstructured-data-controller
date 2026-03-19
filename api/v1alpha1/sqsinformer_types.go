@@ -21,49 +21,49 @@ import (
 )
 
 const (
-	SQSConsumerCondition = "SQSConsumerReady"
+	SQSInformerCondition = "SQSInformerReady"
 )
 
-// SQSConsumerSpec defines the desired state of SQSConsumer
-type SQSConsumerSpec struct {
+// SQSInformerSpec defines the desired state of SQSInformer.
+type SQSInformerSpec struct {
 	QueueURL string `json:"queueURL,omitempty"`
 }
 
-// SQSConsumerStatus defines the observed state of SQSConsumer
-type SQSConsumerStatus struct {
+// SQSInformerStatus defines the observed state of SQSInformer.
+type SQSInformerStatus struct {
 	LastAppliedGeneration int64              `json:"lastAppliedGeneration,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="SQSConsumerReady")].status`
-// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="SQSConsumerReady")].message`
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="SQSInformerReady")].status`
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="SQSInformerReady")].message`
 
-// SQSConsumer is the Schema for the sqsconsumers API
-type SQSConsumer struct {
+// SQSInformer is the Schema for the sqsinformers API.
+type SQSInformer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SQSConsumerSpec   `json:"spec,omitempty"`
-	Status SQSConsumerStatus `json:"status,omitempty"`
+	Spec   SQSInformerSpec   `json:"spec,omitempty"`
+	Status SQSInformerStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// SQSConsumerList contains a list of SQSConsumer
-type SQSConsumerList struct {
+// SQSInformerList contains a list of SQSInformer.
+type SQSInformerList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []SQSConsumer `json:"items"`
+	Items           []SQSInformer `json:"items"`
 }
 
-func (c *SQSConsumer) SetWaiting() {
+func (c *SQSInformer) SetWaiting() {
 	condition := metav1.Condition{
-		Type:               SQSConsumerCondition,
+		Type:               SQSInformerCondition,
 		LastTransitionTime: metav1.Now(),
 		Status:             metav1.ConditionUnknown,
-		Message:            "SQSConsumer is getting reconciled",
+		Message:            "SQSInformer is getting reconciled",
 		Reason:             "Waiting",
 	}
 	for i, currentCondition := range c.Status.Conditions {
@@ -75,13 +75,13 @@ func (c *SQSConsumer) SetWaiting() {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
-// UpdateStatus updates the status of the SQSConsumer CR
+// UpdateStatus updates the status of the SQSInformer CR
 // It takes a message and an error, and updates the status of the CR accordingly
 // If the error is nil, the status is set to True and the message is set to the message
 // If the error is not nil, the status is set to False and the message is set to the message and the error
-func (c *SQSConsumer) UpdateStatus(message string, err error) {
+func (c *SQSInformer) UpdateStatus(message string, err error) {
 	condition := metav1.Condition{
-		Type:               SQSConsumerCondition,
+		Type:               SQSInformerCondition,
 		LastTransitionTime: metav1.Now(),
 	}
 	if err == nil {
@@ -105,5 +105,5 @@ func (c *SQSConsumer) UpdateStatus(message string, err error) {
 }
 
 func init() {
-	SchemeBuilder.Register(&SQSConsumer{}, &SQSConsumerList{})
+	SchemeBuilder.Register(&SQSInformer{}, &SQSInformerList{})
 }

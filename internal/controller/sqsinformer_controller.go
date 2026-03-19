@@ -26,13 +26,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
-	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
-
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"k8s.io/apimachinery/pkg/runtime"
-
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -42,15 +40,15 @@ import (
 )
 
 const (
-	SQSConsumerControllerName         = "SQSConsumer"
+	SQSInformerControllerName         = "SQSInformer"
 	intentionalReconcileAgainDuration = 15 * time.Second
 )
 
 // Supported formats for docling document processing
 var doclingSupportedFormats = []string{"pdf", "md", "docx", "pptx"}
 
-// SQSConsumerReconciler reconciles a SQSConsumer object
-type SQSConsumerReconciler struct {
+// SQSInformerReconciler reconciles a SQSInformer object
+type SQSInformerReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
@@ -71,7 +69,7 @@ type S3EventRecord struct {
 
 func (r *S3EventRecord) validate(ctx context.Context) bool {
 	logger := log.FromContext(ctx)
-	logger.Info("reconciling", "controller", SQSConsumerControllerName)
+	logger.Info("reconciling", "controller", SQSInformerControllerName)
 
 	// check if the bucket is the ingestion bucket
 	if r.S3.Bucket.Name != ingestionBucket {
@@ -137,18 +135,18 @@ type S3EventObject struct {
 	ETag string `json:"etag"`
 }
 
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsconsumers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsconsumers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsconsumers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsinformers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsinformers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sqsinformers/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",namespace=unstructured-controller-namespace,resources=secrets,verbs=get;list;watch
 
-// Reconcile reconciles the SQSConsumer CR. It follows these steps:
+// Reconcile reconciles the SQSInformer CR. It follows these steps:
 // - receive messages from the SQS queue
 // - process the messages
 // - add a force reconcile label to the unstructured data product
 // - delete the message from the SQS queue
 
-func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *SQSInformerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// check if config CR is healthy
@@ -160,22 +158,23 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// }
 	//
 	// if !isHealthy {
+	// if !isHealthy {
 	// 	logger.Info("Config CR is not ready yet, will try again in a bit ...")
 	// 	return ctrl.Result{
 	// 		RequeueAfter: 10 * time.Second,
 	// 	}, nil
 	// }
 
-	sqsConsumerCR := &operatorv1alpha1.SQSConsumer{}
-	if err := r.Get(ctx, req.NamespacedName, sqsConsumerCR); err != nil {
+	sqsInformerCR := &operatorv1alpha1.SQSInformer{}
+	if err := r.Get(ctx, req.NamespacedName, sqsInformerCR); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	sqsConsumerKey := client.ObjectKeyFromObject(sqsConsumerCR)
-	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, sqsConsumerKey, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.SQSConsumer).SetWaiting()
+	sqsInformerKey := client.ObjectKeyFromObject(sqsInformerCR)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, sqsInformerKey, func() client.Object { return &operatorv1alpha1.SQSInformer{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.SQSInformer).SetWaiting()
 	}); err != nil {
-		logger.Error(err, "failed to update SQSConsumer status")
+		logger.Error(err, "failed to update SQSInformer status")
 		return ctrl.Result{}, err
 	}
 
@@ -185,18 +184,18 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
-		return r.handleError(ctx, sqsConsumerCR, err)
+		return r.handleError(ctx, sqsInformerCR, err)
 	}
 
 	output, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-		QueueUrl:            &sqsConsumerCR.Spec.QueueURL,
+		QueueUrl:            &sqsInformerCR.Spec.QueueURL,
 		MaxNumberOfMessages: 10,
 		// wait for 15 seconds to get the messages, should be decent enough
 		WaitTimeSeconds:   15,
 		VisibilityTimeout: 300,
 	})
 	if err != nil {
-		return r.handleError(ctx, sqsConsumerCR, err)
+		return r.handleError(ctx, sqsInformerCR, err)
 	}
 
 	for _, message := range output.Messages {
@@ -209,7 +208,7 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 		// delete the message from the queue
 		if _, err := sqsClient.DeleteMessage(ctx, &sqs.DeleteMessageInput{
-			QueueUrl:      &sqsConsumerCR.Spec.QueueURL,
+			QueueUrl:      &sqsInformerCR.Spec.QueueURL,
 			ReceiptHandle: message.ReceiptHandle,
 		}); err != nil {
 			logger.Error(err, "failed to delete message from queue")
@@ -217,17 +216,17 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		logger.Info("deleted message from queue", "MessageId", *message.MessageId)
 	}
 
-	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, sqsConsumerKey, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }); err != nil {
-		logger.Error(err, "error removing the force-reconcile label from the SQSConsumer CR")
+	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, sqsInformerKey, func() client.Object { return &operatorv1alpha1.SQSInformer{} }); err != nil {
+		logger.Error(err, "error removing the force-reconcile label from the SQSInformer CR")
 		return ctrl.Result{}, err
 	}
 
 	logger.Info("successfully processed all messages, will check again ...")
 	successMessage := "successfully processed all messages, will check again ..."
-	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, sqsConsumerKey, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.SQSConsumer).UpdateStatus(successMessage, nil)
+	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, sqsInformerKey, func() client.Object { return &operatorv1alpha1.SQSInformer{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.SQSInformer).UpdateStatus(successMessage, nil)
 	}); err != nil {
-		logger.Error(err, "failed to update SQSConsumer status")
+		logger.Error(err, "failed to update SQSInformer status")
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{
@@ -236,7 +235,7 @@ func (r *SQSConsumerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}, nil
 }
 
-func (r *SQSConsumerReconciler) processMessage(ctx context.Context, message sqstypes.Message, namespace string) []error {
+func (r *SQSInformerReconciler) processMessage(ctx context.Context, message sqstypes.Message, namespace string) []error {
 	logger := log.FromContext(ctx)
 	logger.Info("received message", "MessageId", *message.MessageId)
 
@@ -284,26 +283,26 @@ func (r *SQSConsumerReconciler) processMessage(ctx context.Context, message sqst
 	return errorList
 }
 
-func (r *SQSConsumerReconciler) handleError(ctx context.Context, sqsConsumerCR *operatorv1alpha1.SQSConsumer, err error) (ctrl.Result, error) {
+func (r *SQSInformerReconciler) handleError(ctx context.Context, sqsInformerCR *operatorv1alpha1.SQSInformer, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
 	reconcileErr := err
-	sqsConsumerKey := client.ObjectKeyFromObject(sqsConsumerCR)
-	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, sqsConsumerKey, func() client.Object { return &operatorv1alpha1.SQSConsumer{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.SQSConsumer).UpdateStatus("", reconcileErr)
+	sqsInformerKey := client.ObjectKeyFromObject(sqsInformerCR)
+	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, sqsInformerKey, func() client.Object { return &operatorv1alpha1.SQSInformer{} }, func(obj client.Object) {
+		obj.(*operatorv1alpha1.SQSInformer).UpdateStatus("", reconcileErr)
 	}); updateErr != nil {
-		logger.Error(updateErr, "failed to update SQSConsumer status")
+		logger.Error(updateErr, "failed to update SQSInformer status")
 		return ctrl.Result{}, updateErr
 	}
 	return ctrl.Result{}, reconcileErr
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *SQSConsumerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *SQSInformerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	labelPredicate := controllerutils.ForceReconcilePredicate()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.SQSConsumer{}).
+		For(&operatorv1alpha1.SQSInformer{}).
 		WithEventFilter(predicate.Or(predicate.GenerationChangedPredicate{}, labelPredicate)).
-		Named("sqsconsumer").
+		Named("sqsinformer").
 		Complete(r)
 }
