@@ -58,8 +58,8 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	unstructuredQueueName := "unstructured-queue"
 
 	operatorControllerConfig := operatorUtils.GetControllerConfigResource()
-	databaseName := "testing_db"
-	schemaName := "testingschema"
+	databaseName := "unstructured_db"
+	schemaName := "unstructured"
 	internalStageName := schemaName + "_internal_stg"
 	dataProductCRName := schemaName
 
@@ -200,13 +200,17 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			// wait for unstructured data product CR to be healthy
 			t.Log("wait for unstructured data product CR to be healthy")
 			sWaitCommand := fmt.Sprintf(
-				"kubectl wait --for=condition=%s unstructureddataproducts.operator.dataverse.redhat.com/%s -n %s --timeout=10m", v1alpha1.UnstructuredDataProductCondition,
+				"kubectl wait --for=condition=%s unstructureddataproducts.operator.dataverse.redhat.com/%s -n %s --timeout=3m", v1alpha1.UnstructuredDataProductCondition,
 				dataProductCRName,
 				testNamespace,
 			)
 
 			if p := utils.RunCommand(sWaitCommand); p.Err() != nil {
 				t.Logf("Failed to meet condition for unstructured data product CR: %s\nOutput: %s", p.Err(), p.Stdout())
+				getCR := fmt.Sprintf("kubectl get unstructureddataproducts.operator.dataverse.redhat.com/%s -n %s -o yaml", dataProductCRName, testNamespace)
+				if getCROutput := utils.RunCommand(getCR); getCROutput.Err() == nil {
+					t.Logf("unstructured data product CR: %s\n", getCROutput.Result())
+				}
 				t.Fatal(p.Err())
 			}
 

@@ -61,7 +61,7 @@ func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 // create an UnstructuredDataProduct CR for e2e tests
 func GetUnstructuredDataProductResource(name, namespace string) v1alpha1.UnstructuredDataProduct {
 	if name == "" {
-		name = "testingschema"
+		name = "unstructured"
 	}
 	if namespace == "" {
 		namespace = DefaultE2ENamespace
@@ -80,15 +80,15 @@ func GetUnstructuredDataProductResource(name, namespace string) v1alpha1.Unstruc
 				Type: v1alpha1.TypeS3,
 				S3Config: v1alpha1.S3Config{
 					Bucket: "unstructured-bucket",
-					Prefix: "testingschema",
+					Prefix: "unstructured",
 				},
 			},
 			DestinationConfig: v1alpha1.DestinationConfig{
 				Type: v1alpha1.DestinationTypeInternalStage,
 				SnowflakeInternalStageConfig: v1alpha1.SnowflakeInternalStageConfig{
-					Database: "testing_db",
-					Schema:   "testingschema",
-					Stage:    "testingschema_internal_stg",
+					Database: "unstructured_db",
+					Schema:   "unstructured",
+					Stage:    "unstructured_internal_stg",
 				},
 			},
 			DocumentProcessorConfig: v1alpha1.DocumentProcessorConfig{
