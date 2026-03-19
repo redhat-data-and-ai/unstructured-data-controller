@@ -87,6 +87,13 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	chunksGeneratorKey := client.ObjectKeyFromObject(chunksGeneratorCR)
+	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, chunksGeneratorKey,
+		func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }); err != nil {
+		logger.Error(err, "error removing the force-reconcile label from the ChunksGenerator CR")
+		return ctrl.Result{}, err
+	}
+
 	// set status to waiting
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &operatorv1alpha1.ChunksGenerator{}
@@ -116,18 +123,6 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
-		return r.handleError(ctx, chunksGeneratorCR, err)
-	}
-
-	// now that we have the list of files to process, we may remove the force reconcile label as we are ready to accept more events
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.ChunksGenerator{}
-		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
-			return err
-		}
-		return controllerutils.RemoveForceReconcileLabel(ctx, r.Client, latest)
-	}); err != nil {
-		logger.Error(err, "failed to remove force reconcile label")
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 
@@ -187,7 +182,6 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		logger.Info("no files were chunked, no need to add force reconcile label to UnstructuredDataProduct CR")
 	}
 
-	chunksGeneratorKey := client.ObjectKeyFromObject(chunksGeneratorCR)
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, chunksGeneratorKey, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }, func(obj client.Object) {
 		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus(successMessage, nil)

@@ -84,6 +84,13 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	dataProductName := unstructuredDataProductCR.Name
 
+	unstructuredDataProductKey := client.ObjectKeyFromObject(unstructuredDataProductCR)
+	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, unstructuredDataProductKey,
+		func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }); err != nil {
+		logger.Error(err, "error removing the force-reconcile label from the UnstructuredDataProduct CR")
+		return ctrl.Result{}, err
+	}
+
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &operatorv1alpha1.UnstructuredDataProduct{}
 		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
@@ -195,18 +202,6 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	logger.Info("successfully stored files to filestore", "files", storedFiles)
 
-	// // now we may remove the force reconcile label as we have read all the files from the source and we are ready to accept more events
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.UnstructuredDataProduct{}
-		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
-			return err
-		}
-		return controllerutils.RemoveForceReconcileLabel(ctx, r.Client, latest)
-	}); err != nil {
-		logger.Error(err, "failed to remove force reconcile label from UnstructuredDataProduct CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
-	}
-
 	// add force reconcile label to the DocumentProcessor CR
 	documentProcessorKey := client.ObjectKey{
 		Namespace: unstructuredDataProductCR.Namespace,
@@ -267,7 +262,6 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
-	unstructuredDataProductKey := client.ObjectKeyFromObject(unstructuredDataProductCR)
 	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, unstructuredDataProductKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
 		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus(successMessage, nil)
 	}); err != nil {

@@ -84,6 +84,13 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	documentProcessorKey := client.ObjectKeyFromObject(documentProcessorCR)
+	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, documentProcessorKey,
+		func() client.Object { return &operatorv1alpha1.DocumentProcessor{} }); err != nil {
+		logger.Error(err, "error removing the force-reconcile label from the DocumentProcessor CR")
+		return ctrl.Result{}, err
+	}
+
 	// set status to waiting
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &operatorv1alpha1.DocumentProcessor{}
@@ -137,18 +144,6 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
 
-	// now that we have the list of files to process, we may remove the force reconcile label as we are ready to accept more events
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.DocumentProcessor{}
-		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
-			return err
-		}
-		return controllerutils.RemoveForceReconcileLabel(ctx, r.Client, latest)
-	}); err != nil {
-		logger.Error(err, "failed to remove force reconcile label from DocumentProcessor CR")
-		return r.handleError(ctx, documentProcessorCR, err)
-	}
-
 	documentProcessingErrors := []error{}
 	rawFilePaths := unstructured.FilterRawFilePaths(filePaths)
 	for _, rawFilePath := range rawFilePaths {
@@ -192,7 +187,6 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	logger.Info("all jobs are completed, no need to requeue")
 
 	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", latestDocumentProcessorCR.Name)
-	documentProcessorKey := client.ObjectKeyFromObject(latestDocumentProcessorCR)
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		res := &operatorv1alpha1.DocumentProcessor{}
 		if err := r.Get(ctx, documentProcessorKey, res); err != nil {
