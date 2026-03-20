@@ -1,7 +1,7 @@
 # Build the manager binary
 FROM registry.access.redhat.com/ubi9/go-toolset:1.24 AS builder
 
-WORKDIR /workspace
+WORKDIR /opt/app-root/src
 
 # Build arguments for multi-platform support
 ARG TARGETOS=linux
@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 
 WORKDIR /
-COPY --from=builder /workspace/manager .
+COPY --from=builder /opt/app-root/src/manager .
 
 USER 65532:65532
 
