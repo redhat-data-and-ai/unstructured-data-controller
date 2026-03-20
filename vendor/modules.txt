@@ -193,8 +193,8 @@ github.com/aws/aws-sdk-go-v2/service/s3/types
 github.com/aws/aws-sdk-go-v2/service/signin
 github.com/aws/aws-sdk-go-v2/service/signin/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/signin/types
-# github.com/aws/aws-sdk-go-v2/service/sqs v1.42.21
-## explicit; go 1.23
+# github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
+## explicit; go 1.24
 github.com/aws/aws-sdk-go-v2/service/sqs
 github.com/aws/aws-sdk-go-v2/service/sqs/internal/endpoints
 github.com/aws/aws-sdk-go-v2/service/sqs/types

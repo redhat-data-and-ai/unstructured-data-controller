@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.7
 	github.com/aws/aws-sdk-go-v2/service/kms v1.50.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.96.0
-	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.21
+	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.24
 	github.com/google/go-cmp v0.7.0
 	github.com/imdario/mergo v0.3.16
 	github.com/snowflakedb/gosnowflake v1.19.0
