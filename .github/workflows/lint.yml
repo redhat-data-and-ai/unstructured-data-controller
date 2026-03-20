@@ -9,7 +9,7 @@ jobs:
     name: GolangCILint and YAMLLint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         name: checkout the code
         with:
           fetch-depth: 0
