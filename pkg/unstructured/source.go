@@ -42,7 +42,11 @@ type S3BucketSource struct {
 func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("listing objects in prefix", "bucket", s.Bucket, "prefix", s.Prefix)
-	objects, err := awsclienthandler.ListObjectsInPrefix(ctx, s.Bucket, s.Prefix)
+	sourceS3Client, err := awsclienthandler.GetSourceS3Client()
+	if err != nil {
+		return nil, err
+	}
+	objects, err := awsclienthandler.ListObjectsInPrefix(ctx, sourceS3Client, s.Bucket, s.Prefix)
 	if err != nil {
 		return nil, err
 	}

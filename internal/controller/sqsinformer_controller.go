@@ -94,7 +94,12 @@ func (r *S3EventRecord) validate(ctx context.Context) bool {
 	// For creation events, perform additional validation
 	// verify the file actually exists
 	// it's possible that the file is deleted after the message is received but before the message is processed
-	exists, err := awsclienthandler.ObjectExists(ctx, r.S3.Bucket.Name, r.S3.Object.Key)
+	sourceS3Client, err := awsclienthandler.GetSourceS3Client()
+	if err != nil {
+		logger.Error(err, "failed to get source S3 client")
+		return false
+	}
+	exists, err := awsclienthandler.ObjectExists(ctx, sourceS3Client, r.S3.Bucket.Name, r.S3.Object.Key)
 	if err != nil {
 		logger.Error(err, "failed to check if object exists", "key", r.S3.Object.Key)
 		return false

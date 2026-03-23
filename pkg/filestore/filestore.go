@@ -147,7 +147,7 @@ func (fs *FileStore) fileExistsInCache(path string) (bool, error) {
 func (fs *FileStore) fileExistsInS3(ctx context.Context, path string) (bool, error) {
 	s3Path := path
 
-	s3PathExists, err := awsclienthandler.ObjectExists(ctx, fs.s3Bucket, s3Path)
+	s3PathExists, err := awsclienthandler.ObjectExists(ctx, fs.s3Client, fs.s3Bucket, s3Path)
 	if err != nil {
 		return false, err
 	}
@@ -226,7 +226,7 @@ func (fs *FileStore) Retrieve(ctx context.Context, path string) ([]byte, error) 
 
 func (fs *FileStore) GetFileURL(ctx context.Context, path string) (string, error) {
 	s3Path := path
-	return awsclienthandler.GetPresignedURL(ctx, fs.s3Bucket, s3Path)
+	return awsclienthandler.GetPresignedURL(ctx, fs.s3Client, fs.s3Bucket, s3Path)
 }
 
 func (fs *FileStore) Delete(ctx context.Context, path string) error {
@@ -263,7 +263,7 @@ func (fs *FileStore) Delete(ctx context.Context, path string) error {
 // Note: this function is not thread safe and is prone to race conditions
 // as we do not have directory level locks implemented
 func (fs *FileStore) ListFilesInPath(ctx context.Context, path string) ([]string, error) {
-	objects, err := awsclienthandler.ListObjectsInPrefix(ctx, fs.s3Bucket, path)
+	objects, err := awsclienthandler.ListObjectsInPrefix(ctx, fs.s3Client, fs.s3Bucket, path)
 	if err != nil {
 		return nil, err
 	}

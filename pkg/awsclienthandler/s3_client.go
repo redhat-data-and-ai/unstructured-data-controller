@@ -136,11 +136,8 @@ func GetPresignClient() (*s3.PresignClient, error) {
 	return PresignClient, nil
 }
 
-func GetPresignedURL(ctx context.Context, bucketName, objectKey string) (string, error) {
-	presignClient, err := GetPresignClient()
-	if err != nil {
-		return "", err
-	}
+func GetPresignedURL(ctx context.Context, s3Client *s3.Client, bucketName, objectKey string) (string, error) {
+	presignClient := s3.NewPresignClient(s3Client)
 	request, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(objectKey),
@@ -259,13 +256,8 @@ func ApplyTagToObject(ctx context.Context, bucketName, objectKey, tagKey, tagVal
 	return err
 }
 
-func ObjectExists(ctx context.Context, bucketName, objectKey string) (bool, error) {
-	s3Client, err := GetSourceS3Client()
-	if err != nil {
-		return false, err
-	}
-
-	_, err = s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+func ObjectExists(ctx context.Context, s3Client *s3.Client, bucketName, objectKey string) (bool, error) {
+	_, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(objectKey),
 	})
@@ -293,12 +285,9 @@ func GetObject(ctx context.Context, bucketName, objectKey string) (*s3.GetObject
 	})
 }
 
-func ListObjectsInPrefix(ctx context.Context, bucketName, prefix string) ([]s3types.Object, error) {
-	s3Client, err := GetSourceS3Client()
-	if err != nil {
-		return nil, err
-	}
-
+func ListObjectsInPrefix(
+	ctx context.Context, s3Client *s3.Client, bucketName, prefix string,
+) ([]s3types.Object, error) {
 	listObjectPaginator := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucketName),
 		Prefix: aws.String(prefix),
