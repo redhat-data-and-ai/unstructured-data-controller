@@ -115,6 +115,13 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 					errorList[localFilePath] = err
 					continue
 				}
+				err = fs.Delete(ctx, GetVectorEmbeddingsFilePath(localFilePath))
+				if err != nil {
+					logger.Error(err, "failed to delete vector embeddings file from filestore",
+						"file", GetVectorEmbeddingsFilePath(localFilePath))
+					errorList[localFilePath] = err
+					continue
+				}
 				logger.Info("successfully deleted file and associated files from the filestore", "file", localFilePath)
 			}
 		}
