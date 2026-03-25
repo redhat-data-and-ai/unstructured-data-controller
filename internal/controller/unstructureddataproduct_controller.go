@@ -295,7 +295,11 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	logger.Info("successfully updated UnstructuredDataProduct CR status", "status", unstructuredDataProductCR.Status)
 
-	return ctrl.Result{}, nil
+	// requeue to check in every 5 minutes if there are new files in case
+	// sqs dont put force-reconcile label on the CR
+	return ctrl.Result{
+		RequeueAfter: 5 * time.Minute,
+	}, nil
 }
 
 // setupSnowflakeDestination returns a Snowflake internal stage destination for the given CR.
