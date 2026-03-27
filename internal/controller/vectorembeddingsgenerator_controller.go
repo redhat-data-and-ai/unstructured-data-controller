@@ -234,6 +234,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 			Endpoint:   endpoint,
 			APIKey:     apiKey,
 			AuthFormat: "Bearer",
+			ModelName:  vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.ModelName,
 		})
 	default:
 		return false, fmt.Errorf("unsupported embedding model: %s", vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.ModelName)

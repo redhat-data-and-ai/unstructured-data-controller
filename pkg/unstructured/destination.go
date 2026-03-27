@@ -145,7 +145,7 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 	// delete extra files which are the files in the stage that are not present in the filestore
 	// at this point, whatever is left in the filesInStage map are the extra files that need to be deleted
 
-	extraFiles := []string{}
+	extraFiles := make([]string, 0, len(embeddingsFilesInStage))
 	for extraFilePath := range embeddingsFilesInStage {
 		logger.Info("found extra file in the stage, marking for deletion", "file", extraFilePath)
 		extraFiles = append(extraFiles, extraFilePath)

@@ -1,10 +1,12 @@
 package utils
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/e2e-framework/pkg/utils"
 )
 
 // DefaultE2ENamespace is the namespace used by e2e tests (must match test/e2e/main_test.go testNamespace).
@@ -117,6 +119,22 @@ func GetUnstructuredDataProductResource(name, namespace string) v1alpha1.Unstruc
 					JoinTableRows:    true,
 				},
 			},
+			VectorEmbeddingsGeneratorConfig: v1alpha1.VectorEmbeddingsGeneratorConfig{
+				ModelName: "nomic-ai/nomic-embed-text-v1.5",
+				NomicEmbedTextV15Config: v1alpha1.NomicEmbedTextV15Config{
+					EncodingFormat: "float",
+				},
+			},
 		},
 	}
+}
+
+// helper function for kubectl wait for a resource to be ready
+func WaitForResourceReady(condition, crdName, resourceName, namespace string) error {
+	p := utils.RunCommand(fmt.Sprintf("kubectl wait --for=condition=%s %s %s -n %s --timeout=10m",
+		condition, crdName, resourceName, namespace))
+	if p.Err() != nil {
+		return p.Err()
+	}
+	return nil
 }

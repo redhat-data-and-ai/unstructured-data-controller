@@ -157,7 +157,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 
 	log.Println("Creating consolidated unstructured secret")
 
-	envsubstCmd := fmt.Sprintf("sh -c 'envsubst < config/samples/unstructured-secret.yaml | kubectl apply -n %s -f -'", testNamespace)
+	envsubstCmd := fmt.Sprintf("sh -c 'envsubst < test/resources/unstructured/unstructured-secret.yaml | kubectl apply -n %s -f -'", testNamespace)
 	if p := utils.RunCommand(envsubstCmd); p.Err() != nil {
 		log.Printf("Failed to substitute unstructured secret")
 		return fmt.Errorf("secret substitution failed")
@@ -221,6 +221,42 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 		*runningProcesses = append(*runningProcesses, *pf)
 	}
 
+	skipOllama := os.Getenv("SKIP_OLLAMA_SETUP")
+	if skipOllama != "true" {
+		log.Println("Deploying Ollama embedding service...")
+		if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f test/ollama-embedding/", testNamespace)); p.Err() != nil {
+			log.Printf("Failed to deploy ollama-embedding: %s", p.Err())
+			return p.Err()
+		}
+		log.Println("Waiting for Ollama to be ready...")
+		if err := wait.For(
+			conditions.New(client.Resources()).DeploymentAvailable("ollama-embedding", testNamespace),
+			wait.WithTimeout(10*time.Minute),
+			wait.WithInterval(5*time.Second),
+		); err != nil {
+			log.Printf("Timed out waiting for ollama-embedding: %s", err)
+			return err
+		}
+		log.Println("Ollama embedding service deployed successfully")
+
+		log.Println("Getting Ollama pod name...")
+		getPodCmd := fmt.Sprintf("kubectl get pods -n %s -l app=ollama-embedding -o jsonpath='{.items[0].metadata.name}'", testNamespace)
+		podNameOutput := utils.RunCommand(getPodCmd)
+		if podNameOutput.Err() != nil {
+			log.Printf("Failed to get Ollama pod name: %s", podNameOutput.Err())
+			return podNameOutput.Err()
+		}
+		ollamaPod := podNameOutput.Out()
+
+		log.Println("Pulling and setting up Ollama model...")
+		setupCmd := fmt.Sprintf(`kubectl exec -n %s %s -- sh -c 'ollama pull nomic-embed-text && until ollama list | grep -q nomic-embed-text; do echo "Waiting for model..."; sleep 2; done && ollama cp nomic-embed-text nomic-ai/nomic-embed-text-v1.5'`, testNamespace, ollamaPod)
+		if p := utils.RunCommand(setupCmd); p.Err() != nil {
+			log.Printf("Failed to setup model: %s", p.Err())
+			return p.Err()
+		}
+		log.Println("Ollama model setup completed successfully")
+	}
+
 	// get ControllerConfig from utils/utils_function.go
 	controllerConfig := operatorUtils.GetControllerConfigResource()
 	if err := config.Client().Resources().Create(context.Background(), controllerConfig); err != nil {
@@ -256,6 +292,7 @@ func testCleanup(_ context.Context, _ *envconf.Config, runningProcesses *[]exec.
 		fmt.Sprintf("kubectl delete controllerconfigs.operator.dataverse.redhat.com controllerconfig -n %s --ignore-not-found=true", testNamespace),
 		fmt.Sprintf("kubectl delete -f test/localstack/ -n %s --ignore-not-found=true", testNamespace),
 		fmt.Sprintf("kubectl delete -f test/docling-serve/ -n %s --ignore-not-found=true", testNamespace),
+		fmt.Sprintf("kubectl delete -f test/ollama-embedding/ -n %s --ignore-not-found=true", testNamespace),
 	}
 	for _, command := range commandList {
 		if p := utils.RunCommand(command); p.Err() != nil {

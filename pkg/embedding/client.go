@@ -12,6 +12,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const (
+	HTTPClientTimeout = 60 * time.Second
+)
+
 type EmbeddingGenerator interface {
 	GenerateEmbeddings(ctx context.Context, inputs []string, encodingFormat string) (*EmbeddingResult, error)
 }
@@ -44,6 +48,7 @@ type HTTPClientConfig struct {
 	Endpoint   string
 	AuthFormat string
 	APIKey     string
+	ModelName  string
 }
 
 type HTTPClient struct {
@@ -54,7 +59,7 @@ type HTTPClient struct {
 func NewHTTPClient(config *HTTPClientConfig) *HTTPClient {
 	return &HTTPClient{
 		Client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: HTTPClientTimeout,
 		},
 		Config: config,
 	}
@@ -92,6 +97,7 @@ func (c *HTTPClient) GenerateEmbeddings(
 	payload, err := json.Marshal(EmbeddingRequest{
 		Input:          inputs,
 		EncodingFormat: encodingFormat,
+		Model:          c.Config.ModelName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)

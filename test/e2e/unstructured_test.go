@@ -47,7 +47,6 @@ import (
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
-	"sigs.k8s.io/e2e-framework/pkg/utils"
 )
 
 func TestUnstructuredDataLoad(t *testing.T) {
@@ -177,14 +176,8 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// wait for SQSInformer CR to be ready
-			waitCommand := fmt.Sprintf(
-				"kubectl wait --for=condition=%s SQSInformers.operator.dataverse.redhat.com/%s -n %s --timeout=10m",
-				v1alpha1.SQSInformerCondition,
-				"test-sqs-informer",
-				testNamespace,
-			)
-			if p := utils.RunCommand(waitCommand); p.Err() != nil {
-				t.Fatal(p.Err())
+			if err := operatorUtils.WaitForResourceReady(v1alpha1.SQSInformerCondition, "SQSInformers.operator.dataverse.redhat.com", "test-sqs-informer", testNamespace); err != nil {
+				t.Error(err)
 			}
 
 			// create unstructured data product CR
@@ -199,20 +192,10 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 			// wait for unstructured data product CR to be healthy
 			t.Log("wait for unstructured data product CR to be healthy")
-			sWaitCommand := fmt.Sprintf(
-				"kubectl wait --for=condition=%s unstructureddataproducts.operator.dataverse.redhat.com/%s -n %s --timeout=3m", v1alpha1.UnstructuredDataProductCondition,
-				dataProductCRName,
-				testNamespace,
-			)
-
-			if p := utils.RunCommand(sWaitCommand); p.Err() != nil {
-				t.Logf("Failed to meet condition for unstructured data product CR: %s\nOutput: %s", p.Err(), p.Stdout())
-				getCR := fmt.Sprintf("kubectl get unstructureddataproducts.operator.dataverse.redhat.com/%s -n %s -o yaml", dataProductCRName, testNamespace)
-				if getCROutput := utils.RunCommand(getCR); getCROutput.Err() == nil {
-					t.Logf("unstructured data product CR: %s\n", getCROutput.Result())
-				}
-				t.Fatal(p.Err())
+			if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+				t.Error(err)
 			}
+			t.Log("unstructured data product CR is healthy")
 
 			return ctx
 		},
@@ -541,91 +524,36 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 		t.Log("Successfully updated the docling config in the unstructured data product CR")
 
-		// wait until the unstructured data product CR is ready
-		if err := apimachinerywait.PollUntilContextTimeout(
-			context.Background(),
-			time.Second*5,
-			time.Minute*10,
-			false,
-			func(ctx context.Context) (done bool, err error) {
-				if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, unstructuredDataProductCR); err != nil {
-					t.Error(err)
-					return false, nil
-				}
-				if len(unstructuredDataProductCR.Status.Conditions) == 0 {
-					return false, nil
-				}
-				if unstructuredDataProductCR.Status.Conditions[0].Status == metav1.ConditionTrue {
-					return true, nil
-				}
-				t.Logf("UnstructuredDataProduct not ready: status=%s reason=%s message=%s", unstructuredDataProductCR.Status.Conditions[0].Status, unstructuredDataProductCR.Status.Conditions[0].Reason, unstructuredDataProductCR.Status.Conditions[0].Message)
-				return false, nil
-			},
-		); err != nil {
+		// wait for the unstructured data product CR to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 
 		t.Log("UnstructuredDataProduct successfully reconciled")
 
-		// wait for the document processor to be ready (increased timeout for reprocessing all 11 files)
-		if err := apimachinerywait.PollUntilContextTimeout(
-			context.Background(),
-			time.Second*5,
-			time.Minute*20,
-			false,
-			func(ctx context.Context) (done bool, err error) {
-				documentprocessorCR := &v1alpha1.DocumentProcessor{}
-				if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, documentprocessorCR); err != nil {
-					t.Error(err)
-					return false, nil
-				}
-				if len(documentprocessorCR.Status.Conditions) == 0 {
-					return false, nil
-				}
-
-				// wait for ready status and no pending jobs
-				isReady := documentprocessorCR.Status.Conditions[0].Status == metav1.ConditionTrue
-				noPendingJobs := len(documentprocessorCR.Status.Jobs) == 0
-
-				if !noPendingJobs || !isReady {
-					t.Logf("document processor is not ready or has pending jobs (jobs: %d, ready: %v)", len(documentprocessorCR.Status.Jobs), isReady)
-					return false, nil
-				}
-				return true, nil
-			},
-		); err != nil {
+		// wait for the document processor to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 
-		t.Log("Document Processor successfully reconciled, all the files are processed")
+		t.Log("DocumentProcessor successfully reconciled")
 
-		// wait until the chunksgenerator CR is ready (as it will become ready after the final sync logic is executed)
-		chunksgeneratorCR := &v1alpha1.ChunksGenerator{}
-		if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, chunksgeneratorCR); err != nil {
+		// wait until the chunksgenerator CR is ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-		if err := apimachinerywait.PollUntilContextTimeout(
-			context.Background(),
-			time.Second*5,
-			time.Minute*20,
-			false,
-			func(ctx context.Context) (done bool, err error) {
-				if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, chunksgeneratorCR); err != nil {
-					t.Error(err)
-				}
-				if len(chunksgeneratorCR.Status.Conditions) == 0 {
-					return false, nil
-				}
-				if chunksgeneratorCR.Status.Conditions[0].Status == metav1.ConditionTrue {
-					return true, nil
-				}
-				t.Logf("chunksgenerator CR not ready: status=%s reason=%s message=%s", chunksgeneratorCR.Status.Conditions[0].Status, chunksgeneratorCR.Status.Conditions[0].Reason, chunksgeneratorCR.Status.Conditions[0].Message)
-				return false, nil
-			},
-		); err != nil {
+		t.Log("ChunksGenerator successfully reconciled")
+
+		// wait for the vector embeddings generator to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-		t.Log("Successfully waited until the chunksgenerator CR is ready, now files are up to date in the internal stage")
+		t.Log("VectorEmbeddingsGenerator successfully reconciled")
+
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			t.Error(err)
+		}
+		t.Log("UnstructuredDataProduct successfully reconciled, now files are up to date in the internal stage")
 
 		// now fetch the latest data file name , docling config and markdown content from the snowflake internal stage command
 		stageRows := []data{}
@@ -668,7 +596,6 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	})
 
 	feature.Assess("Will change chunking config and verify the updation of files in the stage", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-
 		// fetch the files from the snowflake internal stage
 		stageSqlQuery := fmt.Sprintf("select $1:convertedDocument.metadata.rawFilePath::string as \"file_name\", $1:chunksDocument.metadata.chunksGeneratorConfig::string as \"chunking_config\" from @%s.%s.%s", databaseName, schemaName, internalStageName)
 		type data struct {
@@ -727,88 +654,34 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		t.Log("Successfully updated the chunking config in the unstructured data product CR")
 
 		// wait until the unstructured data product CR is ready
-		if err := apimachinerywait.PollUntilContextTimeout(
-			context.Background(),
-			time.Second*5,
-			time.Minute*10,
-			false,
-			func(ctx context.Context) (done bool, err error) {
-				if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, unstructuredDataProductCR); err != nil {
-					t.Error(err)
-					return false, nil
-				}
-				if len(unstructuredDataProductCR.Status.Conditions) == 0 {
-					return false, nil
-				}
-				if unstructuredDataProductCR.Status.Conditions[0].Status == metav1.ConditionTrue {
-					return true, nil
-				}
-				t.Logf("UnstructuredDataProduct not ready: status=%s reason=%s message=%s", unstructuredDataProductCR.Status.Conditions[0].Status, unstructuredDataProductCR.Status.Conditions[0].Reason, unstructuredDataProductCR.Status.Conditions[0].Message)
-				return false, nil
-			},
-		); err != nil {
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-
 		t.Log("UnstructuredDataProduct successfully reconciled")
 
-		// wait for the document processor to be ready (increased timeout for rechunking all 11 files)
-		if err := apimachinerywait.PollUntilContextTimeout(
-			context.Background(),
-			time.Second*5,
-			time.Minute*20,
-			false,
-			func(ctx context.Context) (done bool, err error) {
-				documentprocessorCR := &v1alpha1.DocumentProcessor{}
-				if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, documentprocessorCR); err != nil {
-					t.Error(err)
-					return false, nil
-				}
-				if len(documentprocessorCR.Status.Conditions) == 0 {
-					return false, nil
-				}
-
-				isReady := documentprocessorCR.Status.Conditions[0].Status == metav1.ConditionTrue
-				noPendingJobs := len(documentprocessorCR.Status.Jobs) == 0
-
-				if !noPendingJobs || !isReady {
-					t.Logf("document processor is not ready or has pending jobs (jobs: %d, ready: %v)", len(documentprocessorCR.Status.Jobs), isReady)
-					return false, nil
-				}
-				return true, nil
-			},
-		); err != nil {
+		// wait for the document processor to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
+		t.Log("DocumentProcessor successfully reconciled")
 
-		t.Log("Document Processor successfully reconciled, all the files are processed")
-
-		chunksgeneratorCR := &v1alpha1.ChunksGenerator{}
-		if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, chunksgeneratorCR); err != nil {
+		// wait for the chunks generator to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-		if err := apimachinerywait.PollUntilContextTimeout(
-			context.Background(),
-			time.Second*5,
-			time.Minute*20,
-			false,
-			func(ctx context.Context) (done bool, err error) {
-				if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, chunksgeneratorCR); err != nil {
-					t.Error(err)
-				}
-				if len(chunksgeneratorCR.Status.Conditions) == 0 {
-					return false, nil
-				}
-				if chunksgeneratorCR.Status.Conditions[0].Status == metav1.ConditionTrue {
-					return true, nil
-				}
-				t.Logf("chunksgenerator CR not ready: status=%s reason=%s message=%s", chunksgeneratorCR.Status.Conditions[0].Status, chunksgeneratorCR.Status.Conditions[0].Reason, chunksgeneratorCR.Status.Conditions[0].Message)
-				return false, nil
-			},
-		); err != nil {
+		t.Log("ChunksGenerator successfully reconciled")
+
+		// wait for the vector embeddings generator to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-		t.Log("Successfully waited until the chunksgenerator CR is ready, now files are up to date in the internal stage")
+		t.Log("VectorEmbeddingsGenerator successfully reconciled")
+
+		// now fetch unstructured data product CR and wait until it is ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			t.Error(err)
+		}
+		t.Log("UnstructuredDataProduct successfully reconciled, now files are up to date in the internal stage")
 
 		// fetch the latest data from the snowflake internal stage after all the files has been propcessed and check if chunking config is updated or not
 		stageRows := []data{}
