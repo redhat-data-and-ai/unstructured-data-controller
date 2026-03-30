@@ -106,6 +106,19 @@ spec:
                 description: DestinationConfig defines where to write processed data
                   (e.g. Snowflake internal stage or S3).
                 properties:
+                  artifacts:
+                    items:
+                      description: ArtifactConfig defines which processing stage artifacts
+                        to sync and their destination paths
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        type:
+                          type: string
+                      type: object
+                    type: array
                   s3DestinationConfig:
                     description: S3Config configures an S3 bucket and optional prefix.
                     properties:
