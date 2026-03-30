@@ -56,6 +56,17 @@ type DocumentProcessorReconciler struct {
 	fileStore     *filestore.FileStore
 }
 
+// DocumentProcessor handles converted documents
+type DocumentProcessor struct{}
+
+func (DocumentProcessor) GetFileSuffix() string {
+	return unstructured.ConvertedFileSuffix
+}
+
+func (DocumentProcessor) GetDefaultArtifactPath() string {
+	return unstructured.DefaultProcessedDocumentsPath
+}
+
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors/finalizers,verbs=update

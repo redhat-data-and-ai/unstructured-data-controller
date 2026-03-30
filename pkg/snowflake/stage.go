@@ -29,7 +29,9 @@ func (c *Client) Put(ctx context.Context, roleName, filePath, databaseName,
 
 func (c *Client) ListFilesFromStage(ctx context.Context, roleName, databaseName,
 	schemaName, stageName string, resources any) error {
-	query := fmt.Sprintf("SELECT $1 AS data FROM @%s.%s.%s;", databaseName, schemaName, stageName)
+	query := fmt.Sprintf(
+		"SELECT METADATA$FILENAME AS filename, $1 AS data FROM @%s.%s.%s;",
+		databaseName, schemaName, stageName)
 	rows, err := c.query(ctx, query, roleName)
 	if err != nil {
 		return err

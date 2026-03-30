@@ -115,9 +115,18 @@ type S3Config struct {
 	Prefix string `json:"prefix,omitempty"`
 }
 
+// ArtifactConfig defines which processing stage artifacts to sync and their destination paths
+type ArtifactConfig struct {
+	Type string `json:"type,omitempty"` // e.g., "stage"
+	Name string `json:"name,omitempty"` // e.g., "documentProcessorConfig", "chunksGeneratorConfig", "vectorEmbeddingsGeneratorConfig"
+	Path string `json:"path,omitempty"` // e.g., "processed-documents", "chunks", "vector-embeddings"
+}
+
 // DestinationConfig defines where to write processed data (e.g. Snowflake internal stage or S3).
 type DestinationConfig struct {
-	Type                         UnstructuredDataType         `json:"type,omitempty"`
+	Type UnstructuredDataType `json:"type,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	Artifacts                    []ArtifactConfig             `json:"artifacts"`
 	SnowflakeInternalStageConfig SnowflakeInternalStageConfig `json:"snowflakeInternalStageConfig,omitempty"`
 	S3DestinationConfig          S3Config                     `json:"s3DestinationConfig,omitempty"`
 }

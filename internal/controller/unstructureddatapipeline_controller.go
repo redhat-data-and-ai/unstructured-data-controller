@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -227,7 +228,6 @@ func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req 
 	}
 	logger.Info("successfully stored files to filestore", "files", storedFiles)
 
-	// add force reconcile label to the DocumentProcessor CR
 	documentProcessorKey := client.ObjectKey{
 		Namespace: unstructuredDataPipelineCR.Namespace,
 		Name:      dataProductName,
@@ -268,22 +268,27 @@ func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req 
 		return r.handleError(ctx, unstructuredDataPipelineCR, err)
 	}
 
-	// list all files in the filestore for the data product
+	// list files to check if processing is needed
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, unstructuredDataPipelineCR, err)
 	}
-	// extract the vector embeddings files that are to be ingested to destination
-	filterEmbeddingsFiles := unstructured.FilterVectorEmbeddingsFilePaths(filePaths)
-	logger.Info("files to ingest to destination", "files", filterEmbeddingsFiles)
 
-	// ingest the embeddings files to destination
-	if err = destination.SyncFilesToDestination(ctx, r.fileStore, filterEmbeddingsFiles); err != nil {
-		logger.Error(err, "failed to ingest embeddings files to destination")
-		return r.handleError(ctx, unstructuredDataPipelineCR, err)
+	artifactFileGroups := buildDestinationPath(ctx, *unstructuredDataPipelineCR, filePaths)
+
+	logger.Info("files to ingest to destination", "artifactGroups", len(artifactFileGroups))
+
+	// Sync artifact files to destination
+	if len(artifactFileGroups) > 0 {
+		if err := destination.SyncFilesToDestination(ctx, r.fileStore, artifactFileGroups); err != nil {
+			logger.Error(err, "failed to sync files to destination")
+			return r.handleError(ctx, unstructuredDataPipelineCR, err)
+		}
+		logger.Info("successfully synced files to destination")
+	} else {
+		logger.Info("no files to sync to destination")
 	}
-	logger.Info("successfully ingested embeddings files to destination")
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
@@ -311,6 +316,7 @@ func (r *UnstructuredDataPipelineReconciler) setupSnowflakeDestination(ctx conte
 		return nil, err
 	}
 	r.sf = sf
+
 	return &unstructured.SnowflakeInternalStage{
 		Client:   sf,
 		Role:     sf.GetRole(),
@@ -327,12 +333,45 @@ func setupS3Destination(unstructuredDataPipelineCR *operatorv1alpha1.Unstructure
 	if err != nil {
 		return nil, err
 	}
+
 	return &unstructured.S3Destination{
 		S3Client:        destinationS3Client,
 		Bucket:          destCfg.Bucket,
 		Prefix:          destCfg.Prefix,
 		DataProductName: dataProductName,
 	}, nil
+}
+
+func buildDestinationPath(ctx context.Context, unstructuredDataProductCR operatorv1alpha1.UnstructuredDataPipeline, filePaths []string) []unstructured.ArtifactFiles {
+	logger := log.FromContext(ctx)
+	var artifactFileGroups []unstructured.ArtifactFiles
+	for _, artifact := range unstructuredDataProductCR.Spec.DestinationConfig.Artifacts {
+		processor := GetProcessorForArtifact(artifact.Name)
+		if processor == nil {
+			logger.Info("unknown artifact name, skipping", "name", artifact.Name)
+			continue
+		}
+
+		suffix := processor.GetFileSuffix()
+		artifactPath := artifact.Path
+		if artifactPath == "" {
+			artifactPath = processor.GetDefaultArtifactPath()
+		}
+
+		artifactFiles := unstructured.ArtifactFiles{Path: artifactPath}
+		for _, filePath := range filePaths {
+			if strings.HasSuffix(filePath, suffix) {
+				artifactFiles.Files = append(artifactFiles.Files, filePath)
+			}
+		}
+
+		if len(artifactFiles.Files) > 0 {
+			artifactFileGroups = append(artifactFileGroups, artifactFiles)
+			logger.Info("found files for artifact", "artifact", artifact.Name, "path", artifactFiles.Path, "count", len(artifactFiles.Files))
+		}
+	}
+
+	return artifactFileGroups
 }
 
 // SetupWithManager sets up the controller with the Manager.

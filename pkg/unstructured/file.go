@@ -22,15 +22,23 @@ import (
 )
 
 const (
-	MetadataFileSuffix         = "-metadata.json"
-	ConvertedFileSuffix        = "-converted.json"
-	ChunksFileSuffix           = "-chunks.json"
-	VectorEmbeddingsFileSuffix = "-vector-embeddings.json"
+	MetadataFileSuffix            = "-metadata.json"
+	ConvertedFileSuffix           = "-converted.json"
+	ChunksFileSuffix              = "-chunks.json"
+	VectorEmbeddingsFileSuffix    = "-vector-embeddings.json"
+	DefaultProcessedDocumentsPath = "processed-documents"
+	DefaultChunksPath             = "chunks"
+	DefaultVectorEmbeddingsPath   = "vector-embeddings"
 )
 
 type RawFileMetadata struct {
 	FilePath string `json:"filePath,omitempty"`
 	UID      string `json:"uid,omitempty"`
+}
+
+type ArtifactProcessor interface {
+	GetFileSuffix() string
+	GetDefaultArtifactPath() string
 }
 
 func GetMetadataFilePath(rawFilePath string) string {
