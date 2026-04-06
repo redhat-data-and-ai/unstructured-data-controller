@@ -94,6 +94,10 @@ type NomicEmbedTextV15Config struct {
 	EncodingFormat string `json:"encodingformat,omitempty"`
 }
 
+type SQSInformerConfig struct {
+	QueueURL string `json:"queueURL"`
+}
+
 // UnstructuredDataProductSpec defines the desired state of UnstructuredDataProduct
 type UnstructuredDataProductSpec struct {
 	SourceConfig                    SourceConfig                    `json:"sourceConfig,omitempty"`
@@ -101,6 +105,7 @@ type UnstructuredDataProductSpec struct {
 	DocumentProcessorConfig         DocumentProcessorConfig         `json:"documentProcessorConfig,omitempty"`
 	ChunksGeneratorConfig           ChunksGeneratorConfig           `json:"chunksGeneratorConfig,omitempty"`
 	VectorEmbeddingsGeneratorConfig VectorEmbeddingsGeneratorConfig `json:"vectorEmbeddingsGeneratorConfig,omitempty"`
+	SQSInformerConfig               *SQSInformerConfig              `json:"sqsInformerConfig,omitempty"`
 }
 
 // SourceConfig defines where to read unstructured data from (e.g. S3).

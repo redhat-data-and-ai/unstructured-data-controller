@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
@@ -176,6 +177,44 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
 	logger.Info("VectorEmbeddingsGenerator CR created/updated", "result", result)
+
+	// create or update SQSInformer CR if config is provided, otherwise clean up existing one
+	if unstructuredDataProductCR.Spec.SQSInformerConfig != nil {
+		sqsInformerCR := &operatorv1alpha1.SQSInformer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      dataProductName,
+				Namespace: unstructuredDataProductCR.Namespace,
+			},
+		}
+		result, err = controllerutil.CreateOrUpdate(ctx, r.Client, sqsInformerCR, func() error {
+			sqsInformerCR.Spec = operatorv1alpha1.SQSInformerSpec{
+				QueueURL: unstructuredDataProductCR.Spec.SQSInformerConfig.QueueURL,
+			}
+			return controllerutil.SetControllerReference(unstructuredDataProductCR, sqsInformerCR, r.Scheme)
+		})
+		if err != nil {
+			logger.Error(err, "failed to create/update SQSInformer CR")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+		logger.Info("SQSInformer CR created/updated", "result", result)
+	} else {
+		// if sqsInformerConfig is removed, clean up existing SQSInformer if present
+		existingSQSInformer := &operatorv1alpha1.SQSInformer{}
+		sqsInformerKey := client.ObjectKey{
+			Name:      dataProductName,
+			Namespace: unstructuredDataProductCR.Namespace,
+		}
+		if err := r.Get(ctx, sqsInformerKey, existingSQSInformer); err == nil {
+			if err := r.Delete(ctx, existingSQSInformer); err != nil {
+				logger.Error(err, "failed to delete SQSInformer CR")
+				return r.handleError(ctx, unstructuredDataProductCR, err)
+			}
+			logger.Info("SQSInformer CR deleted (config removed)")
+		} else if !apierrors.IsNotFound(err) {
+			logger.Error(err, "failed to check for existing SQSInformer CR")
+			return r.handleError(ctx, unstructuredDataProductCR, err)
+		}
+	}
 
 	var source unstructured.DataSource
 	switch unstructuredDataProductCR.Spec.SourceConfig.Type {

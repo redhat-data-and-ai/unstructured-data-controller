@@ -161,34 +161,11 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// create SQSInformer CR
-			SQSInformer := &v1alpha1.SQSInformer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-sqs-informer",
-					Namespace: testNamespace,
-				},
-				Spec: v1alpha1.SQSInformerSpec{
-					QueueURL: queueURL,
-				},
-			}
-			err = kubeClient.Resources(testNamespace).Create(ctx, SQSInformer)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			// wait for SQSInformer CR to be ready
-			waitCommand := fmt.Sprintf(
-				"kubectl wait --for=condition=%s SQSInformers.operator.dataverse.redhat.com/%s -n %s --timeout=10m",
-				v1alpha1.SQSInformerCondition,
-				"test-sqs-informer",
-				testNamespace,
-			)
-			if p := utils.RunCommand(waitCommand); p.Err() != nil {
-				t.Fatal(p.Err())
-			}
-
-			// create unstructured data product CR
+			// create unstructured data product CR (which will also create the SQSInformer CR)
 			unstructuredDataProduct := operatorUtils.GetUnstructuredDataProductResource(dataProductCRName, testNamespace)
+			unstructuredDataProduct.Spec.SQSInformerConfig = &v1alpha1.SQSInformerConfig{
+				QueueURL: queueURL,
+			}
 
 			t.Log("create unstructured dataproduct CR ...")
 			if err := kubeClient.Resources(testNamespace).Create(ctx, &unstructuredDataProduct); err != nil {
@@ -851,18 +828,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 	feature.Teardown(
 		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			// delete SQSInformer CR
-			SQSInformer := &v1alpha1.SQSInformer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-sqs-informer",
-					Namespace: testNamespace,
-				},
-			}
-			if err := kubeClient.Resources(testNamespace).Delete(ctx, SQSInformer); err != nil {
-				t.Fatal(err)
-			}
-
-			// delete unstructured data product CR
+			// delete unstructured data product CR (SQSInformer will be cascade-deleted via owner reference)
 			unstructuredDataProduct := &v1alpha1.UnstructuredDataProduct{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      dataProductCRName,
