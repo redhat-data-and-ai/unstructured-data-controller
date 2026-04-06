@@ -181,6 +181,13 @@ spec:
                   type:
                     type: string
                 type: object
+              sqsInformerConfig:
+                properties:
+                  queueURL:
+                    type: string
+                required:
+                - queueURL
+                type: object
               vectorEmbeddingsGeneratorConfig:
                 properties:
                   modelName:
