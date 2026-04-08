@@ -191,6 +191,9 @@ type authRequestClientEnvironment struct {
 	CoreLoadError           string            `json:"CORE_LOAD_ERROR,omitempty"`
 	CoreFileName            string            `json:"CORE_FILE_NAME,omitempty"`
 	CgoEnabled              bool              `json:"CGO_ENABLED,omitempty"`
+	LinkingMode             string            `json:"LINKING_MODE,omitempty"`
+	LibcFamily              string            `json:"LIBC_FAMILY,omitempty"`
+	LibcVersion             string            `json:"LIBC_VERSION,omitempty"`
 }
 
 type authRequestData struct {
@@ -473,13 +476,23 @@ func newAuthRequestClientEnvironment() authRequestClientEnvironment {
 		coreVersion, err = mc.FullVersion()
 		if err != nil {
 			logger.Debugf("Minicore loading failed. %v", err)
-			coreLoadError = "Failed to load binary"
+			var mcErr *miniCoreError
+			if errors.As(err, &mcErr) {
+				coreLoadError = fmt.Sprintf("Failed to load binary: %v", mcErr.errorType)
+			} else {
+				coreLoadError = "Failed to load binary: unknown"
+			}
 		}
 	} else {
 		// Minicore not loaded yet - this is expected during startup
 		coreVersion = ""
 		coreLoadError = "Minicore is still loading"
 		logger.Debugf("Minicore not yet loaded for client environment telemetry")
+	}
+	libcInfo := internalos.GetLibcInfo()
+	linkingMode, err := compilation.CheckDynamicLinking()
+	if err != nil {
+		logger.Debugf("cannot determine if app is dynamically linked: %v", err)
 	}
 	return authRequestClientEnvironment{
 		Os:            runtime.GOOS,
@@ -491,6 +504,9 @@ func newAuthRequestClientEnvironment() authRequestClientEnvironment {
 		CoreFileName:  getMiniCoreFileName(),
 		CoreLoadError: coreLoadError,
 		CgoEnabled:    compilation.CgoEnabled,
+		LinkingMode:   linkingMode.String(),
+		LibcFamily:    libcInfo.Family,
+		LibcVersion:   libcInfo.Version,
 	}
 }
 

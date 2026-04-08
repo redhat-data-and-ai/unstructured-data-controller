@@ -13,7 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25
 	github.com/google/go-cmp v0.7.0
 	github.com/imdario/mergo v0.3.16
-	github.com/snowflakedb/gosnowflake v1.19.0
+	github.com/snowflakedb/gosnowflake v1.19.1
 	golang.org/x/sync v0.19.0
 	k8s.io/api v0.34.6
 	k8s.io/apimachinery v0.34.6

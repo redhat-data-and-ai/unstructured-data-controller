@@ -1,15 +1,16 @@
 package gosnowflake
 
 import (
-	"bufio"
 	"fmt"
-	"github.com/snowflakedb/gosnowflake/internal/compilation"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/snowflakedb/gosnowflake/internal/compilation"
+	internalos "github.com/snowflakedb/gosnowflake/internal/os"
 )
 
 const disableMinicoreEnv = "SF_DISABLE_MINICORE"
@@ -235,6 +236,13 @@ func (l *miniCoreLoaderType) loadCore() miniCore {
 			fmt.Errorf("minicore is not supported on %v/%v platform", runtime.GOOS, runtime.GOARCH)))
 	}
 
+	if linkingMode, err := compilation.CheckDynamicLinking(); err != nil || linkingMode == compilation.UnknownLinking {
+		minicoreDebugf("cannot determine linking mode: %v, proceeding anyway", err)
+	} else if linkingMode == compilation.StaticLinking {
+		return newErroredMiniCore(newMiniCoreError(miniCoreErrorTypeLoad, runtime.GOOS, "",
+			fmt.Errorf("binary is statically linked (no dynamic linker); dlopen is unavailable")))
+	}
+
 	libDir, libPath, err := l.writeLibraryToFile()
 	if err != nil {
 		return newErroredMiniCore(err)
@@ -265,15 +273,15 @@ func (l *miniCoreLoaderType) writeLibraryToFile() (minicoreDirCandidate, string,
 	for _, dir := range l.searchDirs {
 		if dir.preUseFunc != nil {
 			if err := dir.preUseFunc(); err != nil {
-				minicoreDebugf("Failed to prepare directory %s: %v", dir.path, err)
-				errs = append(errs, fmt.Errorf("failed to prepare directory %v: %v", dir.path, err))
+				minicoreDebugf("Failed to prepare directory %q: %v", dir.path, err)
+				errs = append(errs, fmt.Errorf("failed to prepare directory %q: %v", dir.path, err))
 				continue
 			}
 		}
 		libPath := filepath.Join(dir.path, corePlatformConfig.coreLibFileName)
 		if err := os.WriteFile(libPath, corePlatformConfig.coreLib, 0600); err != nil {
-			minicoreDebugf("Failed to write embedded library to %s: %v", libPath, err)
-			errs = append(errs, fmt.Errorf("failed to write to %v: %v", libPath, err))
+			minicoreDebugf("Failed to write embedded library to %q: %v", libPath, err)
+			errs = append(errs, fmt.Errorf("failed to write to %q: %v", libPath, err))
 			continue
 		}
 		minicoreDebugf("Successfully wrote embedded library to %s", dir)
@@ -304,10 +312,15 @@ func getMiniCore() miniCore {
 
 			minicoreDebugf("Starting asynchronous minicore loading")
 			miniCoreLoader := newMiniCoreLoader()
+			core := miniCoreLoader.loadCore()
 			miniCoreMutex.Lock()
-			miniCoreInstance = miniCoreLoader.loadCore()
+			miniCoreInstance = core
 			miniCoreMutex.Unlock()
-			minicoreDebugf("Minicore loading completed asynchronously")
+			if v, err := core.FullVersion(); err != nil {
+				minicoreDebugf("Minicore version not available: %v", err)
+			} else {
+				minicoreDebugf("Minicore loading completed, version: %s", v)
+			}
 		}()
 	})
 
@@ -343,43 +356,29 @@ const (
 	libcTypeIgnored libcType = ""
 )
 
-// detectLibc detects whether glibc or musl is in use by checking /proc/self/maps
+// detectLibc detects whether glibc or musl is in use
 func detectLibc() libcType {
-	// Only applicable on Linux
 	if runtime.GOOS != "linux" {
-		return libcTypeIgnored // Default for non-Linux POSIX systems
+		return libcTypeIgnored
 	}
 
-	minicoreDebugf("Detecting libc type by reading /proc/self/maps")
+	info := internalos.GetLibcInfo()
 
-	fd, err := os.Open("/proc/self/maps")
-	if err != nil {
-		minicoreDebugf("Failed to read /proc/self/maps: %v, assuming glibc", err)
+	switch info.Family {
+	case "glibc":
+		minicoreDebugf("detected glibc environment")
+		if info.Version != "" {
+			minicoreDebugf("glibc version: %s", info.Version)
+		}
+		return libcTypeGlibc
+	case "musl":
+		minicoreDebugf("detected musl environment")
+		if info.Version != "" {
+			minicoreDebugf("musl version: %s", info.Version)
+		}
+		return libcTypeMusl
+	default:
+		minicoreDebugf("Could not detect libc type, assuming glibc")
 		return libcTypeGlibc
 	}
-	defer func(fd *os.File) {
-		if err = fd.Close(); err != nil {
-			minicoreDebugf("cannot close %v file. %v", fd.Name(), err)
-		}
-	}(fd)
-
-	scanner := bufio.NewScanner(fd)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "musl") {
-			minicoreDebugf("detected musl environment")
-			return libcTypeMusl
-		} else if strings.Contains(line, "libc.so.6") {
-			minicoreDebugf("detected glibc environment")
-			return libcTypeGlibc
-		}
-	}
-
-	if err = scanner.Err(); err != nil {
-		minicoreDebugf("error while scanning /proc/self/maps. assuming glibc. %v", err)
-		return libcTypeGlibc
-	}
-
-	minicoreDebugf("Could not detect libc type from /proc/self/maps, assuming glibc")
-	return libcTypeGlibc
 }

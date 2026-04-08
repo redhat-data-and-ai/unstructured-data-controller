@@ -2,6 +2,20 @@
 
 ## Upcoming Release
 
+## 1.19.1
+
+New features:
+
+- Dropped support for Go 1.23 and added support for Go 1.26.
+
+Internal changes:
+
+- Added libc family, version and dynamic linking marker to client environment telemetry.
+
+Bug fixes:
+
+- Fixed minicore crash (SIGFPE) on fully statically linked Linux binaries by detecting static linking via ELF PT_INTERP inspection and skipping `dlopen` gracefully (snowflakedb/gosnowflake#1721).
+
 ## 1.19.0
 
 New features:
