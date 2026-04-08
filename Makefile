@@ -142,12 +142,20 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e ## Run the e2e tests. Expected an isolated environment using Kind.
-	go test -count=1 -tags e2e ./test/e2e/ -v -timeout=60m
+	KIND_CLUSTER=$(KIND_CLUSTER) SKIP_CLUSTER_SETUP=true go test -count=1 -tags e2e ./test/e2e/ -v -timeout=60m
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: local-dev-setup
+local-dev-setup: ## Full local dev setup (Kind, LocalStack Docker, CRDs, samples, run)
+	@chmod +x scripts/local-dev-setup.sh && ./scripts/local-dev-setup.sh
+
+.PHONY: local-dev-cleanup
+local-dev-cleanup: ## Clean up local development environment
+	@chmod +x scripts/local-dev-cleanup.sh && ./scripts/local-dev-cleanup.sh
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint and yamllint linters
