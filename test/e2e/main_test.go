@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,22 +240,35 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 		}
 		log.Println("Ollama embedding service deployed successfully")
 
-		log.Println("Getting Ollama pod name...")
-		getPodCmd := fmt.Sprintf("kubectl get pods -n %s -l app=ollama-embedding -o jsonpath='{.items[0].metadata.name}'", testNamespace)
-		podNameOutput := utils.RunCommand(getPodCmd)
-		if podNameOutput.Err() != nil {
-			log.Printf("Failed to get Ollama pod name: %s", podNameOutput.Err())
-			return podNameOutput.Err()
+		cmd := fmt.Sprintf(
+			"kubectl get pods -n %s -l app=ollama-embedding -o jsonpath='{.items[0].metadata.name}'",
+			testNamespace,
+		)
+		p := utils.RunCommand(cmd)
+		if p.Err() != nil {
+			return fmt.Errorf("failed to get pod name: %v", p.Err())
 		}
-		ollamaPod := podNameOutput.Out()
+		podName := strings.Trim(p.Result(), "'")
+		log.Printf("Successfully retrieved Ollama pod name: %s", podName)
 
-		log.Println("Pulling and setting up Ollama model...")
-		setupCmd := fmt.Sprintf(`kubectl exec -n %s %s -- sh -c 'ollama pull nomic-embed-text && until ollama list | grep -q nomic-embed-text; do echo "Waiting for model..."; sleep 2; done && ollama cp nomic-embed-text nomic-ai/nomic-embed-text-v1.5'`, testNamespace, ollamaPod)
-		if p := utils.RunCommand(setupCmd); p.Err() != nil {
-			log.Printf("Failed to setup model: %s", p.Err())
-			return p.Err()
+		// Pull model with 10-minute timeout
+		log.Println("Pulling nomic-embed-text model (this may take several minutes)...")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		pullCmd := exec.CommandContext(ctx, "kubectl", "exec", "-n", testNamespace, podName, "--", "ollama", "pull", "nomic-embed-text:latest")
+		if output, err := pullCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to pull model: %v, output: %s", err, string(output))
 		}
-		log.Println("Ollama model setup completed successfully")
+		log.Println("Model pulled successfully")
+
+		// Copy model to create alias
+		log.Println("Creating model alias...")
+		copyCmd := exec.Command("kubectl", "exec", "-n", testNamespace, podName, "--", "ollama", "cp", "nomic-embed-text:latest", "nomic-ai/nomic-embed-text-v1.5")
+		if output, err := copyCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to copy model: %v, output: %s", err, string(output))
+		}
+		log.Println("Ollama embedding service is successfully set up")
 	}
 
 	// get ControllerConfig from utils/utils_function.go
