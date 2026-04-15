@@ -77,52 +77,31 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 		logger.Info("successfully stored file", "file", file.FilePath)
 		storedFiles = append(storedFiles, file)
 	}
-
-	// TODO: delete files from the filestore that are not present in the source (shikhar)
-	// also, delete the metadata files, chunked files and vector embeddings files if the raw file deleted
 	// Listing all the file in the local s3 filestore
 	localFiles, err := fs.ListFilesInPath(ctx, s.Prefix)
 	if err != nil {
 		logger.Error(err, "failed to list files in filestore", "prefix", s.Prefix)
 		return nil, err
 	}
+
+	// logic to delete files and its respective files if the file is removed from upstream bucket
 	for _, localFilePath := range localFiles {
-		// check if has suffix .pdf
-		if strings.HasSuffix(localFilePath, ".pdf") {
-			if _, exists := sourceFileMap[localFilePath]; !exists {
-				logger.Info("file doesnot exist in the source, deleting from the filestore", "file", localFilePath)
-				err := fs.Delete(ctx, localFilePath)
-				if err != nil {
-					logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
-					errorList[localFilePath] = err
-					continue
-				}
-				err = fs.Delete(ctx, GetMetadataFilePath(localFilePath))
-				if err != nil {
-					logger.Error(err, "failed to delete metadata file from filestore", "file", GetMetadataFilePath(localFilePath))
-					errorList[localFilePath] = err
-					continue
-				}
-				err = fs.Delete(ctx, GetConvertedFilePath(localFilePath))
-				if err != nil {
-					logger.Error(err, "failed to delete converted file from filestore", "file", GetConvertedFilePath(localFilePath))
-					errorList[localFilePath] = err
-					continue
-				}
-				err = fs.Delete(ctx, GetChunksFilePath(localFilePath))
-				if err != nil {
-					logger.Error(err, "failed to delete chunks file from filestore", "file", GetChunksFilePath(localFilePath))
-					errorList[localFilePath] = err
-					continue
-				}
-				err = fs.Delete(ctx, GetVectorEmbeddingsFilePath(localFilePath))
-				if err != nil {
-					logger.Error(err, "failed to delete vector embeddings file from filestore",
-						"file", GetVectorEmbeddingsFilePath(localFilePath))
-					errorList[localFilePath] = err
-					continue
-				}
-				logger.Info("successfully deleted file and associated files from the filestore", "file", localFilePath)
+		rawFilePath := localFilePath
+		for _, suffix := range []string{MetadataFileSuffix, ConvertedFileSuffix,
+			ChunksFileSuffix, VectorEmbeddingsFileSuffix} {
+			if strings.HasSuffix(localFilePath, suffix) {
+				rawFilePath = strings.TrimSuffix(localFilePath, suffix)
+				break
+			}
+		}
+
+		if _, exists := sourceFileMap[rawFilePath]; !exists {
+			logger.Info("file or its parent does not exist in the source, deleting from the filestore", "file", localFilePath)
+			if err := fs.Delete(ctx, localFilePath); err != nil {
+				logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
+				errorList[localFilePath] = err
+			} else {
+				logger.Info("successfully deleted file from the filestore", "file", localFilePath)
 			}
 		}
 	}
