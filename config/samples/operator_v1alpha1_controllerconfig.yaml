@@ -21,3 +21,4 @@ spec:
     cacheDirectory: "tmp/cache/"
     maxConcurrentDoclingTasks: 5
     maxConcurrentLangchainTasks: 10
+    # unstructuredDataPipelineResyncInterval: 5 # value should be greater or equal to 1 minute

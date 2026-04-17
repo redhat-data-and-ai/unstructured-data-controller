@@ -49,6 +49,8 @@ type UnstructuredDataProcessingConfigSpec struct {
 
 	CacheDirectory    string `json:"cacheDirectory,omitempty"`
 	DataStorageBucket string `json:"dataStorageBucket,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	UnstructuredDataPipelineResyncInterval *int `json:"unstructuredDataPipelineResyncInterval,omitempty"`
 }
 
 // ControllerConfigStatus defines the observed state of ControllerConfig.

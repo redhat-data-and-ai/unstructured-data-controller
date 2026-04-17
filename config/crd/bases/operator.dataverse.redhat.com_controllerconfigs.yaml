@@ -81,6 +81,9 @@ spec:
                     type: integer
                   maxConcurrentLangchainTasks:
                     type: integer
+                  unstructuredDataPipelineResyncInterval:
+                    minimum: 1
+                    type: integer
                 type: object
               unstructuredSecret:
                 type: string

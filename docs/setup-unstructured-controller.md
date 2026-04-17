@@ -108,7 +108,15 @@ spec:
     cacheDirectory: "tmp/cache/"
     maxConcurrentDoclingTasks: 5
     maxConcurrentLangchainTasks: 10
+    unstructuredDataPipelineResyncInterval: 5  # Optional: resync interval in minutes
 ```
+
+### Configuration Fields
+
+- **unstructuredDataPipelineResyncInterval** (optional): Specifies how often (in minutes) the controller should requeue and resync UnstructuredDataProduct resources to check for new files in the ingestion bucket.
+  - If not specified, the controller will not automatically requeue.
+  - Useful when you want periodic polling for new files independent of SQS notifications.
+  - Example: Setting it to `5` will check for new files every 5 minutes.
 
 Apply the sample or your own manifest (use the same namespace where you created the secret):
 

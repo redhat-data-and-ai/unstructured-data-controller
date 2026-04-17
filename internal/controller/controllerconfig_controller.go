@@ -44,9 +44,10 @@ import (
 var (
 	ingestionBucket string
 
-	doclingClient      *docling.Client
-	langchainClient    *langchain.Client
-	unstructuredSecret *corev1.Secret
+	doclingClient                          *docling.Client
+	langchainClient                        *langchain.Client
+	unstructuredSecret                     *corev1.Secret
+	UnstructuredDataPipelineResyncInterval *int
 )
 
 type Model string
@@ -227,6 +228,12 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			}
 			return ctrl.Result{}, err
 		}
+	}
+
+	// set the value of resync interval
+	if config.Spec.UnstructuredDataProcessingConfig.UnstructuredDataPipelineResyncInterval != nil {
+		UnstructuredDataPipelineResyncInterval = config.Spec.UnstructuredDataProcessingConfig.UnstructuredDataPipelineResyncInterval
+		logger.Info("setting unstructured data pipeline resync interval to ", "minutes", *UnstructuredDataPipelineResyncInterval)
 	}
 
 	// Skip only status update if we've already processed this generation successfully
