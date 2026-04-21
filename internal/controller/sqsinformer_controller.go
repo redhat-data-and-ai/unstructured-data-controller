@@ -254,6 +254,9 @@ func (r *SQSInformerReconciler) processMessage(ctx context.Context, message sqst
 		return errorList
 	}
 
+	// all unique data products that need reconciliation
+	dataProductsToReconcile := make([]string, 0)
+
 	// every message may contain multiple records and each record points to a file
 	// we don't want to block the reconciliation if one of the records cannot be processed
 	// so we will continue to process the other records
@@ -276,15 +279,25 @@ func (r *SQSInformerReconciler) processMessage(ctx context.Context, message sqst
 		sourceFilePathSplit := strings.Split(objectKey, "/")
 		dataProductName := sourceFilePathSplit[0]
 
+		if !slices.Contains(dataProductsToReconcile, dataProductName) {
+			dataProductsToReconcile = append(dataProductsToReconcile, dataProductName)
+		}
+		logger.Info("successfully processed record", "key", objectKey, "dataProduct", dataProductName)
+	}
+
+	// add force reconcile label once per unique data product
+	for _, dataProductName := range dataProductsToReconcile {
 		udpKey := client.ObjectKey{Namespace: namespace, Name: dataProductName}
-		if err := controllerutils.AddForceReconcileLabelWithRetry(ctx, r.Client, udpKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }); err != nil {
-			logger.Error(err, "failed to add force reconcile label", "key", objectKey)
+		if err := controllerutils.AddForceReconcileLabelWithRetry(ctx, r.Client, udpKey, func() client.Object {
+			return &operatorv1alpha1.UnstructuredDataProduct{}
+		}); err != nil {
+			logger.Error(err, "failed to add force reconcile label", "dataProduct", dataProductName)
 			errorList = append(errorList, err)
 			continue
 		}
-
-		logger.Info("successfully processed record", "key", objectKey)
+		logger.Info("successfully triggered reconciliation", "dataProduct", dataProductName)
 	}
+
 	return errorList
 }
 
