@@ -197,23 +197,21 @@ func TestUnstructuredDataLoad(t *testing.T) {
 					t.Logf("Successfully dropped stage in cleanup: %s", internalStageName)
 				}
 			})
-
-			// create unstructured data product CR with unique stage name
-			unstructuredDataProduct := operatorUtils.GetUnstructuredDataProductResourceWithStage(dataProductCRName, testNamespace, internalStageName)
-
-			t.Log("create unstructured dataproduct CR ...")
-			if err := kubeClient.Resources(testNamespace).Create(ctx, &unstructuredDataProduct); err != nil {
+			// create unstructured data pipeline CR
+			unstructuredDataPipeline := operatorUtils.GetUnstructuredDataPipelineResourceWithStage(dataProductCRName, testNamespace, internalStageName)
+			t.Log("create unstructured datapipeline CR ...")
+			if err := kubeClient.Resources(testNamespace).Create(ctx, &unstructuredDataPipeline); err != nil {
 				if !apierrors.IsAlreadyExists(err) {
 					t.Fatal(err)
 				}
 			}
 
-			// wait for unstructured data product CR to be healthy
-			t.Log("wait for unstructured data product CR to be healthy")
-			if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			// wait for unstructured data pipeline CR to be healthy
+			t.Log("wait for unstructured data pipeline CR to be healthy")
+			if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 				t.Error(err)
 			}
-			t.Log("unstructured data product CR is healthy")
+			t.Log("unstructured data pipeline CR is healthy")
 
 			return ctx
 		},
@@ -531,23 +529,23 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			TableMode:       "accurate",
 		}
 
-		// fetch the latest version of the unstructured data product CR
-		unstructuredDataProductCR := &v1alpha1.UnstructuredDataProduct{}
-		if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, unstructuredDataProductCR); err != nil {
+		// fetch the latest version of the unstructured data pipeline CR
+		unstructuredDataPipelineCR := &v1alpha1.UnstructuredDataPipeline{}
+		if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, unstructuredDataPipelineCR); err != nil {
 			t.Error(err)
 		}
-		unstructuredDataProductCR.Spec.DocumentProcessorConfig.DoclingConfig = *doclingConfig
-		if err := kubeClient.Resources().WithNamespace(testNamespace).Update(ctx, unstructuredDataProductCR); err != nil {
+		unstructuredDataPipelineCR.Spec.DocumentProcessorConfig.DoclingConfig = *doclingConfig
+		if err := kubeClient.Resources().WithNamespace(testNamespace).Update(ctx, unstructuredDataPipelineCR); err != nil {
 			t.Error(err)
 		}
-		t.Log("Successfully updated the docling config in the unstructured data product CR")
+		t.Log("Successfully updated the docling config in the unstructured data pipeline CR")
 
-		// wait for the unstructured data product CR to be ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		// wait for the unstructured data pipeline CR to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 
-		t.Log("UnstructuredDataProduct successfully reconciled")
+		t.Log("UnstructuredDataPipeline successfully reconciled")
 
 		// wait for the document processor to be ready
 		if err := operatorUtils.WaitForResourceReady(v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
@@ -568,10 +566,10 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 		t.Log("VectorEmbeddingsGenerator successfully reconciled")
 
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-		t.Log("UnstructuredDataProduct successfully reconciled, now files are up to date in the internal stage")
+		t.Log("UnstructuredDataPipeline successfully reconciled, now files are up to date in the internal stage")
 
 		// now fetch the latest data file name , docling config and markdown content from the snowflake internal stage command
 		stageRows := []data{}
@@ -660,22 +658,22 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			},
 		}
 
-		// fetch the latest version of the unstructured data product CR
-		unstructuredDataProductCR := &v1alpha1.UnstructuredDataProduct{}
-		if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, unstructuredDataProductCR); err != nil {
+		// fetch the latest version of the unstructured data pipeline CR
+		unstructuredDataPipelineCR := &v1alpha1.UnstructuredDataPipeline{}
+		if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, unstructuredDataPipelineCR); err != nil {
 			t.Error(err)
 		}
-		unstructuredDataProductCR.Spec.ChunksGeneratorConfig = *chunkingConfig
-		if err := kubeClient.Resources().WithNamespace(testNamespace).Update(ctx, unstructuredDataProductCR); err != nil {
+		unstructuredDataPipelineCR.Spec.ChunksGeneratorConfig = *chunkingConfig
+		if err := kubeClient.Resources().WithNamespace(testNamespace).Update(ctx, unstructuredDataPipelineCR); err != nil {
 			t.Error(err)
 		}
-		t.Log("Successfully updated the chunking config in the unstructured data product CR")
+		t.Log("Successfully updated the chunking config in the unstructured data pipeline CR")
 
-		// wait until the unstructured data product CR is ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		// wait until the unstructured data pipeline CR is ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-		t.Log("UnstructuredDataProduct successfully reconciled")
+		t.Log("UnstructuredDataPipeline successfully reconciled")
 
 		// wait for the document processor to be ready
 		if err := operatorUtils.WaitForResourceReady(v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
@@ -695,11 +693,11 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 		t.Log("VectorEmbeddingsGenerator successfully reconciled")
 
-		// now fetch unstructured data product CR and wait until it is ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		// now fetch unstructured data pipeline CR and wait until it is ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
-		t.Log("UnstructuredDataProduct successfully reconciled, now files are up to date in the internal stage")
+		t.Log("UnstructuredDataPipeline successfully reconciled, now files are up to date in the internal stage")
 
 		// fetch the latest data from the snowflake internal stage after all the files has been propcessed and check if chunking config is updated or not
 		stageRows := []data{}
@@ -753,14 +751,14 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// delete unstructured data product CR
-			unstructuredDataProduct := &v1alpha1.UnstructuredDataProduct{
+			// delete unstructured data pipeline CR
+			unstructuredDataPipeline := &v1alpha1.UnstructuredDataPipeline{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      dataProductCRName,
 					Namespace: testNamespace,
 				},
 			}
-			if err := kubeClient.Resources(testNamespace).Delete(ctx, unstructuredDataProduct); err != nil {
+			if err := kubeClient.Resources(testNamespace).Delete(ctx, unstructuredDataPipeline); err != nil {
 				t.Fatal(err)
 			}
 			return ctx

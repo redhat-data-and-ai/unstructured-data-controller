@@ -4,27 +4,27 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: unstructureddataproducts.operator.dataverse.redhat.com
+  name: unstructureddatapipelines.operator.dataverse.redhat.com
 spec:
   group: operator.dataverse.redhat.com
   names:
-    kind: UnstructuredDataProduct
-    listKind: UnstructuredDataProductList
-    plural: unstructureddataproducts
-    singular: unstructureddataproduct
+    kind: UnstructuredDataPipeline
+    listKind: UnstructuredDataPipelineList
+    plural: unstructureddatapipelines
+    singular: unstructureddatapipeline
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataProductReady")].status
+    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataPipelineReady")].status
       name: Status
       type: string
-    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataProductReady")].message
+    - jsonPath: .status.conditions[?(@.type=="UnstructuredDataPipelineReady")].message
       name: Message
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: UnstructuredDataProduct is the Schema for the unstructureddataproducts
+        description: UnstructuredDataPipeline is the Schema for the unstructureddatapipelines
           API
         properties:
           apiVersion:
@@ -45,8 +45,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: UnstructuredDataProductSpec defines the desired state of
-              UnstructuredDataProduct
+            description: UnstructuredDataPipelineSpec defines the desired state of
+              UnstructuredDataPipeline
             properties:
               chunksGeneratorConfig:
                 properties:
@@ -193,8 +193,8 @@ spec:
                 type: object
             type: object
           status:
-            description: UnstructuredDataProductStatus defines the observed state
-              of UnstructuredDataProduct
+            description: UnstructuredDataPipelineStatus defines the observed state
+              of UnstructuredDataPipeline
             properties:
               conditions:
                 items:

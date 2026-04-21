@@ -73,8 +73,8 @@ func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 	}
 }
 
-// GetUnstructuredDataProductResourceWithStage creates an UnstructuredDataProduct CR for e2e tests
-func GetUnstructuredDataProductResourceWithStage(name, namespace, stageName string) v1alpha1.UnstructuredDataProduct {
+// GetUnstructuredDataPipelineResourceWithStage creates an UnstructuredDataPipeline CR for e2e tests
+func GetUnstructuredDataPipelineResourceWithStage(name, namespace, stageName string) v1alpha1.UnstructuredDataPipeline {
 	if name == "" {
 		name = "unstructured"
 	}
@@ -84,7 +84,7 @@ func GetUnstructuredDataProductResourceWithStage(name, namespace, stageName stri
 	if stageName == "" {
 		stageName = "unstructured_internal_stg"
 	}
-	return v1alpha1.UnstructuredDataProduct{
+	return v1alpha1.UnstructuredDataPipeline{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
@@ -93,7 +93,7 @@ func GetUnstructuredDataProductResourceWithStage(name, namespace, stageName stri
 				"app.kubernetes.io/managed-by": "kustomize",
 			},
 		},
-		Spec: v1alpha1.UnstructuredDataProductSpec{
+		Spec: v1alpha1.UnstructuredDataPipelineSpec{
 			SourceConfig: v1alpha1.SourceConfig{
 				Type: v1alpha1.TypeS3,
 				S3Config: v1alpha1.S3Config{

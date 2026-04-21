@@ -44,11 +44,11 @@ GRANT READ, WRITE ON STAGE TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG T
 GRANT ROLE TESTING_ROLE TO USER SNOWFLAKE_USER;
 ```
 
-### 4. Create Unstructured Data Product
+### 4. Create Unstructured Data Pipeline
 
-**Apply UnstructuredDataProduct:**
+**Apply UnstructuredDataPipeline:**
 ```bash
-kubectl apply -f config/samples/operator_v1alpha1_unstructureddataproduct.yaml -n unstructured-controller-namespace
+kubectl apply -f config/samples/operator_v1alpha1_unstructureddatapipeline.yaml -n unstructured-controller-namespace
 ```
 
 ---
@@ -86,8 +86,8 @@ LIMIT 1;
 ### Monitor Progress
 
 ```bash
-# Check UnstructuredDataProduct status
-kubectl get unstructureddataproduct -n unstructured-controller-namespace
+# Check UnstructuredDataPipeline status
+kubectl get unstructureddatapipeline -n unstructured-controller-namespace
 
 # Check DocumentProcessor status
 kubectl get documentprocessor -n unstructured-controller-namespace
@@ -103,11 +103,11 @@ kubectl logs -f deployment/unstructured-data-controller -n unstructured-controll
 
 ## Configuration
 
-The `UnstructuredDataProduct` CR defines the complete pipeline:
+The `UnstructuredDataPipeline` CR defines the complete pipeline:
 
 ```yaml
 apiVersion: operator.dataverse.redhat.com/v1alpha1
-kind: UnstructuredDataProduct
+kind: UnstructuredDataPipeline
 metadata:
   name: testunstructureddataproduct
 spec:

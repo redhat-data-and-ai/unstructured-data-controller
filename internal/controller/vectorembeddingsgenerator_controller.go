@@ -145,22 +145,22 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, errors.New("failed to process some chunked files"))
 	}
 
-	// Add force reconcile to unstructured data product if any of the file got embedded during this reconciliation
+	// Add force reconcile to unstructured data pipeline if any of the file got embedded during this reconciliation
 	if embedded {
-		unstructuredDataProductKey := client.ObjectKey{Namespace: vectorEmbeddingsGeneratorCR.Namespace, Name: vectorEmbeddingsGeneratorCR.Spec.DataProduct}
+		unstructuredDataPipelineKey := client.ObjectKey{Namespace: vectorEmbeddingsGeneratorCR.Namespace, Name: vectorEmbeddingsGeneratorCR.Spec.DataProduct}
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			unstructuredDataProduct := &operatorv1alpha1.UnstructuredDataProduct{}
-			if err := r.Get(ctx, unstructuredDataProductKey, unstructuredDataProduct); err != nil {
+			unstructuredDataPipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
+			if err := r.Get(ctx, unstructuredDataPipelineKey, unstructuredDataPipeline); err != nil {
 				return err
 			}
-			return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct)
+			return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataPipeline)
 		}); err != nil {
-			logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
+			logger.Error(err, "failed to add force reconcile label to UnstructuredDataPipeline CR")
 			return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
 		}
-		logger.Info("successfully added force reconcile label to UnstructuredDataProduct CR")
+		logger.Info("successfully added force reconcile label to UnstructuredDataPipeline CR")
 	} else {
-		logger.Info("no files were embedded, no need to add force reconcile label to UnstructuredDataProduct CR")
+		logger.Info("no files were embedded, no need to add force reconcile label to UnstructuredDataPipeline CR")
 	}
 
 	// all done, let's update the status to ready

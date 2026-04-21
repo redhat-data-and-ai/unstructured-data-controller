@@ -289,7 +289,7 @@ func (r *SQSInformerReconciler) processMessage(ctx context.Context, message sqst
 	for _, dataProductName := range dataProductsToReconcile {
 		udpKey := client.ObjectKey{Namespace: namespace, Name: dataProductName}
 		if err := controllerutils.AddForceReconcileLabelWithRetry(ctx, r.Client, udpKey, func() client.Object {
-			return &operatorv1alpha1.UnstructuredDataProduct{}
+			return &operatorv1alpha1.UnstructuredDataPipeline{}
 		}); err != nil {
 			logger.Error(err, "failed to add force reconcile label", "dataProduct", dataProductName)
 			errorList = append(errorList, err)

@@ -1,5 +1,5 @@
 apiVersion: operator.dataverse.redhat.com/v1alpha1
-kind: UnstructuredDataProduct
+kind: UnstructuredDataPipeline
 metadata:
   labels:
     app.kubernetes.io/name: unstructured-data-controller
