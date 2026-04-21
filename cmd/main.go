@@ -218,11 +218,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.UnstructuredDataProductReconciler{
+	if err := (&controller.UnstructuredDataPipelineReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "UnstructuredDataProduct")
+		setupLog.Error(err, "unable to create controller", "controller", "UnstructuredDataPipeline")
 		os.Exit(1)
 	}
 

@@ -20,7 +20,7 @@ rules:
   - controllerconfigs
   - documentprocessors
   - sqsinformers
-  - unstructureddataproducts
+  - unstructureddatapipelines
   - vectorembeddingsgenerators
   verbs:
   - create
@@ -37,7 +37,7 @@ rules:
   - controllerconfigs/finalizers
   - documentprocessors/finalizers
   - sqsinformers/finalizers
-  - unstructureddataproducts/finalizers
+  - unstructureddatapipelines/finalizers
   - vectorembeddingsgenerators/finalizers
   verbs:
   - update
@@ -48,7 +48,7 @@ rules:
   - controllerconfigs/status
   - documentprocessors/status
   - sqsinformers/status
-  - unstructureddataproducts/status
+  - unstructureddatapipelines/status
   - vectorembeddingsgenerators/status
   verbs:
   - get

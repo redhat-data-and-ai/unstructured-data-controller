@@ -32,7 +32,7 @@ const (
 	ChunkingStrategyMarkdown           ChunkingStrategy     = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy     = "tokenTextSplitter"
 
-	UnstructuredDataProductCondition = "UnstructuredDataProductReady"
+	UnstructuredDataPipelineCondition = "UnstructuredDataPipelineReady"
 )
 
 type DocumentProcessorConfig struct {
@@ -94,8 +94,8 @@ type NomicEmbedTextV15Config struct {
 	EncodingFormat string `json:"encodingformat,omitempty"`
 }
 
-// UnstructuredDataProductSpec defines the desired state of UnstructuredDataProduct
-type UnstructuredDataProductSpec struct {
+// UnstructuredDataPipelineSpec defines the desired state of UnstructuredDataPipeline
+type UnstructuredDataPipelineSpec struct {
 	SourceConfig                    SourceConfig                    `json:"sourceConfig,omitempty"`
 	DestinationConfig               DestinationConfig               `json:"destinationConfig,omitempty"`
 	DocumentProcessorConfig         DocumentProcessorConfig         `json:"documentProcessorConfig,omitempty"`
@@ -129,41 +129,41 @@ type SnowflakeInternalStageConfig struct {
 	Schema   string `json:"schema,omitempty"`
 }
 
-// UnstructuredDataProductStatus defines the observed state of UnstructuredDataProduct
-type UnstructuredDataProductStatus struct {
+// UnstructuredDataPipelineStatus defines the observed state of UnstructuredDataPipeline
+type UnstructuredDataPipelineStatus struct {
 	LastAppliedGeneration int64              `json:"lastAppliedGeneration,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="UnstructuredDataProductReady")].status`
-// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="UnstructuredDataProductReady")].message`
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.conditions[?(@.type=="UnstructuredDataPipelineReady")].status`
+// +kubebuilder:printcolumn:name="Message",type=string,JSONPath=`.status.conditions[?(@.type=="UnstructuredDataPipelineReady")].message`
 
-// UnstructuredDataProduct is the Schema for the unstructureddataproducts API
-type UnstructuredDataProduct struct {
+// UnstructuredDataPipeline is the Schema for the unstructureddatapipelines API
+type UnstructuredDataPipeline struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   UnstructuredDataProductSpec   `json:"spec,omitempty"`
-	Status UnstructuredDataProductStatus `json:"status,omitempty"`
+	Spec   UnstructuredDataPipelineSpec   `json:"spec,omitempty"`
+	Status UnstructuredDataPipelineStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// UnstructuredDataProductList contains a list of UnstructuredDataProduct
-type UnstructuredDataProductList struct {
+// UnstructuredDataPipelineList contains a list of UnstructuredDataPipeline
+type UnstructuredDataPipelineList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []UnstructuredDataProduct `json:"items"`
+	Items           []UnstructuredDataPipeline `json:"items"`
 }
 
-func (u *UnstructuredDataProduct) SetWaiting() {
+func (u *UnstructuredDataPipeline) SetWaiting() {
 	condition := metav1.Condition{
-		Type:               UnstructuredDataProductCondition,
+		Type:               UnstructuredDataPipelineCondition,
 		LastTransitionTime: metav1.Now(),
 		Status:             metav1.ConditionUnknown,
-		Message:            "UnstructuredDataProduct is getting reconciled",
+		Message:            "UnstructuredDataPipeline is getting reconciled",
 		Reason:             "Waiting",
 	}
 	for i, currentCondition := range u.Status.Conditions {
@@ -175,9 +175,9 @@ func (u *UnstructuredDataProduct) SetWaiting() {
 	u.Status.Conditions = append(u.Status.Conditions, condition)
 }
 
-func (u *UnstructuredDataProduct) UpdateStatus(message string, err error) {
+func (u *UnstructuredDataPipeline) UpdateStatus(message string, err error) {
 	condition := metav1.Condition{
-		Type:               UnstructuredDataProductCondition,
+		Type:               UnstructuredDataPipelineCondition,
 		LastTransitionTime: metav1.Now(),
 	}
 	if err == nil {
@@ -201,5 +201,5 @@ func (u *UnstructuredDataProduct) UpdateStatus(message string, err error) {
 }
 
 func init() {
-	SchemeBuilder.Register(&UnstructuredDataProduct{}, &UnstructuredDataProductList{})
+	SchemeBuilder.Register(&UnstructuredDataPipeline{}, &UnstructuredDataPipelineList{})
 }
