@@ -67,7 +67,7 @@ type S3EventRecord struct {
 	S3           S3EventData         `json:"s3"`
 }
 
-func (r *S3EventRecord) validate(ctx context.Context) bool {
+func (r *S3EventRecord) validate(ctx context.Context, unescapedKey string) bool {
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", SQSInformerControllerName)
 
@@ -99,20 +99,20 @@ func (r *S3EventRecord) validate(ctx context.Context) bool {
 		logger.Error(err, "failed to get source S3 client")
 		return false
 	}
-	exists, err := awsclienthandler.ObjectExists(ctx, sourceS3Client, r.S3.Bucket.Name, r.S3.Object.Key)
+	exists, err := awsclienthandler.ObjectExists(ctx, sourceS3Client, r.S3.Bucket.Name, unescapedKey)
 	if err != nil {
-		logger.Error(err, "failed to check if object exists", "key", r.S3.Object.Key)
+		logger.Error(err, "failed to check if object exists", "key", unescapedKey)
 		return false
 	}
 	if !exists {
-		logger.Info("skipping record", "key", r.S3.Object.Key, "reason", "object does not exist")
+		logger.Info("skipping record", "key", unescapedKey, "reason", "object does not exist")
 		return false
 	}
 
 	// check if file format is supported by docling
-	recordExt := strings.ReplaceAll(path.Ext(r.S3.Object.Key), ".", "")
+	recordExt := strings.ReplaceAll(path.Ext(unescapedKey), ".", "")
 	if !slices.Contains(doclingSupportedFormats, recordExt) {
-		logger.Info("skipping record", "key", r.S3.Object.Key, "reason", "unsupported format", "extension", recordExt, "supported formats", doclingSupportedFormats)
+		logger.Info("skipping record", "key", unescapedKey, "reason", "unsupported format", "extension", recordExt, "supported formats", doclingSupportedFormats)
 		return false
 	}
 
@@ -267,7 +267,7 @@ func (r *SQSInformerReconciler) processMessage(ctx context.Context, message sqst
 		}
 
 		// validate the record first
-		if !record.validate(ctx) {
+		if !record.validate(ctx, objectKey) {
 			logger.Info("unable to validate record, skipping ...", "key", objectKey)
 			errorList = append(errorList, errors.New("unable to validate record, key: "+objectKey))
 			continue

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -122,7 +123,7 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 			// stage name is the internal stage name
 			d.Stage,
 			// subpath is the file name
-			embeddingsFilePathInFilestore,
+			sanitizeSnowflakeStagePath(embeddingsFilePathInFilestore),
 			&fileRows); err != nil {
 			logger.Error(err, "failed to upload file to snowflake internal stage", "file", embeddingsFilePathInFilestore)
 			errorList = append(errorList, err)
@@ -148,7 +149,7 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 	extraFiles := make([]string, 0, len(embeddingsFilesInStage))
 	for extraFilePath := range embeddingsFilesInStage {
 		logger.Info("found extra file in the stage, marking for deletion", "file", extraFilePath)
-		extraFiles = append(extraFiles, extraFilePath)
+		extraFiles = append(extraFiles, sanitizeSnowflakeStagePath(extraFilePath))
 	}
 
 	if err := d.Client.DeleteFilesFromStage(ctx, d.Role, d.Database, d.Schema, d.Stage, extraFiles); err != nil {
@@ -278,4 +279,16 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 	}
 
 	return nil
+}
+
+func sanitizeSnowflakeStagePath(path string) string {
+	// Replace invalid characters with underscores
+	invalidChars := regexp.MustCompile(`[^a-zA-Z0-9/_.\-]`)
+	sanitized := invalidChars.ReplaceAllString(path, "_")
+
+	// Collapse multiple consecutive underscores to avoid n-hyphen and m-hyphen patterns
+	multipleUnderscores := regexp.MustCompile(`_{2,}`)
+	sanitized = multipleUnderscores.ReplaceAllString(sanitized, "_")
+
+	return sanitized
 }
