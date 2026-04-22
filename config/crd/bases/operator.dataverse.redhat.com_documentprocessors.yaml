@@ -180,6 +180,8 @@ spec:
                       type: object
                     documentConverter:
                       type: string
+                    fileIdentifier:
+                      type: string
                     filePath:
                       type: string
                     status:

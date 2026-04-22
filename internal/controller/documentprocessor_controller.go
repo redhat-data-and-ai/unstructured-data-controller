@@ -245,6 +245,7 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		// store the converted file in the filestore
 		convertedFileMetadata := unstructured.ConvertedFileMetadata{
 			RawFilePath:       job.FilePath,
+			FileIdentifier:    job.FileIdentifier,
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
@@ -330,6 +331,13 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		return nil
 	}
 
+	// fetch the File UID
+	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	if err != nil {
+		logger.Error(err, "Failed to get file UID")
+		return err
+	}
+
 	// create a new job for the document
 	fileURL, err := r.fileStore.GetFileURL(ctx, rawFilePath)
 	if err != nil {
@@ -363,6 +371,7 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		}
 		latest.AddOrUpdateJob(operatorv1alpha1.Job{
 			FilePath:          rawFilePath,
+			FileIdentifier:    fileUID,
 			DocumentConverter: string(unstructured.DocumentConverterDocling),
 			DoclingConfig:     latest.Spec.DocumentProcessorConfig.DoclingConfig,
 			TaskID:            response.TaskID,
@@ -395,6 +404,23 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		return false, err
 	}
 
+	// check whether metadata file exists
+	rawMetadataFileExists, err := r.fileStore.Exists(ctx, unstructured.GetMetadataFilePath(rawFilePath))
+	if err != nil {
+		return false, err
+	}
+	if !rawMetadataFileExists {
+		logger.Info("metadata file does not exist", "filePath", rawFilePath)
+		return false, nil
+	}
+
+	// fetch the File UID
+	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	if err != nil {
+		logger.Error(err, "Failed to get file UID")
+		return false, err
+	}
+
 	// does the converted file exist?
 	convertedFileExists, err := r.fileStore.Exists(ctx, unstructured.GetConvertedFilePath(rawFilePath))
 	if err != nil {
@@ -416,6 +442,7 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 
 		fileToConvertMetadata := unstructured.ConvertedFileMetadata{
 			RawFilePath:       rawFilePath,
+			FileIdentifier:    fileUID,
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
@@ -439,11 +466,13 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		logger.Info("job already exists for the file, checking if it's the same configuration ...", "filePath", rawFilePath)
 		fileToConvert := unstructured.ConvertedFileMetadata{
 			RawFilePath:       rawFilePath,
+			FileIdentifier:    fileUID,
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
 		fileInJob := unstructured.ConvertedFileMetadata{
 			RawFilePath:       job.FilePath,
+			FileIdentifier:    job.FileIdentifier,
 			DocumentConverter: unstructured.DocumentConverter(job.DocumentConverter),
 			DoclingConfig:     job.DoclingConfig,
 		}
@@ -483,6 +512,24 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	// job does not exist for this file, let's create a new job
 	logger.Info("job does not exist for the file, it will be converted ...", "filePath", rawFilePath)
 	return true, nil
+}
+
+func (r *DocumentProcessorReconciler) getFileUID(ctx context.Context, rawFilePath string) (string, error) {
+	logger := log.FromContext(ctx)
+	metaDataFileRaw, err := r.fileStore.Retrieve(ctx, unstructured.GetMetadataFilePath(rawFilePath))
+	if err != nil {
+		logger.Error(err, "Failed to retrieve metadata file")
+		return "", err
+	}
+
+	metaDataFile := unstructured.RawFileMetadata{}
+	err = json.Unmarshal(metaDataFileRaw, &metaDataFile)
+	if err != nil {
+		logger.Error(err, "Failed to unmarshal metadata file")
+		return "", err
+	}
+
+	return metaDataFile.UID, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
