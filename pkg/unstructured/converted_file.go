@@ -33,6 +33,7 @@ type Content struct {
 
 type ConvertedFileMetadata struct {
 	RawFilePath       string                 `json:"rawFilePath"`
+	FileIdentifier    string                 `json:"fileIdentifier"`
 	DocumentConverter DocumentConverter      `json:"documentConverter"`
 	DoclingConfig     v1alpha1.DoclingConfig `json:"doclingConfig"`
 }
@@ -48,6 +49,9 @@ type ConvertedFile struct {
 
 func (c *ConvertedFileMetadata) Equal(other *ConvertedFileMetadata) bool {
 	if c.RawFilePath != other.RawFilePath {
+		return false
+	}
+	if c.FileIdentifier != other.FileIdentifier {
 		return false
 	}
 	if c.DocumentConverter != other.DocumentConverter {

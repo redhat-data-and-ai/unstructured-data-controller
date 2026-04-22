@@ -42,6 +42,7 @@ type DocumentProcessorStatus struct {
 
 type Job struct {
 	FilePath          string        `json:"filePath,omitempty"`
+	FileIdentifier    string        `json:"fileIdentifier,omitempty"`
 	DocumentConverter string        `json:"documentConverter,omitempty"`
 	DoclingConfig     DoclingConfig `json:"doclingConfig,omitempty"`
 	TaskID            string        `json:"taskID,omitempty"`
