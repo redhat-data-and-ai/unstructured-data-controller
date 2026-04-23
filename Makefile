@@ -5,6 +5,10 @@
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
 VERSION ?= 0.0.1
 
+OUTPUT_FILE ?= manifest.yaml
+DEPLOYMENT_NAMESPACE ?= unstructured-controller-namespace
+SUFFIX ?= "-test"
+
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
 # To re-generate a bundle for other specific channels without changing the standard setup, you can:
@@ -213,12 +217,17 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+	cd config/deploy && $(KUSTOMIZE) edit set image controller=${IMG} && $(KUSTOMIZE) edit set namespace "${DEPLOYMENT_NAMESPACE}" && $(KUSTOMIZE) edit set namesuffix -- "${SUFFIX}"
+	$(KUSTOMIZE) build config/deploy | $(KUBECTL) apply -f -
+
+.PHONY: generate-deploy-manifests
+generate-deploy-manifests: manifests kustomize
+	cd config/deploy && $(KUSTOMIZE) edit set image controller=${IMG} && $(KUSTOMIZE) edit set namespace "${DEPLOYMENT_NAMESPACE}" && $(KUSTOMIZE) edit set namesuffix -- "${SUFFIX}"
+	$(KUSTOMIZE) build config/deploy -o ${OUTPUT_FILE}
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build config/deploy | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

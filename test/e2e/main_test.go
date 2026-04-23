@@ -49,7 +49,7 @@ var (
 
 const (
 	testNamespace          = "unstructured-controller-namespace"
-	deploymentName         = "unstructured-controller-manager"
+	deploymentName         = "unstructured-controller-manager-test"
 	unstructuredSecretName = "unstructured-secret"
 )
 
@@ -127,6 +127,13 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 	image := os.Getenv("IMG")
 	if image == "" {
 		return fmt.Errorf("IMG environment variable is required")
+	}
+
+	log.Println("Install CRDs ...")
+	installCRDCommand := "make install"
+	if p := utils.RunCommand(installCRDCommand); p.Err() != nil {
+		log.Printf("Failed to install CRDs: %s", p.Err())
+		return p.Err()
 	}
 
 	log.Println("Deploying operator with CRDs installed...")
@@ -307,6 +314,7 @@ func testCleanup(_ context.Context, _ *envconf.Config, runningProcesses *[]exec.
 		fmt.Sprintf("kubectl delete -f test/localstack/ -n %s --ignore-not-found=true", testNamespace),
 		fmt.Sprintf("kubectl delete -f test/docling-serve/ -n %s --ignore-not-found=true", testNamespace),
 		fmt.Sprintf("kubectl delete -f test/ollama-embedding/ -n %s --ignore-not-found=true", testNamespace),
+		"make uninstall",
 	}
 	for _, command := range commandList {
 		if p := utils.RunCommand(command); p.Err() != nil {

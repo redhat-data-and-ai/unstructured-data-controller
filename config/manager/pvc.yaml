@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: unstructured-datastore-cache
+  name: datastore-cache
 spec:
   accessModes:
     - ReadWriteOncePod
