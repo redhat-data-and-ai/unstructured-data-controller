@@ -8,6 +8,8 @@ jobs:
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Clone the code
         uses: actions/checkout@v6
