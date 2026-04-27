@@ -196,7 +196,9 @@ func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint stri
 
 	if resp.StatusCode != http.StatusOK {
 		logger.Error(errors.New("received non-200 OK response from endpoint"),
-			"status code", resp.StatusCode, "url", endpoint)
+			"docling request returned non-200 status",
+			"statusCode", resp.StatusCode,
+			"url", endpoint)
 		return nil, fmt.Errorf("failed to process request: status code %d", resp.StatusCode)
 	}
 
