@@ -18,6 +18,7 @@ linters:
     - govet
     - ineffassign
     - lll
+    - loggercheck
     - misspell
     - nakedret
     - nilerr
@@ -30,6 +31,9 @@ linters:
     - unused
     - whitespace
   settings:
+    loggercheck:
+      require-string-key: true
+      no-printf-like: true
     staticcheck:
       dot-import-whitelist:
         - github.com/onsi/ginkgo/v2
