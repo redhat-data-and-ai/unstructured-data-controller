@@ -9,7 +9,8 @@ The ControllerConfig supplies the controller with AWS credentials and the name o
 - [Docker](https://docs.docker.com/get-docker/) (or Podman with Docker socket)
 - Kubernetes cluster (or Kind for local dev)
 - [AWS CLI](https://aws.amazon.com/cli/) with [awslocal](https://github.com/localstack/awscli-local) (or configure AWS CLI to target LocalStack)
-- [Docling-server] using `pip install "docling-serve[ui]"`
+- [Docling-server](https://github.com/docling-project/docling-serve) using `pip install "docling-serve[ui]"`
+- [Ollama](https://ollama.com/) using instructions [here](https://ollama.com/download)
 - `kubectl` and access to a Kubernetes cluster where the unstructured-data-controller is deployed
 - snowflake account key pair and hosted/local docling url
 - **Unstructured secret and ControllerConfig:** The controller uses AWS credentials and the ingestion bucket. If you have not created localstack, follow [Setup LocalStack](setup-localstack.md) first, then continue with this guide.
@@ -30,7 +31,19 @@ Run docling serve locally if you dont have or want to use hosted docling url
 docling-serve run --enable-ui
 ```
 
-### 3. Create the Unstructured secret
+## 3. Run Ollama locally
+
+Run ollama locally, pull the required models
+
+```bash
+ollama serve
+
+ollama pull nomic-embed-text:latest
+
+ollama cp nomic-embed-text:latest nomic-ai/nomic-embed-text-v1.5
+```
+
+### 4. Create the Unstructured secret
 
 The controller reads AWS credentials and endpoint, snowflake private key and docling key from a Kubernetes secret. A sample secret is provided in `test/resources/unstructured/unstructured-secret.yaml` with the following keys:
 
@@ -47,13 +60,13 @@ Edit `test/resources/unstructured/unstructured-secret.yaml` if you need differen
 - Linux: `http://host.docker.internal:4566` (if the cluster allows it)
 - Or your host machine’s IP and port 4566, or a port-forward to the LocalStack port
 
-### 4. Setup local cache directory or provide bucket url for local cache
+### 5. Setup local cache directory or provide bucket url for local cache
 
 ```bash
 mkdir -p tmp/cache/
 ```
 
-### 5. Deploy Controller
+### 6. Deploy Controller
 
 **Install CRD:**
 ```bash
@@ -65,7 +78,7 @@ make install
 make run
 ```
 
-## 6. Create the ControllerConfig custom resource
+## 7. Create the ControllerConfig custom resource
 
 Create the ControllerConfig CR so the controller can use the unstructured secret and ingestion bucket name. The bucket name in the CR must match the bucket you created in localstack.
 
@@ -90,6 +103,7 @@ spec:
     warehouse: "default"
   unstructuredDataProcessingConfig:
     ingestionBucket: data-ingestion-bucket
+    dataStorageBucket: data-storage-bucket
     doclingServeURL: "http://localhost:5001"
     cacheDirectory: "tmp/cache/"
     maxConcurrentDoclingTasks: 5
@@ -102,7 +116,7 @@ Apply the sample or your own manifest (use the same namespace where you created 
 kubectl apply -f config/samples/operator_v1alpha1_controllerconfig.yaml -n unstructured-controller-namespace
 ```
 
-## 7. Create the SQSInformer custom resource
+## 8. Create the SQSInformer custom resource
 
 Create the SQSInformer CR so the controller can consume messages from the queue. The queue URL must match the one used with LocalStack (same region and host).
 
