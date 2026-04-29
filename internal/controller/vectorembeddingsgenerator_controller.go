@@ -93,6 +93,10 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	// create filestore client
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
 	if err != nil {
+		if IsAWSClientNotInitializedError(err) {
+			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 		logger.Error(err, "failed to create the filestore client")
 		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
 	}
