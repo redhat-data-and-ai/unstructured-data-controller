@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
@@ -10,7 +11,19 @@ import (
 )
 
 // DefaultE2ENamespace is the namespace used by e2e tests (must match test/e2e/main_test.go testNamespace).
-const DefaultE2ENamespace = "unstructured-controller-namespace"
+const (
+	DefaultE2ENamespace = "unstructured-controller-namespace"
+)
+
+// RandomStringGenerator will return a random string of provided length
+func RandomStringGenerator(length int) string {
+	charset := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
 
 func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 	account := os.Getenv("SNOWFLAKE_ACCOUNT")
@@ -60,13 +73,16 @@ func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 	}
 }
 
-// create an UnstructuredDataProduct CR for e2e tests
-func GetUnstructuredDataProductResource(name, namespace string) v1alpha1.UnstructuredDataProduct {
+// GetUnstructuredDataProductResourceWithStage creates an UnstructuredDataProduct CR for e2e tests
+func GetUnstructuredDataProductResourceWithStage(name, namespace, stageName string) v1alpha1.UnstructuredDataProduct {
 	if name == "" {
 		name = "unstructured"
 	}
 	if namespace == "" {
 		namespace = DefaultE2ENamespace
+	}
+	if stageName == "" {
+		stageName = "unstructured_internal_stg"
 	}
 	return v1alpha1.UnstructuredDataProduct{
 		ObjectMeta: metav1.ObjectMeta{
@@ -90,7 +106,7 @@ func GetUnstructuredDataProductResource(name, namespace string) v1alpha1.Unstruc
 				SnowflakeInternalStageConfig: v1alpha1.SnowflakeInternalStageConfig{
 					Database: "unstructured_db",
 					Schema:   "unstructured",
-					Stage:    "unstructured_internal_stg",
+					Stage:    stageName,
 				},
 			},
 			DocumentProcessorConfig: v1alpha1.DocumentProcessorConfig{
