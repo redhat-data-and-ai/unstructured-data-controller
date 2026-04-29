@@ -15,18 +15,21 @@ Run LocalStack so that S3 and SQS are available on `localhost`:
 sudo docker run --rm -it \
   -p 127.0.0.1:4566:4566 \
   -p 127.0.0.1:4510-4559:4510-4559 \
-  docker.io/localstack/localstack
+  docker.io/localstack/localstack:4.14.0
 ```
 
 Leave this terminal running. In a new terminal, continue with the steps below.
 
-## 2. Create S3 bucket and SQS queue
+## 2. Create S3 buckets and SQS queue
 
-Create the S3 bucket and the SQS queue that will receive S3 event notifications:
+Create the S3 buckets and the SQS queue that will receive S3 event notifications:
 
 ```bash
-# Create the S3 bucket
+# Create the ingestion S3 bucket
 awslocal s3 mb s3://data-ingestion-bucket
+
+# Create the file store S3 bucket
+awslocal s3 mb s3://data-storage-bucket
 
 # Create the SQS queue
 awslocal sqs create-queue --queue-name unstructured-s3-queue
@@ -70,6 +73,7 @@ Create a notification configuration file that sends S3 events to your SQS queue.
       "QueueArn": "arn:aws:sqs:us-east-1:000000000000:unstructured-s3-queue",
       "Events": [
         "s3:ObjectCreated:*"
+        "s3:ObjectRemoved:*"
       ]
     }
   ]

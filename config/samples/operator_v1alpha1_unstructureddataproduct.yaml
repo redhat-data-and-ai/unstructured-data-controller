@@ -41,7 +41,7 @@ spec:
       keepSeparator: true
       separators: ["\n\n", "\n", " ", ""]
   vectorEmbeddingsGeneratorConfig:
-    modelName: "MODEL_NAME"
+    modelName: "nomic-ai/nomic-embed-text-v1.5"
     nomicEmbedTextV15Config:
       encodingformat: "float"
   destinationConfig:
