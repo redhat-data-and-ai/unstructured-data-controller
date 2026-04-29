@@ -137,6 +137,7 @@ func (d *SnowflakeInternalStage) SyncFilesToDestination(ctx context.Context,
 		if len(fileRows) == 0 {
 			logger.Error(fmt.Errorf("no file rows returned while uploading file to snowflake internal stage: %s",
 				embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath),
+				"no file rows returned",
 				"file", embeddingsFileInFilestore.ConvertedDocument.Metadata.RawFilePath)
 			errorList = append(errorList,
 				fmt.Errorf("no file rows returned while uploading file to snowflake internal stage: %s",
