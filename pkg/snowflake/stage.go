@@ -83,3 +83,23 @@ func (c *Client) ExecuteQueryWithRole(ctx context.Context, warehouse, query, rol
 	err := c.execute(ctx, query, role)
 	return err
 }
+
+func (c *Client) CreateSnowflakeStage(ctx context.Context, warehouse, role,
+	dbName, schemaName, stageName string) error {
+	createStageQuery := fmt.Sprintf(
+		"CREATE STAGE IF NOT EXISTS %s.%s.%s FILE_FORMAT = (TYPE = 'JSON')", dbName, schemaName, stageName)
+	if err := c.useWarehouse(ctx, role, warehouse); err != nil {
+		return err
+	}
+	err := c.execute(ctx, createStageQuery, role)
+	return err
+}
+
+func (c *Client) DropSnowflakeStage(ctx context.Context, warehouse, role, dbName, schemaName, stageName string) error {
+	dropStageQuery := fmt.Sprintf("DROP STAGE IF EXISTS %s.%s.%s", dbName, schemaName, stageName)
+	if err := c.useWarehouse(ctx, role, warehouse); err != nil {
+		return err
+	}
+	err := c.execute(ctx, dropStageQuery, role)
+	return err
+}

@@ -52,6 +52,8 @@ import (
 func TestUnstructuredDataLoad(t *testing.T) {
 	feature := features.New("Unstructured Data Load")
 
+	// generate a unique string
+	uniqueTestString := operatorUtils.RandomStringGenerator(10)
 	unstructuredBucketName := "unstructured-bucket"
 	unstructuredDataStorageBucketName := "data-storage-bucket"
 	unstructuredQueueName := "unstructured-queue"
@@ -59,7 +61,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	operatorControllerConfig := operatorUtils.GetControllerConfigResource()
 	databaseName := "unstructured_db"
 	schemaName := "unstructured"
-	internalStageName := schemaName + "_internal_stg"
+	internalStageName := fmt.Sprintf("%s_internal_stg_%s", schemaName, uniqueTestString)
 	dataProductCRName := schemaName
 
 	queueURL := "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/" + unstructuredQueueName
@@ -181,8 +183,23 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Error(err)
 			}
 
-			// create unstructured data product CR
-			unstructuredDataProduct := operatorUtils.GetUnstructuredDataProductResource(dataProductCRName, testNamespace)
+			// create internal stage in Snowflake with JSON file format
+			if err := sfClient.CreateSnowflakeStage(ctx, operatorControllerConfig.Spec.SnowflakeConfig.Warehouse, operatorControllerConfig.Spec.SnowflakeConfig.Role, databaseName, schemaName, internalStageName); err != nil {
+				t.Fatalf("Failed to create internal stage: %s", err)
+			}
+			t.Logf("created internal stage: %s", internalStageName)
+
+			// register cleanup function to ensure stage is dropped even if test fails with t.Fatal()
+			t.Cleanup(func() {
+				if err := sfClient.DropSnowflakeStage(ctx, operatorControllerConfig.Spec.SnowflakeConfig.Warehouse, operatorControllerConfig.Spec.SnowflakeConfig.Role, databaseName, schemaName, internalStageName); err != nil {
+					t.Logf("Warning: failed to drop stage in cleanup: %v", err)
+				} else {
+					t.Logf("Successfully dropped stage in cleanup: %s", internalStageName)
+				}
+			})
+
+			// create unstructured data product CR with unique stage name
+			unstructuredDataProduct := operatorUtils.GetUnstructuredDataProductResourceWithStage(dataProductCRName, testNamespace, internalStageName)
 
 			t.Log("create unstructured dataproduct CR ...")
 			if err := kubeClient.Resources(testNamespace).Create(ctx, &unstructuredDataProduct); err != nil {
@@ -746,13 +763,6 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			if err := kubeClient.Resources(testNamespace).Delete(ctx, unstructuredDataProduct); err != nil {
 				t.Fatal(err)
 			}
-
-			// execute query to remove all the files from the stage
-			removeFilesQuery := fmt.Sprintf("REMOVE '@%s.%s.%s'", databaseName, schemaName, internalStageName)
-			if err := sfClient.ExecuteQueryWithRole(ctx, operatorControllerConfig.Spec.SnowflakeConfig.Warehouse, removeFilesQuery, operatorControllerConfig.Spec.SnowflakeConfig.Role); err != nil {
-				t.Error(err)
-			}
-
 			return ctx
 		},
 	)
