@@ -17,17 +17,15 @@ limitations under the License.
 package docling
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/imdario/mergo"
+	commonhttp "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/http"
 	"golang.org/x/sync/semaphore"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -81,6 +79,7 @@ type DoclingRequestPayload struct {
 }
 
 type Client struct {
+	Client       *http.Client  `json:"doclingclient"`
 	ClientConfig *ClientConfig `json:"client_config"`
 }
 
@@ -115,6 +114,9 @@ type TaskStatusResponse struct {
 func NewClientFromURL(clientConfig *ClientConfig) *Client {
 	clientConfig.sem = semaphore.NewWeighted(clientConfig.MaxConcurrentRequests)
 	return &Client{
+		Client: &http.Client{
+			Timeout: commonhttp.HTTPClientTimeout,
+		},
 		ClientConfig: clientConfig,
 	}
 }
@@ -151,58 +153,35 @@ func mergeDoclingConfigs(doclingConfig DoclingConfig) (DoclingConfig, error) {
 	return doclingConfig, nil
 }
 
-func (c *Client) createHTTPRequest(ctx context.Context, method, endpoint string, payload []byte, authFormat string) (
-	*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	if c.ClientConfig.Key != "" {
-		req.Header.Set("Authorization", fmt.Sprintf(authFormat, c.ClientConfig.Key))
-	}
-	return req, nil
-}
-
-func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint string, payload []byte) (
-	io.ReadCloser, error) {
+func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint string, payload []byte) ([]byte, error) {
 	logger := log.FromContext(ctx)
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-	}
-
-	req, err := c.createHTTPRequest(ctx, method, endpoint, payload, "Bearer %s")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
 
 	logger.Info("sending request to docling service", "url", endpoint)
-	resp, err := client.Do(req)
+
+	req, err := commonhttp.CreateHTTPRequest(ctx, method, endpoint, payload, "Bearer", c.ClientConfig.Key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusForbidden && c.ClientConfig.Key != "" {
-		req, err = c.createHTTPRequest(ctx, method, endpoint, payload, "%s")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
+	statusCode, body, err := commonhttp.Do(ctx, c.Client, req)
+	if err != nil {
+		// If we get 403 with Bearer auth, try without Bearer prefix
+		if statusCode == http.StatusForbidden && c.ClientConfig.Key != "" {
+			logger.Info("retrying with raw API key auth", "url", endpoint)
+			req, err = commonhttp.CreateHTTPRequest(ctx, method, endpoint, payload, "", c.ClientConfig.Key)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create request: %w", err)
+			}
+			_, body, err = commonhttp.Do(ctx, c.Client, req)
+			if err != nil {
+				return nil, err
+			}
+			return body, nil
 		}
-		resp, err = client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to send request: %w", err)
-		}
+		return nil, err
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		logger.Error(errors.New("received non-200 OK response from endpoint"),
-			"docling request returned non-200 status",
-			"statusCode", resp.StatusCode,
-			"url", endpoint)
-		return nil, fmt.Errorf("failed to process request: status code %d", resp.StatusCode)
-	}
-
-	return resp.Body, nil
+	return body, nil
 }
 
 func (c *Client) ConvertFile(
@@ -241,29 +220,18 @@ func (c *Client) ConvertFile(
 	}
 
 	logger.Info("sending request to convert file", "url", convertSourceAsyncEndpoint, "http source", fileURL)
-	// convert response to AsyncDoclingResponse
-	var asyncResponse AsyncDoclingResponse
-	responseBody, err := c.createDoclingRequest(ctx, http.MethodPost, convertSourceAsyncEndpoint, payload)
+
+	body, err := c.createDoclingRequest(ctx, http.MethodPost, convertSourceAsyncEndpoint, payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get response body: %w", err)
 	}
 
-	body, err := io.ReadAll(responseBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
+	var asyncResponse AsyncDoclingResponse
 	if err = json.Unmarshal(body, &asyncResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	defer func() {
-		if err = responseBody.Close(); err != nil {
-			err = fmt.Errorf("failed to close response body: %w", err)
-		}
-	}()
-
-	return &asyncResponse, err
+	return &asyncResponse, nil
 }
 
 func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskStatusResponse, error) {
@@ -275,21 +243,16 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 	}
 
 	logger.Info("sending request to get status of task", "url", getTaskStatusPollEndpoint)
-	var taskStatusResponse TaskStatusResponse
-	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, getTaskStatusPollEndpoint, nil)
+
+	body, err := c.createDoclingRequest(ctx, http.MethodGet, getTaskStatusPollEndpoint, nil)
 	if err != nil {
 		return false, nil, fmt.Errorf("failed to get response body: %w", err)
 	}
 
-	if err := json.NewDecoder(bodyResponse).Decode(&taskStatusResponse); err != nil {
+	var taskStatusResponse TaskStatusResponse
+	if err := json.Unmarshal(body, &taskStatusResponse); err != nil {
 		return false, nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-
-	defer func() {
-		if err = bodyResponse.Close(); err != nil {
-			err = fmt.Errorf("failed to close response body: %w", err)
-		}
-	}()
 
 	return true, &taskStatusResponse, nil
 }
@@ -327,21 +290,16 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 	}
 
 	logger.Info("sending request to get converted file", "url", taskResultURL)
-	var doclingResponse DoclingResponse
-	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
+
+	body, err := c.createDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get response body: %w", err)
 	}
 
-	if err := json.NewDecoder(bodyResponse).Decode(&doclingResponse); err != nil {
+	var doclingResponse DoclingResponse
+	if err := json.Unmarshal(body, &doclingResponse); err != nil {
 		return "", nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-
-	defer func() {
-		if err = bodyResponse.Close(); err != nil {
-			err = fmt.Errorf("failed to close response body: %w", err)
-		}
-	}()
 
 	// now let's free up the semaphore based on task status
 	switch doclingResponse.Status {

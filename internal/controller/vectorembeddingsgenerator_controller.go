@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,6 +34,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
+	commonhttp "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/http"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
@@ -255,9 +255,8 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 		logger.Info("processing batch", "batchStart", batchStart, "batchEnd", batchEnd, "batchSize", len(batch))
 		encodingFormat := vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.NomicEmbedTextV15Config.EncodingFormat
 		embeddingResult, err := embeddingClient.GenerateEmbeddings(ctx, batch, encodingFormat)
-		// 429 status code indicates usage limit exceeded
-		if err != nil && strings.Contains(err.Error(), "API returned status 429: Usage limit exceeded") {
-			logger.Info("usage limit exceeded, will retry after 10 seconds", "batchStart", batchStart, "batchEnd", batchEnd)
+		if err != nil && commonhttp.IsStatusTooManyRequests(err) {
+			logger.Info("rate limit exceeded (429), will retry after 5 seconds", "batchStart", batchStart, "batchEnd", batchEnd)
 			time.Sleep(5 * time.Second)
 			batchStart -= batchSize
 			continue
