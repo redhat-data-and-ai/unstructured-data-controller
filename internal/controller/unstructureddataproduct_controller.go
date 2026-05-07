@@ -234,8 +234,8 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
-		if err := r.Get(ctx, documentProcessorKey, latestDocumentProcessorCR); err != nil {
-			return err
+		if getErr := r.Get(ctx, documentProcessorKey, latestDocumentProcessorCR); getErr != nil {
+			return getErr
 		}
 		return controllerutils.AddForceReconcileLabel(ctx, r.Client, latestDocumentProcessorCR)
 	}); err != nil {
@@ -247,13 +247,11 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	var destination unstructured.Destination
 	switch unstructuredDataProductCR.Spec.DestinationConfig.Type {
 	case operatorv1alpha1.DestinationTypeInternalStage:
-		var err error
 		destination, err = r.setupSnowflakeDestination(ctx, unstructuredDataProductCR)
 		if err != nil {
 			return r.handleError(ctx, unstructuredDataProductCR, err)
 		}
 	case operatorv1alpha1.TypeS3:
-		var err error
 		destination, err = setupS3Destination(unstructuredDataProductCR, dataProductName)
 		if err != nil {
 			if IsAWSClientNotInitializedError(err) {
@@ -263,7 +261,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			return r.handleError(ctx, unstructuredDataProductCR, err)
 		}
 	default:
-		err := fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
+		err = fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
 		logger.Error(err, "unsupported destination type")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
@@ -279,7 +277,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	logger.Info("files to ingest to destination", "files", filterEmbeddingsFiles)
 
 	// ingest the embeddings files to destination
-	if err := destination.SyncFilesToDestination(ctx, r.fileStore, filterEmbeddingsFiles); err != nil {
+	if err = destination.SyncFilesToDestination(ctx, r.fileStore, filterEmbeddingsFiles); err != nil {
 		logger.Error(err, "failed to ingest embeddings files to destination")
 		return r.handleError(ctx, unstructuredDataProductCR, err)
 	}
@@ -287,7 +285,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
-	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, unstructuredDataProductKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
+	if err = controllerutils.StatusUpdateWithRetry(ctx, r.Client, unstructuredDataProductKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
 		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status", "namespace", unstructuredDataProductKey.Namespace, "name", unstructuredDataProductKey.Name)
@@ -305,7 +303,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 // setupSnowflakeDestination returns a Snowflake internal stage destination for the given CR.
 func (r *UnstructuredDataProductReconciler) setupSnowflakeDestination(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct) (unstructured.Destination, error) {
 	logger := log.FromContext(ctx)
-	sf, err := snowflake.GetClient()
+	sf, err := snowflake.GetClient(ctx)
 	if err != nil {
 		logger.Error(err, "failed to get snowflake client")
 		return nil, err
@@ -347,13 +345,12 @@ func (r *UnstructuredDataProductReconciler) SetupWithManager(mgr ctrl.Manager) e
 func (r *UnstructuredDataProductReconciler) handleError(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
-	reconcileErr := err
 	unstructuredDataProductKey := client.ObjectKeyFromObject(unstructuredDataProductCR)
 	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, unstructuredDataProductKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus("", reconcileErr)
+		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus("", err)
 	}); updateErr != nil {
 		logger.Error(updateErr, "failed to update UnstructuredDataProduct CR status")
 		return ctrl.Result{}, updateErr
 	}
-	return ctrl.Result{}, reconcileErr
+	return ctrl.Result{}, err
 }
