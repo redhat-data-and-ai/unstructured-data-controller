@@ -89,7 +89,8 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			if sfClientConfig == nil {
 				t.Fatalf("Failed to build Snowflake client config from ControllerConfig and secret")
 			}
-			sfClient, err = snowflake.NewClient(ctx, sfClientConfig)
+			snowflake.SfConfig = sfClientConfig
+			sfClient, err = snowflake.NewClient(ctx)
 			if err != nil {
 				t.Fatalf("Failed to create snowflake client: %s", err)
 			}
