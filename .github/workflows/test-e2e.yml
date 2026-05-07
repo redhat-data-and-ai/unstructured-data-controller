@@ -10,7 +10,7 @@ on:
       - opened
       - reopened
       - synchronize
-    branches: [main]
+    branches: [main, release-*]
 
 env:
   KIND_CLUSTER: unstructured-data-controller-test-e2e
