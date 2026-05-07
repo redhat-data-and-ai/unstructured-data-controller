@@ -3,7 +3,6 @@ package snowflake
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -24,9 +23,10 @@ type ClientConfig struct {
 }
 
 var (
-	Sfclient    *Client
+	sfclient    *Client
 	clientMutex sync.Mutex
 	sqlMutex    sync.Mutex
+	SfConfig    *ClientConfig
 )
 
 const (
@@ -35,41 +35,46 @@ const (
 	roleSwitchingFailureMesssage = "Role switching failed"
 )
 
-func NewClient(_ context.Context, config *ClientConfig) (*Client, error) {
-	clientMutex.Lock()
-	defer clientMutex.Unlock()
-	if Sfclient == nil || Sfclient.conn.Ping() != nil {
-		dsn, err := gosnowflake.DSN(&config.Config)
-		if err != nil {
-			return nil, err
-		}
-
-		conn, err := sql.Open("snowflake", dsn)
-		if err != nil {
-			return nil, err
-		}
-
-		Sfclient = &Client{
-			conn:  conn,
-			close: conn.Close,
-			role:  config.Role,
-		}
+func NewClient(ctx context.Context) (*Client, error) {
+	dsn, err := gosnowflake.DSN(&SfConfig.Config)
+	if err != nil {
+		return nil, err
 	}
-	return Sfclient, nil
+
+	conn, err := sql.Open("snowflake", dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	sfclient = &Client{
+		conn:  conn,
+		close: conn.Close,
+		role:  SfConfig.Role,
+	}
+
+	if err := sfclient.Ping(ctx); err != nil {
+		return nil, err
+	}
+	return sfclient, nil
 }
 
 func (c *Client) GetRole() string {
 	return c.role
 }
 
-func GetClient() (*Client, error) {
+func GetClient(ctx context.Context) (*Client, error) {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
 
-	if Sfclient == nil {
-		return nil, errors.New("no snowflake client found")
+	if sfclient == nil || sfclient.conn.Ping() != nil {
+		client, err := NewClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
 	}
-	return Sfclient, nil
+
+	return sfclient, nil
 }
 
 func (c *Client) Ping(ctx context.Context) error {

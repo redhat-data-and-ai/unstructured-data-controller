@@ -215,8 +215,11 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 
 		logger.Info("creating snowflake client and validating if snowflake connection is healthy for " + snowflakeConfig.Name)
-		err = r.createAndValidateSfClient(ctx, snowflakeClientConfig)
-		if err != nil {
+		snowflake.SfConfig = &snowflake.ClientConfig{
+			Config: snowflakeClientConfig,
+		}
+		logger.Info("creating snowflake client")
+		if _, err := snowflake.GetClient(ctx); err != nil {
 			logger.Error(err, "failed to ping snowflake for "+snowflakeConfig.Name+". re-attempting to ping snowflake in 10 seconds")
 			config.UpdateStatus(err)
 			if updateErr := r.Status().Update(ctx, &config); updateErr != nil {
@@ -241,18 +244,6 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	logger.Info("successfully updated controllerConfig CR status", "status", config.Status)
 
 	return ctrl.Result{}, nil
-}
-
-func (*ControllerConfigReconciler) createAndValidateSfClient(ctx context.Context, snowflakeClientConfig gosnowflake.Config) error {
-	logger := log.FromContext(ctx)
-	logger.Info("creating snowflake client")
-	sfClient, err := snowflake.NewClient(ctx, &snowflake.ClientConfig{
-		Config: snowflakeClientConfig,
-	})
-	if err != nil {
-		return err
-	}
-	return sfClient.Ping(ctx)
 }
 
 // SetupWithManager sets up the controller with the Manager.
