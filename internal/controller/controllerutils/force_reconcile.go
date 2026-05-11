@@ -87,3 +87,12 @@ func AddForceReconcileLabel(ctx context.Context, c client.Client, obj client.Obj
 	obj.SetLabels(labels)
 	return c.Update(ctx, obj)
 }
+
+func HasForceReconcileLabel(obj client.Object) bool {
+	labels := obj.GetLabels()
+	if labels == nil {
+		return false
+	}
+	_, ok := labels[ForceReconcileLabel]
+	return ok
+}

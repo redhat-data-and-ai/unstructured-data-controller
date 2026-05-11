@@ -24,12 +24,17 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
@@ -73,8 +78,32 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	// get the vector embedding generation CR
 	vectorEmbeddingsGeneratorCR := &operatorv1alpha1.VectorEmbeddingsGenerator{}
 	if err := r.Get(ctx, req.NamespacedName, vectorEmbeddingsGeneratorCR); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			logger.Info("VectorEmbeddingsGenerator CR not found, may have been deleted or not yet created")
+			return ctrl.Result{}, nil
+		}
 		logger.Error(err, "failed to get VectorEmbeddingsGenerator CR")
 		return ctrl.Result{}, err
+	}
+
+	embedded := false
+
+	// Only do early-exit checks if this CR already has status initialized to ensure initial status set
+	if len(vectorEmbeddingsGeneratorCR.Status.Conditions) > 0 {
+		chunksGeneratorKey := client.ObjectKey{Namespace: vectorEmbeddingsGeneratorCR.Namespace, Name: vectorEmbeddingsGeneratorCR.Spec.DataProduct}
+		chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
+		err = r.Get(ctx, chunksGeneratorKey, chunksGeneratorCR)
+		if err == nil {
+			logger.Info("successfully got ChunksGenerator CR", "namespace", chunksGeneratorCR.Namespace, "name", chunksGeneratorCR.Name)
+			for _, condition := range chunksGeneratorCR.Status.Conditions {
+				if (condition.Type == operatorv1alpha1.ChunksGeneratorCondition && condition.Status == metav1.ConditionUnknown) ||
+					(condition.Type == operatorv1alpha1.ChunksGeneratorCondition && condition.Status == metav1.ConditionFalse) ||
+					(condition.Type == operatorv1alpha1.ChunksGeneratorCondition && condition.Status == metav1.ConditionTrue && !chunksGeneratorCR.Status.IsNewFilesChunked) {
+					logger.Info("This event is triggered because of watches on ChunksGenerator CR and its status is either waiting or no new files chunked so do early exit to avoid duplicate processing", "namespace", chunksGeneratorCR.Namespace, "name", chunksGeneratorCR.Name)
+					return ctrl.Result{}, nil
+				}
+			}
+		}
 	}
 
 	// set status to waiting
@@ -98,7 +127,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 		logger.Error(err, "failed to create the filestore client")
-		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
+		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err, embedded)
 	}
 	r.fileStore = fs
 
@@ -107,26 +136,13 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	logger.Info("files in path", "files", filePaths)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
-		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
-	}
-
-	// now that we have the list of files to process, we may remove the force reconcile label as we are ready to accept more events
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latest := &operatorv1alpha1.VectorEmbeddingsGenerator{}
-		if err := r.Get(ctx, req.NamespacedName, latest); err != nil {
-			return err
-		}
-		return controllerutils.RemoveForceReconcileLabel(ctx, r.Client, latest)
-	}); err != nil {
-		logger.Error(err, "failed to remove force reconcile label from VectorEmbeddingsGenerator CR")
-		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
+		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err, embedded)
 	}
 
 	chunksFilePaths := unstructured.FilterChunksFilePaths(filePaths)
 	logger.Info("chunks filepaths filtered successfully", "chunksFilePaths", chunksFilePaths)
 
 	embeddingErrors := []error{}
-	var embedded bool
 	for _, chunksFilePath := range chunksFilePaths {
 		logger.Info("processing chunked file for embedding", "file", chunksFilePath)
 		fileEmbedded, err := r.processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR)
@@ -142,7 +158,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 
 	if len(embeddingErrors) > 0 {
 		logger.Error(embeddingErrors[0], "failed to process some chunked files")
-		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, errors.New("failed to process some chunked files"))
+		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, errors.New("failed to process some chunked files"), embedded)
 	}
 
 	// Add force reconcile to unstructured data product if any of the file got embedded during this reconciliation
@@ -156,7 +172,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 			return controllerutils.AddForceReconcileLabel(ctx, r.Client, unstructuredDataProduct)
 		}); err != nil {
 			logger.Error(err, "failed to add force reconcile label to UnstructuredDataProduct CR")
-			return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
+			return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err, embedded)
 		}
 		logger.Info("successfully added force reconcile label to UnstructuredDataProduct CR")
 	} else {
@@ -171,11 +187,11 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		if err := r.Get(ctx, vectorEmbeddingsGeneratorKey, res); err != nil {
 			return err
 		}
-		res.UpdateStatus(successMessage, nil)
+		res.UpdateStatus(successMessage, nil, embedded)
 		return r.Status().Update(ctx, res)
 	}); err != nil {
 		logger.Error(err, "failed to update VectorEmbeddingsGenerator CR status", "namespace", vectorEmbeddingsGeneratorKey.Namespace, "name", vectorEmbeddingsGeneratorKey.Name)
-		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
+		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err, embedded)
 	}
 	logger.Info("successfully updated VectorEmbeddingsGenerator CR status", "status", vectorEmbeddingsGeneratorCR.Status)
 
@@ -379,7 +395,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 	return true, nil
 }
 
-func (r *VectorEmbeddingsGeneratorReconciler) handleError(ctx context.Context, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, err error) (ctrl.Result, error) {
+func (r *VectorEmbeddingsGeneratorReconciler) handleError(ctx context.Context, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, err error, isEmbedded bool) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
 	reconcileErr := err
@@ -389,7 +405,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) handleError(ctx context.Context, v
 		if getErr := r.Get(ctx, key, latest); getErr != nil {
 			return getErr
 		}
-		latest.UpdateStatus("", reconcileErr)
+		latest.UpdateStatus("", reconcileErr, isEmbedded)
 		return r.Status().Update(ctx, latest)
 	}); err != nil {
 		logger.Error(err, "failed to update VectorEmbeddingsGenerator CR status")
@@ -400,9 +416,19 @@ func (r *VectorEmbeddingsGeneratorReconciler) handleError(ctx context.Context, v
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *VectorEmbeddingsGeneratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	labelPredicate := controllerutils.ForceReconcilePredicate()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.VectorEmbeddingsGenerator{}).
-		WithEventFilter(predicate.Or(predicate.GenerationChangedPredicate{}, labelPredicate)).
+		For(&operatorv1alpha1.VectorEmbeddingsGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(
+			&operatorv1alpha1.ChunksGenerator{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				return []reconcile.Request{{
+					NamespacedName: types.NamespacedName{
+						Name:      obj.GetName(),
+						Namespace: obj.GetNamespace(),
+					},
+				}}
+			}),
+			builder.WithPredicates(controllerutils.NewFilesChunkedPredicate()),
+		).
 		Complete(r)
 }

@@ -162,6 +162,8 @@ spec:
                   - type
                   type: object
                 type: array
+              isNewFilesChunked:
+                type: boolean
               lastAppliedGeneration:
                 format: int64
                 type: integer

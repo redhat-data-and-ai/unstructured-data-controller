@@ -36,6 +36,7 @@ type VectorEmbeddingsGeneratorSpec struct {
 type VectorEmbeddingsGeneratorStatus struct {
 	LastAppliedGeneration int64              `json:"lastAppliedGeneration,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`
+	IsNewFilesEmbedded    bool               `json:"isNewFilesEmbedded,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -69,6 +70,7 @@ func (c *VectorEmbeddingsGenerator) SetWaiting() {
 		Message:            "VectorEmbeddingsGenerator is getting reconciled",
 		Reason:             "Waiting",
 	}
+	c.Status.IsNewFilesEmbedded = false
 	for i, currentCondition := range c.Status.Conditions {
 		if currentCondition.Type == condition.Type {
 			c.Status.Conditions[i] = condition
@@ -78,7 +80,7 @@ func (c *VectorEmbeddingsGenerator) SetWaiting() {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
-func (c *VectorEmbeddingsGenerator) UpdateStatus(message string, err error) {
+func (c *VectorEmbeddingsGenerator) UpdateStatus(message string, err error, isEmbedded bool) {
 	condition := metav1.Condition{
 		Type:               VectorEmbeddingGenerationConditionType,
 		LastTransitionTime: metav1.Now(),
@@ -93,6 +95,7 @@ func (c *VectorEmbeddingsGenerator) UpdateStatus(message string, err error) {
 		condition.Message = message + ", error: " + err.Error()
 		condition.Reason = ReconcileFailed
 	}
+	c.Status.IsNewFilesEmbedded = isEmbedded
 
 	for i, currentCondition := range c.Status.Conditions {
 		if currentCondition.Type == condition.Type {

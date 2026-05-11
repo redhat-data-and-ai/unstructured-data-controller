@@ -252,6 +252,8 @@ spec:
                   - type
                   type: object
                 type: array
+              isNewFilesDetected:
+                type: boolean
               lastAppliedGeneration:
                 format: int64
                 type: integer

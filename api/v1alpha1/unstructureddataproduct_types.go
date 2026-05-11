@@ -133,6 +133,7 @@ type SnowflakeInternalStageConfig struct {
 type UnstructuredDataProductStatus struct {
 	LastAppliedGeneration int64              `json:"lastAppliedGeneration,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`
+	IsNewFilesDetected    bool               `json:"isNewFilesDetected,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -166,6 +167,7 @@ func (u *UnstructuredDataProduct) SetWaiting() {
 		Message:            "UnstructuredDataProduct is getting reconciled",
 		Reason:             "Waiting",
 	}
+	u.Status.IsNewFilesDetected = false
 	for i, currentCondition := range u.Status.Conditions {
 		if currentCondition.Type == condition.Type {
 			u.Status.Conditions[i] = condition
@@ -175,11 +177,12 @@ func (u *UnstructuredDataProduct) SetWaiting() {
 	u.Status.Conditions = append(u.Status.Conditions, condition)
 }
 
-func (u *UnstructuredDataProduct) UpdateStatus(message string, err error) {
+func (u *UnstructuredDataProduct) UpdateStatus(message string, err error, isNewFileDetected bool) {
 	condition := metav1.Condition{
 		Type:               UnstructuredDataProductCondition,
 		LastTransitionTime: metav1.Now(),
 	}
+	u.Status.IsNewFilesDetected = isNewFileDetected
 	if err == nil {
 		condition.Status = metav1.ConditionTrue
 		condition.Message = message

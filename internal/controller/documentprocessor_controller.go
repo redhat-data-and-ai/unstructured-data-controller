@@ -24,12 +24,17 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
@@ -60,6 +65,7 @@ type DocumentProcessorReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors/finalizers,verbs=update
 
+//nolint:gocyclo
 func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", DocumentProcessorControllerName)
@@ -73,23 +79,43 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	if !isHealthy {
 		logger.Info("Config CR is not ready yet, will try again in a bit ...")
-		return ctrl.Result{
-			RequeueAfter: 10 * time.Second,
-		}, nil
+		return ctrl.Result{}, nil
 	}
 
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
 	if err := r.Get(ctx, req.NamespacedName, documentProcessorCR); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			logger.Info("DocumentProcessor CR not found, may have been deleted or not yet created")
+			return ctrl.Result{}, nil
+		}
 		logger.Error(err, "failed to get DocumentProcessor CR")
 		return ctrl.Result{}, err
 	}
 
-	documentProcessorKey := client.ObjectKeyFromObject(documentProcessorCR)
-	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, documentProcessorKey,
-		func() client.Object { return &operatorv1alpha1.DocumentProcessor{} }); err != nil {
-		logger.Error(err, "error removing the force-reconcile label from the DocumentProcessor CR")
-		return ctrl.Result{}, err
+	isNewFileProcessed := false
+
+	// Skip early-exit checks if we have pending jobs to process
+	if len(documentProcessorCR.Status.Jobs) == 0 && len(documentProcessorCR.Status.Conditions) > 0 {
+		unstructuredDataProdcutKey := client.ObjectKey{
+			Namespace: documentProcessorCR.Namespace,
+			Name:      documentProcessorCR.Spec.DataProduct,
+		}
+		unstructuredDataProductCR := &operatorv1alpha1.UnstructuredDataProduct{}
+		err = r.Get(ctx, unstructuredDataProdcutKey, unstructuredDataProductCR)
+		if err == nil {
+			logger.Info("successfully got UnstructuredDataProduct CR", "namespace", unstructuredDataProductCR.Namespace, "name", unstructuredDataProductCR.Name)
+			for _, condition := range unstructuredDataProductCR.Status.Conditions {
+				if (condition.Type == operatorv1alpha1.UnstructuredDataProductCondition && condition.Status == metav1.ConditionUnknown) ||
+					(condition.Type == operatorv1alpha1.UnstructuredDataProductCondition && condition.Status == metav1.ConditionTrue && !unstructuredDataProductCR.Status.IsNewFilesDetected) ||
+					(condition.Type == operatorv1alpha1.UnstructuredDataProductCondition && condition.Status == metav1.ConditionFalse) {
+					logger.Info("This event is triggered because of watches on UnstructuredDataProduct CR and its status is either waiting or no new files detected so do early exit to avoid duplicate processing", "namespace", unstructuredDataProductCR.Namespace, "name", unstructuredDataProductCR.Name)
+					return ctrl.Result{}, nil
+				}
+			}
+		}
 	}
+
+	documentProcessorKey := client.ObjectKeyFromObject(documentProcessorCR)
 
 	// set status to waiting
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -122,11 +148,15 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 		logger.Error(err, "failed to create filestore")
-		return r.handleError(ctx, documentProcessorCR, err)
+		return r.handleError(ctx, documentProcessorCR, err, isNewFileProcessed)
 	}
 	r.fileStore = fs
 
 	// first, let's figure out the jobs that are currently running
+	if len(documentProcessorCR.Status.Jobs) > 0 {
+		logger.Info("found jobs in status, reconciling ...", "job count", len(documentProcessorCR.Status.Jobs))
+		isNewFileProcessed = true
+	}
 	jobProcessingErrors := []error{}
 	for _, job := range documentProcessorCR.Status.Jobs {
 		logger.Info("reconciling job", "job", job)
@@ -141,7 +171,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
-		return r.handleError(ctx, documentProcessorCR, err)
+		return r.handleError(ctx, documentProcessorCR, err, isNewFileProcessed)
 	}
 
 	documentProcessingErrors := []error{}
@@ -154,21 +184,8 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	// add force reconcile label to the ChunksGenerator CR
-	chunksGeneratorKey := client.ObjectKey{Namespace: documentProcessorCR.Namespace, Name: documentProcessorCR.Name}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
-		if err := r.Get(ctx, chunksGeneratorKey, chunksGeneratorCR); err != nil {
-			return err
-		}
-		return controllerutils.AddForceReconcileLabel(ctx, r.Client, chunksGeneratorCR)
-	}); err != nil {
-		logger.Error(err, "failed to add force reconcile label to ChunksGenerator CR")
-		return r.handleError(ctx, documentProcessorCR, err)
-	}
-
 	if len(documentProcessingErrors) > 0 || len(jobProcessingErrors) > 0 {
-		return r.handleError(ctx, documentProcessorCR, errors.New("failed to process jobs or documents"))
+		return r.handleError(ctx, documentProcessorCR, errors.New("failed to process jobs or documents"), isNewFileProcessed)
 	}
 
 	latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
@@ -192,11 +209,11 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if err := r.Get(ctx, documentProcessorKey, res); err != nil {
 			return err
 		}
-		res.UpdateStatus(successMessage, nil)
+		res.UpdateStatus(successMessage, nil, isNewFileProcessed)
 		return r.Status().Update(ctx, res)
 	}); err != nil {
 		logger.Error(err, "failed to update DocumentProcessor CR status", "namespace", latestDocumentProcessorCR.Namespace, "name", latestDocumentProcessorCR.Name)
-		return r.handleError(ctx, documentProcessorCR, err)
+		return r.handleError(ctx, documentProcessorCR, err, isNewFileProcessed)
 	}
 	logger.Info("successfully updated DocumentProcessor CR status", "status", latestDocumentProcessorCR.Status)
 
@@ -487,15 +504,25 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	labelPredicate := controllerutils.ForceReconcilePredicate()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.DocumentProcessor{}).
-		WithEventFilter(predicate.Or(predicate.GenerationChangedPredicate{}, labelPredicate)).
+		For(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(
+			&operatorv1alpha1.UnstructuredDataProduct{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				return []reconcile.Request{{
+					NamespacedName: types.NamespacedName{
+						Name:      obj.GetName(),
+						Namespace: obj.GetNamespace(),
+					},
+				}}
+			}),
+			builder.WithPredicates(controllerutils.NewFilesDetectedPredicate()),
+		).
 		Named("documentprocessor").
 		Complete(r)
 }
 
-func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, err error) (ctrl.Result, error) {
+func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, err error, isNewFileProcessed bool) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
 	reconcileErr := err
@@ -505,7 +532,7 @@ func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentP
 		if getErr := r.Get(ctx, documentProcessorKey, latest); getErr != nil {
 			return getErr
 		}
-		latest.UpdateStatus("", reconcileErr)
+		latest.UpdateStatus("", reconcileErr, isNewFileProcessed)
 		return r.Status().Update(ctx, latest)
 	}); err != nil {
 		logger.Error(err, "failed to update DocumentProcessor CR status")

@@ -23,12 +23,17 @@ import (
 	"strings"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
@@ -83,16 +88,34 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
 	if err := r.Get(ctx, req.NamespacedName, chunksGeneratorCR); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			logger.Info("ChunksGenerator CR not found, may have been deleted or not yet created")
+			return ctrl.Result{}, nil
+		}
 		logger.Error(err, "failed to get ChunksGenerator CR")
 		return ctrl.Result{}, err
 	}
+	isNewFileChunked := false
+
+	// Only do early-exit checks if this CR already has status initialized to ensure initial status set
+	if len(chunksGeneratorCR.Status.Conditions) > 0 {
+		documentProcessorkey := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Spec.DataProduct}
+		documentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
+		err = r.Get(ctx, documentProcessorkey, documentProcessorCR)
+		if err == nil {
+			logger.Info("successfully got DocumentProcessor CR", "namespace", documentProcessorCR.Namespace, "name", documentProcessorCR.Name)
+			for _, condition := range documentProcessorCR.Status.Conditions {
+				if (condition.Type == operatorv1alpha1.DocumentProcessorCondition && condition.Status == metav1.ConditionUnknown) ||
+					(condition.Type == operatorv1alpha1.DocumentProcessorCondition && condition.Status == metav1.ConditionTrue && !documentProcessorCR.Status.IsNewFilesProcessed) ||
+					(condition.Type == operatorv1alpha1.DocumentProcessorCondition && condition.Status == metav1.ConditionFalse) {
+					logger.Info("This event is triggered because of watches on DocumentProcessor CR and its status is either waiting or no new files processed so do early exit to avoid duplicate processing", "namespace", documentProcessorCR.Namespace, "name", documentProcessorCR.Name)
+					return ctrl.Result{}, nil
+				}
+			}
+		}
+	}
 
 	chunksGeneratorKey := client.ObjectKeyFromObject(chunksGeneratorCR)
-	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, chunksGeneratorKey,
-		func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }); err != nil {
-		logger.Error(err, "error removing the force-reconcile label from the ChunksGenerator CR")
-		return ctrl.Result{}, err
-	}
 
 	// set status to waiting
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -114,7 +137,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 		logger.Error(err, "failed to create filestore")
-		return r.handleError(ctx, chunksGeneratorCR, err)
+		return r.handleError(ctx, chunksGeneratorCR, err, isNewFileChunked)
 	}
 	r.fileStore = fs
 
@@ -123,7 +146,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
-		return r.handleError(ctx, chunksGeneratorCR, err)
+		return r.handleError(ctx, chunksGeneratorCR, err, isNewFileChunked)
 	}
 
 	chunkingErrors := []error{}
@@ -133,7 +156,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	for _, convertedFilePath := range convertedFilePaths {
 		logger.Info("processing converted file", "file", convertedFilePath)
-		_, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR)
+		isChunked, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR)
 		if err != nil {
 			if strings.Contains(err.Error(), langchain.SemaphoreAcquireError) {
 				logger.Error(err, "failed to process converted file, semaphore acquire error, will try again later", "file", convertedFilePath)
@@ -145,12 +168,15 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			continue
 		}
 		logger.Info("successfully processed converted file", "file", convertedFilePath)
+		if isChunked {
+			isNewFileChunked = true
+		}
 	}
 
 	if len(chunkingErrors) > 0 {
 		err := fmt.Errorf("failed to chunk some files: %v", chunkingErrors)
 		logger.Error(err, "chunking error")
-		return r.handleError(ctx, chunksGeneratorCR, err)
+		return r.handleError(ctx, chunksGeneratorCR, err, isNewFileChunked)
 	}
 
 	if len(skippedFiles) > 0 {
@@ -160,25 +186,12 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}, nil
 	}
 
-	// Add force reconcile to VectorEmbeddingsGenerator CR
-	vectorEmbeddingsGeneratorKey := client.ObjectKey{Namespace: chunksGeneratorCR.Namespace, Name: chunksGeneratorCR.Spec.DataProduct}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		vectorEmbeddingsGeneratorCR := &operatorv1alpha1.VectorEmbeddingsGenerator{}
-		if err := r.Get(ctx, vectorEmbeddingsGeneratorKey, vectorEmbeddingsGeneratorCR); err != nil {
-			return err
-		}
-		return controllerutils.AddForceReconcileLabel(ctx, r.Client, vectorEmbeddingsGeneratorCR)
-	}); err != nil {
-		logger.Error(err, "failed to add force reconcile label to VectorEmbeddingsGenerator CR")
-		return r.handleError(ctx, chunksGeneratorCR, err)
-	}
-
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	if err := controllerutils.StatusUpdateWithRetry(ctx, r.Client, chunksGeneratorKey, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus(successMessage, nil)
+		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus(successMessage, nil, isNewFileChunked)
 	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status", "namespace", chunksGeneratorKey.Namespace, "name", chunksGeneratorKey.Name)
-		return r.handleError(ctx, chunksGeneratorCR, err)
+		return r.handleError(ctx, chunksGeneratorCR, err, isNewFileChunked)
 	}
 	logger.Info("successfully updated ChunksGenerator CR status", "status", chunksGeneratorCR.Status)
 
@@ -359,19 +372,29 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ChunksGeneratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	labelPredicate := controllerutils.ForceReconcilePredicate()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.ChunksGenerator{}).
-		WithEventFilter(predicate.Or(predicate.GenerationChangedPredicate{}, labelPredicate)).
+		For(&operatorv1alpha1.ChunksGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(
+			&operatorv1alpha1.DocumentProcessor{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+				return []reconcile.Request{{
+					NamespacedName: types.NamespacedName{
+						Name:      obj.GetName(),
+						Namespace: obj.GetNamespace(),
+					},
+				}}
+			}),
+			builder.WithPredicates(controllerutils.NewFilesProcessedPredicate()),
+		).
 		Complete(r)
 }
-func (r *ChunksGeneratorReconciler) handleError(ctx context.Context, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, err error) (ctrl.Result, error) {
+func (r *ChunksGeneratorReconciler) handleError(ctx context.Context, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, err error, isNewFileChunked bool) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
 	reconcileErr := err
 	chunksGeneratorKey := client.ObjectKeyFromObject(chunksGeneratorCR)
 	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, chunksGeneratorKey, func() client.Object { return &operatorv1alpha1.ChunksGenerator{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus("", reconcileErr)
+		obj.(*operatorv1alpha1.ChunksGenerator).UpdateStatus("", reconcileErr, isNewFileChunked)
 	}); updateErr != nil {
 		logger.Error(updateErr, "failed to update ChunksGenerator CR status")
 		return ctrl.Result{}, updateErr

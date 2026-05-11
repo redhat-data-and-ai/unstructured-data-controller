@@ -38,6 +38,7 @@ type DocumentProcessorStatus struct {
 	Conditions              []metav1.Condition `json:"conditions,omitempty"`
 	Jobs                    []Job              `json:"jobs,omitempty"`
 	PermanentlyFailingFiles []string           `json:"permanentlyFailingFiles,omitempty"`
+	IsNewFilesProcessed     bool               `json:"isNewFilesProcessed,omitempty"`
 }
 
 type Job struct {
@@ -81,6 +82,7 @@ func (d *DocumentProcessor) SetWaiting() {
 		Message:            "DocumentProcessor is getting reconciled",
 		Reason:             "Waiting",
 	}
+	d.Status.IsNewFilesProcessed = false
 	for i, currentCondition := range d.Status.Conditions {
 		if currentCondition.Type == condition.Type {
 			d.Status.Conditions[i] = condition
@@ -130,12 +132,12 @@ func (d *DocumentProcessor) IsFilePermanentlyFailing(filePath string) bool {
 	return slices.Contains(d.Status.PermanentlyFailingFiles, filePath)
 }
 
-func (d *DocumentProcessor) UpdateStatus(message string, err error) {
+func (d *DocumentProcessor) UpdateStatus(message string, err error, isNewFileProcessed bool) {
 	condition := metav1.Condition{
 		Type:               DocumentProcessorCondition,
 		LastTransitionTime: metav1.Now(),
 	}
-
+	d.Status.IsNewFilesProcessed = isNewFileProcessed
 	if err == nil {
 		condition.Status = metav1.ConditionTrue
 		condition.Message = message
