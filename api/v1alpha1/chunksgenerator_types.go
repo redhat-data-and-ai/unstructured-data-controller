@@ -34,6 +34,7 @@ type ChunksGeneratorSpec struct {
 type ChunksGeneratorStatus struct {
 	LastAppliedGeneration int64              `json:"lastAppliedGeneration,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`
+	IsNewFilesChunked     bool               `json:"isNewFilesChunked,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -67,6 +68,7 @@ func (c *ChunksGenerator) SetWaiting() {
 		Message:            "ChunksGenerator is getting reconciled",
 		Reason:             "Waiting",
 	}
+	c.Status.IsNewFilesChunked = false
 	for i, currentCondition := range c.Status.Conditions {
 		if currentCondition.Type == condition.Type {
 			c.Status.Conditions[i] = condition
@@ -76,11 +78,12 @@ func (c *ChunksGenerator) SetWaiting() {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
-func (c *ChunksGenerator) UpdateStatus(message string, err error) {
+func (c *ChunksGenerator) UpdateStatus(message string, err error, isNewFileChunked bool) {
 	condition := metav1.Condition{
 		Type:               ChunksGeneratorCondition,
 		LastTransitionTime: metav1.Now(),
 	}
+	c.Status.IsNewFilesChunked = isNewFileChunked
 	if err == nil {
 		condition.Status = metav1.ConditionTrue
 		condition.Message = message

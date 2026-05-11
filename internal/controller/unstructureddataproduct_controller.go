@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -59,6 +60,7 @@ type UnstructuredDataProductReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddataproducts/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddataproducts/finalizers,verbs=update
 
+//nolint:gocyclo
 func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", UnstructuredDataProductControllerName)
@@ -83,6 +85,72 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 		return ctrl.Result{}, err
 	}
 	dataProductName := unstructuredDataProductCR.Name
+	isNewFileDetected := false
+	hasForceReconcileLabel := controllerutils.HasForceReconcileLabel(unstructuredDataProductCR)
+
+	if !hasForceReconcileLabel {
+		// Check if document processor is there for this data product
+		documentProcessorKey := client.ObjectKey{
+			Namespace: unstructuredDataProductCR.Namespace,
+			Name:      dataProductName,
+		}
+		existingDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
+		err = r.Get(ctx, documentProcessorKey, existingDocumentProcessorCR)
+		if err == nil {
+			logger.Info("DocumentProcessor CR already exists for this data product, now checking for the status", "documentProcessorCR", existingDocumentProcessorCR.Name)
+			for _, condition := range existingDocumentProcessorCR.Status.Conditions {
+				if condition.Type == operatorv1alpha1.DocumentProcessorCondition && condition.Status == metav1.ConditionUnknown {
+					logger.Info("DocumentProcessor CR is in waiting state, this event is triggered because of Owns and it is setWaiting in the document processor reconciler, will do early exit", "documentProcessorCR", existingDocumentProcessorCR.Name)
+					return ctrl.Result{}, nil
+				}
+			}
+		} else if client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "failed to get DocumentProcessor CR")
+			return ctrl.Result{}, err
+		}
+
+		// check if chunks generator is there for this data product
+		chunksGeneratorKey := client.ObjectKey{
+			Namespace: unstructuredDataProductCR.Namespace,
+			Name:      dataProductName,
+		}
+		existingChunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
+		err = r.Get(ctx, chunksGeneratorKey, existingChunksGeneratorCR)
+		if err == nil {
+			logger.Info("ChunksGenerator CR already exists for this data product, now checking for the status", "chunksGeneratorCR", existingChunksGeneratorCR.Name)
+			for _, condition := range existingChunksGeneratorCR.Status.Conditions {
+				if condition.Type == operatorv1alpha1.ChunksGeneratorCondition && condition.Status == metav1.ConditionUnknown {
+					logger.Info("ChunksGenerator CR is in waiting state, this event is triggered because of Owns and it is setWaiting in the chunks generator reconciler, will do early exit", "chunksGeneratorCR", existingChunksGeneratorCR.Name)
+					return ctrl.Result{}, nil
+				}
+			}
+		} else if client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "failed to get ChunksGenerator CR")
+			return ctrl.Result{}, err
+		}
+
+		//check if vector embeddings generator is there for this data product
+		vectorEmbeddingsGeneratorKey := client.ObjectKey{
+			Namespace: unstructuredDataProductCR.Namespace,
+			Name:      dataProductName,
+		}
+		existingVectorEmbeddingsGeneratorCR := &operatorv1alpha1.VectorEmbeddingsGenerator{}
+		err = r.Get(ctx, vectorEmbeddingsGeneratorKey, existingVectorEmbeddingsGeneratorCR)
+		if err == nil {
+			logger.Info("VectorEmbeddingsGenerator CR already exists for this data product, now checking for the status", "vectorEmbeddingsGeneratorCR", existingVectorEmbeddingsGeneratorCR.Name)
+			for _, condition := range existingVectorEmbeddingsGeneratorCR.Status.Conditions {
+				if condition.Type == operatorv1alpha1.VectorEmbeddingGenerationConditionType && condition.Status == metav1.ConditionUnknown {
+					logger.Info("VectorEmbeddingsGenerator CR is in waiting state, this event is triggered because of Owns and it is setWaiting in the vector embeddings generator reconciler, will do early exit", "vectorEmbeddingsGeneratorCR", existingVectorEmbeddingsGeneratorCR.Name)
+					return ctrl.Result{}, nil
+				}
+			}
+		} else if client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "failed to get VectorEmbeddingsGenerator CR")
+			return ctrl.Result{}, err
+		}
+	} else {
+		logger.Info("force-reconcile label present, skipping early-exit checks to process new files from SQS/manual trigger")
+	}
 
 	unstructuredDataProductKey := client.ObjectKeyFromObject(unstructuredDataProductCR)
 	if err := controllerutils.RemoveForceReconcileLabelWithRetry(ctx, r.Client, unstructuredDataProductKey,
@@ -114,7 +182,11 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			DocumentProcessorConfig: unstructuredDataProductCR.Spec.DocumentProcessorConfig,
 		},
 	}
-	// result, err := kubecontrollerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error { return nil })
+
+	if err := ctrl.SetControllerReference(unstructuredDataProductCR, documentProcessorCR, r.Scheme); err != nil {
+		logger.Error(err, "failed to set controller reference for DocumentProcessor CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
+	}
 	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, documentProcessorCR, func() error {
 		documentProcessorCR.Spec = operatorv1alpha1.DocumentProcessorSpec{
 			DataProduct:             dataProductName,
@@ -124,7 +196,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	})
 	if err != nil {
 		logger.Error(err, "failed to create/update DocumentProcessor CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 	logger.Info("DocumentProcessor CR created/updated", "result", result)
 
@@ -139,6 +211,10 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			ChunksGeneratorConfig: unstructuredDataProductCR.Spec.ChunksGeneratorConfig,
 		},
 	}
+	if err := ctrl.SetControllerReference(unstructuredDataProductCR, chunksGeneratorCR, r.Scheme); err != nil {
+		logger.Error(err, "failed to set controller reference for ChunksGenerator CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
+	}
 	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, chunksGeneratorCR, func() error {
 		chunksGeneratorCR.Spec = operatorv1alpha1.ChunksGeneratorSpec{
 			DataProduct:           dataProductName,
@@ -148,7 +224,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	})
 	if err != nil {
 		logger.Error(err, "failed to create/update ChunksGenerator CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 	logger.Info("ChunksGenerator CR created/updated", "result", result)
 
@@ -163,7 +239,10 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			VectorEmbeddingsGeneratorConfig: unstructuredDataProductCR.Spec.VectorEmbeddingsGeneratorConfig,
 		},
 	}
-
+	if err := ctrl.SetControllerReference(unstructuredDataProductCR, vectorEmbeddingsGeneratorCR, r.Scheme); err != nil {
+		logger.Error(err, "failed to set controller reference for VectorEmbeddingsGenerator CR")
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
+	}
 	result, err = controllerutil.CreateOrUpdate(ctx, r.Client, vectorEmbeddingsGeneratorCR, func() error {
 		vectorEmbeddingsGeneratorCR.Spec = operatorv1alpha1.VectorEmbeddingsGeneratorSpec{
 			DataProduct:                     dataProductName,
@@ -173,7 +252,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	})
 	if err != nil {
 		logger.Error(err, "failed to create/update VectorEmbeddingsGenerator CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 	logger.Info("VectorEmbeddingsGenerator CR created/updated", "result", result)
 
@@ -186,7 +265,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			Prefix: unstructuredDataProductCR.Spec.SourceConfig.S3Config.Prefix,
 		}
 	default:
-		return r.handleError(ctx, unstructuredDataProductCR, fmt.Errorf("unsupported source type: %s", unstructuredDataProductCR.Spec.SourceConfig.Type))
+		return r.handleError(ctx, unstructuredDataProductCR, fmt.Errorf("unsupported source type: %s", unstructuredDataProductCR.Spec.SourceConfig.Type), isNewFileDetected)
 	}
 
 	if !IsControllerConfigGlobalsSet(cacheDirectory, dataStorageBucket) {
@@ -200,7 +279,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 		logger.Error(err, "failed to create filestore")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 
 	r.fileStore = fs
@@ -220,28 +299,12 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	// data-storage-bucket/dataproduct/file1.pdf-chunks.json
 	// data-storage-bucket/dataproduct/file1.pdf-vector-embeddings.json
 
-	storedFiles, err := source.SyncFilesToFilestore(ctx, r.fileStore)
+	isNewFileDetected, storedFiles, err := source.SyncFilesToFilestore(ctx, r.fileStore)
 	if err != nil {
 		logger.Error(err, "failed to store files to filestore")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
-	logger.Info("successfully stored files to filestore", "files", storedFiles)
-
-	// add force reconcile label to the DocumentProcessor CR
-	documentProcessorKey := client.ObjectKey{
-		Namespace: unstructuredDataProductCR.Namespace,
-		Name:      dataProductName,
-	}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		latestDocumentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
-		if getErr := r.Get(ctx, documentProcessorKey, latestDocumentProcessorCR); getErr != nil {
-			return getErr
-		}
-		return controllerutils.AddForceReconcileLabel(ctx, r.Client, latestDocumentProcessorCR)
-	}); err != nil {
-		logger.Error(err, "failed to add force reconcile label to DocumentProcessor CR")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
-	}
+	logger.Info("successfully stored files to filestore", "files", storedFiles, "isNewFileDetected", isNewFileDetected)
 
 	// Setup destination
 	var destination unstructured.Destination
@@ -249,7 +312,7 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	case operatorv1alpha1.DestinationTypeInternalStage:
 		destination, err = r.setupSnowflakeDestination(ctx, unstructuredDataProductCR)
 		if err != nil {
-			return r.handleError(ctx, unstructuredDataProductCR, err)
+			return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 		}
 	case operatorv1alpha1.TypeS3:
 		destination, err = setupS3Destination(unstructuredDataProductCR, dataProductName)
@@ -258,19 +321,19 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 				logger.Info("ControllerConfig has not initialized destination S3 client yet, will try again in a bit ...")
 				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 			}
-			return r.handleError(ctx, unstructuredDataProductCR, err)
+			return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 		}
 	default:
 		err = fmt.Errorf("unsupported destination type: %s", unstructuredDataProductCR.Spec.DestinationConfig.Type)
 		logger.Error(err, "unsupported destination type")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 
 	// list all files in the filestore for the data product
 	filePaths, err := r.fileStore.ListFilesInPath(ctx, dataProductName)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 	// extract the vector embeddings files that are to be ingested to destination
 	filterEmbeddingsFiles := unstructured.FilterVectorEmbeddingsFilePaths(filePaths)
@@ -279,17 +342,17 @@ func (r *UnstructuredDataProductReconciler) Reconcile(ctx context.Context, req c
 	// ingest the embeddings files to destination
 	if err = destination.SyncFilesToDestination(ctx, r.fileStore, filterEmbeddingsFiles); err != nil {
 		logger.Error(err, "failed to ingest embeddings files to destination")
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 	logger.Info("successfully ingested embeddings files to destination")
 
 	// all done, let's update the status to ready
 	successMessage := fmt.Sprintf("successfully reconciled unstructured data product: %s", dataProductName)
 	if err = controllerutils.StatusUpdateWithRetry(ctx, r.Client, unstructuredDataProductKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus(successMessage, nil)
+		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus(successMessage, nil, isNewFileDetected)
 	}); err != nil {
 		logger.Error(err, "failed to update UnstructuredDataProduct CR status", "namespace", unstructuredDataProductKey.Namespace, "name", unstructuredDataProductKey.Name)
-		return r.handleError(ctx, unstructuredDataProductCR, err)
+		return r.handleError(ctx, unstructuredDataProductCR, err, isNewFileDetected)
 	}
 	logger.Info("successfully updated UnstructuredDataProduct CR status", "status", unstructuredDataProductCR.Status)
 
@@ -337,17 +400,19 @@ func setupS3Destination(unstructuredDataProductCR *operatorv1alpha1.Unstructured
 func (r *UnstructuredDataProductReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	labelPredicate := controllerutils.ForceReconcilePredicate()
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.UnstructuredDataProduct{}).
-		WithEventFilter(predicate.Or(predicate.GenerationChangedPredicate{}, labelPredicate)).
+		For(&operatorv1alpha1.UnstructuredDataProduct{}, builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, labelPredicate))).
+		Owns(&operatorv1alpha1.DocumentProcessor{}).
+		Owns(&operatorv1alpha1.ChunksGenerator{}).
+		Owns(&operatorv1alpha1.VectorEmbeddingsGenerator{}).
 		Complete(r)
 }
 
-func (r *UnstructuredDataProductReconciler) handleError(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, err error) (ctrl.Result, error) {
+func (r *UnstructuredDataProductReconciler) handleError(ctx context.Context, unstructuredDataProductCR *operatorv1alpha1.UnstructuredDataProduct, err error, isNewFileDetected bool) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
 	unstructuredDataProductKey := client.ObjectKeyFromObject(unstructuredDataProductCR)
 	if updateErr := controllerutils.StatusUpdateWithRetry(ctx, r.Client, unstructuredDataProductKey, func() client.Object { return &operatorv1alpha1.UnstructuredDataProduct{} }, func(obj client.Object) {
-		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus("", err)
+		obj.(*operatorv1alpha1.UnstructuredDataProduct).UpdateStatus("", err, isNewFileDetected)
 	}); updateErr != nil {
 		logger.Error(updateErr, "failed to update UnstructuredDataProduct CR status")
 		return ctrl.Result{}, updateErr
