@@ -240,7 +240,13 @@ func (c *Client) ConvertFile(
 		return nil, fmt.Errorf("failed to marshal config to docling payload: %w", err)
 	}
 
-	logger.Info("sending request to convert file", "url", convertSourceAsyncEndpoint, "http source", fileURL)
+	baseURL, err := getBaseURL(fileURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse presigned url: %w", err)
+	}
+
+	logger.Info("sending request to convert file", "urlToSendRequest",
+		convertSourceAsyncEndpoint, "sourceFileURL", baseURL)
 	// convert response to AsyncDoclingResponse
 	var asyncResponse AsyncDoclingResponse
 	responseBody, err := c.createDoclingRequest(ctx, http.MethodPost, convertSourceAsyncEndpoint, payload)
@@ -361,4 +367,18 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 	}
 
 	return doclingResponse.Status, &doclingResponse, nil
+}
+
+// getBaseURl will return url without query and fragments, only hostname and path
+func getBaseURL(fullURL string) (string, error) {
+	u, err := url.Parse(fullURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	// set query and fragment as empty
+	u.RawQuery = ""
+	u.Fragment = ""
+
+	return u.String(), nil
 }
