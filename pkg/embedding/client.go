@@ -1,19 +1,13 @@
 package embedding
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"time"
 
+	commonhttp "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/http"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-)
-
-const (
-	HTTPClientTimeout = 60 * time.Second
 )
 
 type EmbeddingGenerator interface {
@@ -59,30 +53,10 @@ type HTTPClient struct {
 func NewHTTPClient(config *HTTPClientConfig) *HTTPClient {
 	return &HTTPClient{
 		Client: &http.Client{
-			Timeout: HTTPClientTimeout,
+			Timeout: commonhttp.HTTPClientTimeout,
 		},
 		Config: config,
 	}
-}
-
-// createHTTPRequest creates an HTTP request with auth header set from format and api key.
-func (c *HTTPClient) createHTTPRequest(
-	ctx context.Context, method, endpoint string, payload []byte,
-) (*http.Request, error) {
-	var body io.Reader
-	if len(payload) > 0 {
-		body = bytes.NewReader(payload)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	if c.Config.APIKey != "" && c.Config.AuthFormat != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("%s %s", c.Config.AuthFormat, c.Config.APIKey))
-	}
-	return req, nil
 }
 
 func (c *HTTPClient) GenerateEmbeddings(
@@ -103,30 +77,16 @@ func (c *HTTPClient) GenerateEmbeddings(
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
 	}
 
-	// TODO: Add a better log statement
 	logger.Info("sending embedding request")
-	req, err := c.createHTTPRequest(ctx, http.MethodPost, c.Config.Endpoint, payload)
+	req, err := commonhttp.CreateHTTPRequest(ctx, http.MethodPost,
+		c.Config.Endpoint, payload, c.Config.AuthFormat, c.Config.APIKey)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.Client.Do(req)
+	_, body, err := commonhttp.Do(ctx, c.Client, req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send embedding request: %w", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			logger.Error(err, "failed to close response body")
-		}
-	}()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read embedding response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, err
 	}
 
 	var embResp EmbeddingResponse
