@@ -778,6 +778,11 @@ func TestS3Destination(t *testing.T) {
 
 	feature.Setup(
 		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Ensure port-forward is alive before setup
+			if err := ensurePortForward(testNamespace); err != nil {
+				t.Fatalf("Failed to ensure port-forward: %s", err)
+			}
+
 			kubeClient = cfg.Client()
 
 			err := v1alpha1.AddToScheme(kubeClient.Resources(testNamespace).GetScheme())
@@ -941,6 +946,11 @@ func TestS3Destination(t *testing.T) {
 	)
 
 	feature.Assess("upload files to source bucket and verify embeddings in S3 destination", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// Ensure port-forward is alive before this assessment
+		if err := ensurePortForward(testNamespace); err != nil {
+			t.Fatalf("Failed to ensure port-forward: %s", err)
+		}
+
 		// get all files in the directory
 		files, err := os.ReadDir(testFilesDirectory)
 		if err != nil {
@@ -1066,6 +1076,11 @@ func TestS3Destination(t *testing.T) {
 	})
 
 	feature.Assess("Verify hash unchanged - file NOT re-uploaded", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// Ensure port-forward is alive before this assessment
+		if err := ensurePortForward(testNamespace); err != nil {
+			t.Fatalf("Failed to ensure port-forward: %s", err)
+		}
+
 		destS3Client, err := awsclienthandler.GetDestinationS3Client()
 		if err != nil {
 			t.Fatal(err)
@@ -1198,24 +1213,214 @@ func TestS3Destination(t *testing.T) {
 		if hashBefore != "" && hashAfter != "" {
 			if hashAfter != hashBefore {
 				t.Errorf("Hash changed! First file was re-uploaded even though it was unchanged")
-				t.Errorf("   Before: %s", hashBefore)
-				t.Errorf("   After:  %s", hashAfter)
 			} else {
-				t.Logf("  ✓ Hash unchanged: %s", hashAfter)
+				t.Logf("Hash unchanged: %s", hashAfter)
 			}
 		}
 
 		// Verify timestamp unchanged
 		if !timestampAfter.Equal(timestampBefore) {
 			t.Errorf("Timestamp changed! First file was re-uploaded even though it was unchanged")
-			t.Errorf("   Before: %v", timestampBefore)
-			t.Errorf("   After:  %v", timestampAfter)
 		} else {
-			t.Logf("  ✓ Timestamp unchanged: %v", timestampAfter)
+			t.Logf("Timestamp unchanged: %v", timestampAfter)
 		}
 
 		if timestampAfter.Equal(timestampBefore) {
 			t.Log("SUCCESS: First file was NOT re-uploaded when new file was processed (hash check worked!)")
+		}
+
+		return ctx
+	})
+
+	feature.Assess("Verify hash changed - file IS re-uploaded", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// TODO: Skipping this test until PR #149 is merged.
+		// This test verifies that when a source file's content changes, the controller detects
+		// the hash change and re-processes the file. Currently, the controller doesn't track
+		// source file hash changes - it only detects config changes.
+		//
+		// Expected behavior after PR #149 (https://github.com/redhat-data-and-ai/unstructured-data-controller/pull/149) is merged:
+		// 1. S3 PutObject on existing key triggers ObjectCreated event to SQS
+		// 2. SQSInformer receives event and adds force-reconcile label to UnstructuredDataProduct CR
+		// 3. DocumentProcessor.needsConversion() detects source file hash changed (NEW - from PR #149)
+		// 4. Controller re-processes file, generates new embeddings with different hash
+		// 5. VectorEmbeddingsGenerator uploads to destination (hash check happens here)
+		// 6. Destination file hash and timestamp should be updated
+		//
+		// Once PR #149 is merged, remove the t.Skip() to enable this test.
+		t.Skip("Skipping until PR #149 (source file hash tracking) is merged")
+
+		// Ensure port-forward is alive before this assessment
+		if err := ensurePortForward(testNamespace); err != nil {
+			t.Fatalf("Failed to ensure port-forward: %s", err)
+		}
+
+		destS3Client, err := awsclienthandler.GetDestinationS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		s3Client, err := awsclienthandler.GetSourceS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Get first source file
+		t.Log("Getting first source file to modify...")
+		files, err := os.ReadDir(testFilesDirectory)
+		if err != nil {
+			t.Fatalf("Failed to read test files: %v", err)
+		}
+
+		if len(files) == 0 {
+			t.Fatal("No test files found")
+		}
+
+		// Use first file
+		firstFile := files[0]
+		sourceFileKey := fmt.Sprintf("%s/%s", sourcePrefix, firstFile.Name())
+		t.Logf("Using source file: %s", sourceFileKey)
+
+		// Get corresponding destination file metadata BEFORE modification
+		t.Log("Getting initial destination file metadata...")
+		listResp, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(destinationBucketName),
+			Prefix: aws.String(destinationPrefix),
+		})
+		if err != nil {
+			t.Fatalf("Failed to list destination bucket: %v", err)
+		}
+
+		if len(listResp.Contents) == 0 {
+			t.Fatal("No files in destination bucket")
+		}
+
+		// Find the destination file that corresponds to our source file
+		var destFileKey string
+		for _, obj := range listResp.Contents {
+			if strings.Contains(*obj.Key, firstFile.Name()) {
+				destFileKey = *obj.Key
+				break
+			}
+		}
+
+		if destFileKey == "" {
+			// If we can't find by name match, just use first file
+			destFileKey = *listResp.Contents[0].Key
+		}
+		t.Logf("Tracking destination file: %s", destFileKey)
+
+		// Get hash and timestamp BEFORE modifying the source file
+		headBefore, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(destFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head destination file: %v", err)
+		}
+
+		var hashBefore string
+		if headBefore.ChecksumSHA256 != nil {
+			hashBefore = *headBefore.ChecksumSHA256
+		}
+		timestampBefore := *headBefore.LastModified
+		t.Logf("Before modification - Hash: %s, Timestamp: %v", hashBefore, timestampBefore)
+
+		// Read original file content
+		originalContent, err := os.ReadFile(filepath.Join(testFilesDirectory, firstFile.Name()))
+		if err != nil {
+			t.Fatalf("Failed to read original file: %v", err)
+		}
+
+		// Modify the file content (append some text to change the hash)
+		modifiedContent := append(originalContent, []byte("\n\n--- MODIFIED CONTENT FOR TESTING HASH CHANGE ---\n")...)
+		t.Log("Modified file content to trigger hash change")
+
+		// Re-upload the MODIFIED file to source bucket
+		_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(sourceBucketName),
+			Key:    aws.String(sourceFileKey),
+			Body:   bytes.NewReader(modifiedContent),
+		})
+		if err != nil {
+			t.Fatalf("Failed to upload modified file: %v", err)
+		}
+		t.Logf("Re-uploaded modified file to: %s", sourceFileKey)
+
+		// Wait for reconciliation to complete
+		t.Log("Waiting for reconciliation to complete...")
+		err = apimachinerywait.PollUntilContextTimeout(ctx, 2*time.Second, 5*time.Minute, false, func(ctx context.Context) (bool, error) {
+			currentCR := &v1alpha1.UnstructuredDataProduct{}
+			if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, currentCR); err != nil {
+				t.Logf("Failed to get CR: %v", err)
+				return false, nil
+			}
+
+			// Check if the CR has been reconciled
+			if currentCR.Status.LastAppliedGeneration != currentCR.Generation {
+				t.Logf("Waiting for reconciliation, generation: %d, observed: %d",
+					currentCR.Generation, currentCR.Status.LastAppliedGeneration)
+				return false, nil
+			}
+
+			// Check if the UnstructuredDataProductReady condition is True
+			for _, condition := range currentCR.Status.Conditions {
+				if condition.Type == v1alpha1.UnstructuredDataProductCondition {
+					if condition.Status == metav1.ConditionTrue {
+						t.Log("Reconciliation completed successfully")
+						return true, nil
+					}
+					t.Logf("Waiting for condition to be ready, current status: %s, reason: %s",
+						condition.Status, condition.Reason)
+					return false, nil
+				}
+			}
+
+			t.Log("UnstructuredDataProductReady condition not found yet")
+			return false, nil
+		})
+		if err != nil {
+			t.Fatalf("Timeout waiting for reconciliation to complete: %v", err)
+		}
+
+		// Now check destination file's hash and timestamp - should be CHANGED
+		t.Log("Checking if file was re-uploaded after hash change...")
+		headAfter, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(destFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head destination file after modification: %v", err)
+		}
+
+		var hashAfter string
+		if headAfter.ChecksumSHA256 != nil {
+			hashAfter = *headAfter.ChecksumSHA256
+		}
+		timestampAfter := *headAfter.LastModified
+		t.Logf("After modification - Hash: %s, Timestamp: %v", hashAfter, timestampAfter)
+
+		// Verify hash CHANGED
+		if hashBefore != "" && hashAfter != "" {
+			if hashAfter == hashBefore {
+				t.Errorf("Hash unchanged! File was NOT re-uploaded even though source content changed")
+				t.Errorf("   Hash: %s", hashAfter)
+			} else {
+				t.Logf("  ✓ Hash changed: %s -> %s", hashBefore, hashAfter)
+			}
+		}
+
+		// Verify timestamp CHANGED
+		if timestampAfter.Equal(timestampBefore) {
+			t.Errorf("Timestamp unchanged! File was NOT re-uploaded even though source content changed")
+			t.Errorf("   Timestamp: %v", timestampAfter)
+		} else {
+			t.Logf("  ✓ Timestamp changed: %v -> %v", timestampBefore, timestampAfter)
+		}
+
+		if !timestampAfter.Equal(timestampBefore) && hashBefore != hashAfter {
+			t.Log("SUCCESS: File WAS re-uploaded when source hash changed (hash change detection worked!)")
 		}
 
 		return ctx
