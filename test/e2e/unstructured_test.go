@@ -1065,6 +1065,162 @@ func TestS3Destination(t *testing.T) {
 		return ctx
 	})
 
+	feature.Assess("Verify hash unchanged - file NOT re-uploaded", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		destS3Client, err := awsclienthandler.GetDestinationS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		s3Client, err := awsclienthandler.GetSourceS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Get first embeddings file from destination and record its hash/timestamp
+		t.Log("Getting initial file metadata from destination...")
+		listResp, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(destinationBucketName),
+			Prefix: aws.String(destinationPrefix),
+		})
+		if err != nil {
+			t.Fatalf("Failed to list destination bucket: %v", err)
+		}
+
+		if len(listResp.Contents) == 0 {
+			t.Fatal("No files in destination bucket")
+		}
+
+		// Pick first file to track
+		firstFileKey := *listResp.Contents[0].Key
+		t.Logf("Tracking file: %s", firstFileKey)
+
+		// Get hash and timestamp BEFORE uploading second file
+		headBefore, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(firstFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head first file: %v", err)
+		}
+
+		var hashBefore string
+		if headBefore.ChecksumSHA256 != nil {
+			hashBefore = *headBefore.ChecksumSHA256
+		}
+		timestampBefore := *headBefore.LastModified
+		t.Logf("Before new upload - Hash: %s, Timestamp: %v", hashBefore, timestampBefore)
+
+		// Upload a NEW file to source bucket
+		files, err := os.ReadDir(testFilesDirectory)
+		if err != nil {
+			t.Fatalf("Failed to read test files: %v", err)
+		}
+
+		if len(files) < 2 {
+			t.Fatal("Need at least 2 test files")
+		}
+
+		// Find a file that hasn't been uploaded yet
+		newFile := files[len(files)-1]
+		t.Logf("Uploading new file: %s", newFile.Name())
+
+		fileContent, err := os.ReadFile(filepath.Join(testFilesDirectory, newFile.Name()))
+		if err != nil {
+			t.Fatalf("Failed to read new file: %v", err)
+		}
+
+		newFileKey := fmt.Sprintf("%s/%s", sourcePrefix, newFile.Name())
+		_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(sourceBucketName),
+			Key:    aws.String(newFileKey),
+			Body:   bytes.NewReader(fileContent),
+		})
+		if err != nil {
+			t.Fatalf("Failed to upload new file: %v", err)
+		}
+
+		// Wait for reconciliation to complete by polling the CR status
+		t.Log("Waiting for reconciliation to complete...")
+		err = apimachinerywait.PollUntilContextTimeout(ctx, 2*time.Second, 3*time.Minute, false, func(ctx context.Context) (bool, error) {
+			currentCR := &v1alpha1.UnstructuredDataProduct{}
+			if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, currentCR); err != nil {
+				t.Logf("Failed to get CR: %v", err)
+				return false, nil
+			}
+
+			// Check if the CR has been reconciled (observed generation matches current generation)
+			if currentCR.Status.LastAppliedGeneration != currentCR.Generation {
+				t.Logf("Waiting for reconciliation, generation: %d, observed: %d",
+					currentCR.Generation, currentCR.Status.LastAppliedGeneration)
+				return false, nil
+			}
+
+			// Check if the UnstructuredDataProductReady condition is True
+			for _, condition := range currentCR.Status.Conditions {
+				if condition.Type == v1alpha1.UnstructuredDataProductCondition {
+					if condition.Status == metav1.ConditionTrue {
+						t.Log("Reconciliation completed successfully")
+						return true, nil
+					}
+					t.Logf("Waiting for condition to be ready, current status: %s, reason: %s",
+						condition.Status, condition.Reason)
+					return false, nil
+				}
+			}
+
+			t.Log("UnstructuredDataProductReady condition not found yet")
+			return false, nil
+		})
+		if err != nil {
+			t.Fatalf("Timeout waiting for reconciliation to complete: %v", err)
+		}
+
+		// Now check first file's hash and timestamp - should be UNCHANGED
+		t.Log("Checking if first file was re-uploaded...")
+		headAfter, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(firstFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head first file after new upload: %v", err)
+		}
+
+		var hashAfter string
+		if headAfter.ChecksumSHA256 != nil {
+			hashAfter = *headAfter.ChecksumSHA256
+		}
+		timestampAfter := *headAfter.LastModified
+		t.Logf("After new upload - Hash: %s, Timestamp: %v", hashAfter, timestampAfter)
+
+		// Verify hash unchanged
+		if hashBefore != "" && hashAfter != "" {
+			if hashAfter != hashBefore {
+				t.Errorf("Hash changed! First file was re-uploaded even though it was unchanged")
+				t.Errorf("   Before: %s", hashBefore)
+				t.Errorf("   After:  %s", hashAfter)
+			} else {
+				t.Logf("  ✓ Hash unchanged: %s", hashAfter)
+			}
+		}
+
+		// Verify timestamp unchanged
+		if !timestampAfter.Equal(timestampBefore) {
+			t.Errorf("Timestamp changed! First file was re-uploaded even though it was unchanged")
+			t.Errorf("   Before: %v", timestampBefore)
+			t.Errorf("   After:  %v", timestampAfter)
+		} else {
+			t.Logf("  ✓ Timestamp unchanged: %v", timestampAfter)
+		}
+
+		if timestampAfter.Equal(timestampBefore) {
+			t.Log("SUCCESS: First file was NOT re-uploaded when new file was processed (hash check worked!)")
+		}
+
+		return ctx
+	})
+
 	feature.Teardown(
 		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			// delete SQSInformer CR
