@@ -274,7 +274,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
 	}
 	if !chunksFile.ChunksDocument.Metadata.Equal(&newChunksFileMetadata) {
-		logger.Info("chunks file is the same as the current chunks file in filestore, no need to chunk again", "file", convertedFilePath)
+		logger.Info("chunks file config has changed, re-chunking needed", "file", convertedFilePath)
 		return true, nil
 	}
 
