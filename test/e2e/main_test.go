@@ -53,6 +53,28 @@ const (
 	unstructuredSecretName = "unstructured-secret"
 )
 
+// ensurePortForward ensures a fresh port-forward connection to localstack
+// Kills any existing port-forward and starts a new one
+func ensurePortForward(namespace string) error {
+	// Kill any existing port-forward
+	exec.Command("pkill", "-f", "port-forward.*localstack").Run()
+	time.Sleep(1 * time.Second)
+
+	// Start new port-forward
+	log.Println("Starting fresh port-forward for localstack...")
+	pf := exec.Command("kubectl", "port-forward", "-n", namespace, "services/localstack", "4566:4566")
+	pf.Stdout = os.Stdout
+	pf.Stderr = os.Stderr
+	if err := pf.Start(); err != nil {
+		return fmt.Errorf("failed to start port-forward: %w", err)
+	}
+
+	// Give it time to establish
+	time.Sleep(3 * time.Second)
+	log.Println("Port-forward established")
+	return nil
+}
+
 func TestMain(m *testing.M) {
 	testenv = env.New()
 	runningProcesses := []exec.Cmd{}

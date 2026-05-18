@@ -767,3 +767,781 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 	testenv.Test(t, feature.Feature())
 }
+
+func TestS3Destination(t *testing.T) {
+	feature := features.New("S3 Destination E2E")
+
+	sourceBucketName := "unstructured-bucket"
+	dataStorageBucket := "data-storage-bucket"
+	destinationBucketName := "result-bucket"
+	queueName := "s3-destination-queue"
+	dataProductCRName := "testunstructureddataproduct"
+	sourcePrefix := "testunstructureddataproduct/source-data"
+	destinationPrefix := "testunstructureddataproduct/processed-data"
+
+	var queueURL string
+	testFilesDirectory := "test/resources/unstructured/unstructured-files"
+
+	var kubeClient klient.Client
+
+	feature.Setup(
+		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Ensure port-forward is alive before setup
+			if err := ensurePortForward(testNamespace); err != nil {
+				t.Fatalf("Failed to ensure port-forward: %s", err)
+			}
+
+			kubeClient = cfg.Client()
+
+			err := v1alpha1.AddToScheme(kubeClient.Resources(testNamespace).GetScheme())
+			if err != nil {
+				t.Fatalf("Failed to add scheme: %s", err)
+			}
+
+			// create AWS clients
+			err = awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+				Region:          "us-east-1",
+				AccessKeyID:     "test",
+				SecretAccessKey: "test",
+				Endpoint:        localstackURL,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// create destination S3 client
+			err = awsclienthandler.NewDestinationS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+				Region:          "us-east-1",
+				AccessKeyID:     "test",
+				SecretAccessKey: "test",
+				Endpoint:        localstackURL,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// create SQS client
+			sqsClient, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+				Region:          "us-east-1",
+				AccessKeyID:     "test",
+				SecretAccessKey: "test",
+				Endpoint:        localstackURL,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			s3Client, err := awsclienthandler.GetSourceS3Client()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			destS3Client, err := awsclienthandler.GetDestinationS3Client()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// create source bucket
+			_, err = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+				Bucket: aws.String(sourceBucketName),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("Created source bucket: %s", sourceBucketName)
+
+			// create data storage bucket
+			_, err = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+				Bucket: aws.String(dataStorageBucket),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("Created data storage bucket: %s", dataStorageBucket)
+
+			// create destination bucket
+			_, err = destS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+				Bucket: aws.String(destinationBucketName),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("Created destination bucket: %s", destinationBucketName)
+
+			// create SQS queue
+			createQueueOutput, err := sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{
+				QueueName: aws.String(queueName),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			queueURL = *createQueueOutput.QueueUrl
+			t.Logf("Created SQS queue: %s", queueName)
+
+			// create S3 --> SQS notification integration
+			_, err = s3Client.PutBucketNotificationConfiguration(ctx, &s3.PutBucketNotificationConfigurationInput{
+				Bucket: aws.String(sourceBucketName),
+				NotificationConfiguration: &types.NotificationConfiguration{
+					QueueConfigurations: []types.QueueConfiguration{
+						{
+							QueueArn: aws.String("arn:aws:sqs:us-east-1:000000000000:" + queueName),
+							Events:   []types.Event{types.EventS3ObjectCreated, types.EventS3ObjectRemoved},
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// create SQSInformer CR
+			SQSInformer := &v1alpha1.SQSInformer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-s3-destination-sqs-informer",
+					Namespace: testNamespace,
+				},
+				Spec: v1alpha1.SQSInformerSpec{
+					QueueURL: queueURL,
+				},
+			}
+			err = kubeClient.Resources(testNamespace).Create(ctx, SQSInformer)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// wait for SQSInformer CR to be ready
+			if err := operatorUtils.WaitForResourceReady(v1alpha1.SQSInformerCondition, "SQSInformers.operator.dataverse.redhat.com", "test-s3-destination-sqs-informer", testNamespace); err != nil {
+				t.Fatal(err)
+			}
+
+			// create unstructured data product CR with S3 destination
+			unstructuredDataProduct := operatorUtils.GetUnstructuredDataProductResource(dataProductCRName, testNamespace)
+
+			// override source config
+			unstructuredDataProduct.Spec.SourceConfig = v1alpha1.SourceConfig{
+				Type: v1alpha1.TypeS3,
+				S3Config: v1alpha1.S3Config{
+					Bucket: sourceBucketName,
+					Prefix: sourcePrefix,
+				},
+			}
+
+			// override destination config to use S3 instead of Snowflake
+			unstructuredDataProduct.Spec.DestinationConfig = v1alpha1.DestinationConfig{
+				Type: v1alpha1.TypeS3,
+				S3DestinationConfig: v1alpha1.S3Config{
+					Bucket: destinationBucketName,
+					Prefix: destinationPrefix,
+				},
+			}
+
+			t.Log("Creating unstructured dataproduct CR with S3 destination...")
+			if err := kubeClient.Resources(testNamespace).Create(ctx, &unstructuredDataProduct); err != nil {
+				if !apierrors.IsAlreadyExists(err) {
+					t.Fatal(err)
+				}
+			}
+
+			// wait for unstructured data product CR to be healthy
+			t.Log("Waiting for unstructured data product CR to be healthy")
+			if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+				t.Error(err)
+			}
+			t.Log("Unstructured data product CR is healthy")
+
+			return ctx
+		},
+	)
+
+	feature.Assess("upload files to source bucket and verify embeddings in S3 destination", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// Ensure port-forward is alive before this assessment
+		if err := ensurePortForward(testNamespace); err != nil {
+			t.Fatalf("Failed to ensure port-forward: %s", err)
+		}
+
+		// get all files in the directory
+		files, err := os.ReadDir(testFilesDirectory)
+		if err != nil {
+			t.Error(err)
+		}
+
+		if len(files) == 0 {
+			t.Error("no files found in the directory")
+		}
+
+		s3Client, err := awsclienthandler.GetSourceS3Client()
+		if err != nil {
+			t.Error(err)
+		}
+
+		// upload files to source S3 bucket
+		for _, file := range files {
+			if file.IsDir() {
+				t.Errorf("subdirectories are not allowed in the test files directory: %s", testFilesDirectory)
+			}
+
+			fileContent, err := os.ReadFile(filepath.Join(testFilesDirectory, file.Name()))
+			if err != nil {
+				t.Error(err)
+			}
+
+			key := fmt.Sprintf("%s/%s", sourcePrefix, file.Name())
+			_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+				Bucket: aws.String(sourceBucketName),
+				Key:    aws.String(key),
+				Body:   bytes.NewReader(fileContent),
+			})
+			if err != nil {
+				t.Error(err)
+			}
+			t.Logf("Uploaded test file: %s", key)
+		}
+
+		// wait for all controllers to be ready
+		t.Log("Waiting for all controllers to be ready...")
+
+		// wait for DocumentProcessor to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			t.Error(err)
+		}
+		t.Log("DocumentProcessor is ready")
+
+		// wait for ChunksGenerator to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			t.Error(err)
+		}
+		t.Log("ChunksGenerator is ready")
+
+		// wait for VectorEmbeddingsGenerator to be ready
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			t.Error(err)
+		}
+		t.Log("VectorEmbeddingsGenerator is ready")
+
+		// wait for UnstructuredDataProduct to be ready (final check)
+		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataProductCondition, "unstructureddataproducts.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			t.Error(err)
+		}
+		t.Log("UnstructuredDataProduct is ready - all files should be processed")
+
+		// verify embeddings files exist in destination bucket
+		t.Log("Verifying embeddings files in destination S3 bucket...")
+
+		destS3Client, err := awsclienthandler.GetDestinationS3Client()
+		if err != nil {
+			t.Error(err)
+		}
+
+		// poll until embeddings files are found in destination bucket
+		if err := apimachinerywait.PollUntilContextTimeout(
+			ctx,
+			5*time.Second,
+			10*time.Minute,
+			false,
+			func(ctx context.Context) (done bool, err error) {
+				// list objects in destination bucket
+				output, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+					Bucket: aws.String(destinationBucketName),
+					Prefix: aws.String(destinationPrefix),
+				})
+				if err != nil {
+					t.Logf("Error listing objects in destination bucket: %s, retrying...", err)
+					return false, nil
+				}
+
+				if len(output.Contents) == 0 {
+					t.Logf("No files found in destination bucket yet, retrying...")
+					return false, nil
+				}
+
+				// look for embeddings files (should have .json extension and contain embeddings)
+				foundCount := 0
+				for _, obj := range output.Contents {
+					key := *obj.Key
+					// embeddings files typically end with .json
+					if strings.HasSuffix(key, ".json") {
+						t.Logf("Found embeddings file: %s", key)
+						foundCount++
+					}
+				}
+
+				// we expect exactly as many embeddings files as input files
+				if foundCount == len(files) {
+					t.Logf("Found %d embeddings files in destination bucket", foundCount)
+					return true, nil
+				}
+
+				t.Logf("Found %d embeddings files, expected %d, retrying...", foundCount, len(files))
+				return false, nil
+			},
+		); err != nil {
+			t.Fatal("Timeout waiting for embeddings files in destination bucket")
+		}
+
+		t.Log("Successfully verified embeddings files in S3 destination")
+
+		return ctx
+	})
+
+	feature.Assess("Verify hash unchanged - file NOT re-uploaded", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// Ensure port-forward is alive before this assessment
+		if err := ensurePortForward(testNamespace); err != nil {
+			t.Fatalf("Failed to ensure port-forward: %s", err)
+		}
+
+		destS3Client, err := awsclienthandler.GetDestinationS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		s3Client, err := awsclienthandler.GetSourceS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Get first embeddings file from destination and record its hash/timestamp
+		t.Log("Getting initial file metadata from destination...")
+		listResp, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(destinationBucketName),
+			Prefix: aws.String(destinationPrefix),
+		})
+		if err != nil {
+			t.Fatalf("Failed to list destination bucket: %v", err)
+		}
+
+		if len(listResp.Contents) == 0 {
+			t.Fatal("No files in destination bucket")
+		}
+
+		// Pick first file to track
+		firstFileKey := *listResp.Contents[0].Key
+		t.Logf("Tracking file: %s", firstFileKey)
+
+		// Get hash and timestamp BEFORE uploading second file
+		headBefore, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(firstFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head first file: %v", err)
+		}
+
+		var hashBefore string
+		if headBefore.ChecksumSHA256 != nil {
+			hashBefore = *headBefore.ChecksumSHA256
+		}
+		timestampBefore := *headBefore.LastModified
+		t.Logf("Before new upload - Hash: %s, Timestamp: %v", hashBefore, timestampBefore)
+
+		// Upload a NEW file to source bucket
+		files, err := os.ReadDir(testFilesDirectory)
+		if err != nil {
+			t.Fatalf("Failed to read test files: %v", err)
+		}
+
+		if len(files) < 2 {
+			t.Fatal("Need at least 2 test files")
+		}
+
+		// Find a file that hasn't been uploaded yet
+		newFile := files[len(files)-1]
+		t.Logf("Uploading new file: %s", newFile.Name())
+
+		fileContent, err := os.ReadFile(filepath.Join(testFilesDirectory, newFile.Name()))
+		if err != nil {
+			t.Fatalf("Failed to read new file: %v", err)
+		}
+
+		newFileKey := fmt.Sprintf("%s/%s", sourcePrefix, newFile.Name())
+		_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(sourceBucketName),
+			Key:    aws.String(newFileKey),
+			Body:   bytes.NewReader(fileContent),
+		})
+		if err != nil {
+			t.Fatalf("Failed to upload new file: %v", err)
+		}
+
+		// Wait for reconciliation to complete by polling the CR status
+		t.Log("Waiting for reconciliation to complete...")
+		err = apimachinerywait.PollUntilContextTimeout(ctx, 2*time.Second, 3*time.Minute, false, func(ctx context.Context) (bool, error) {
+			currentCR := &v1alpha1.UnstructuredDataProduct{}
+			if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, currentCR); err != nil {
+				t.Logf("Failed to get CR: %v", err)
+				return false, nil
+			}
+
+			// Check if the CR has been reconciled (observed generation matches current generation)
+			if currentCR.Status.LastAppliedGeneration != currentCR.Generation {
+				t.Logf("Waiting for reconciliation, generation: %d, observed: %d",
+					currentCR.Generation, currentCR.Status.LastAppliedGeneration)
+				return false, nil
+			}
+
+			// Check if the UnstructuredDataProductReady condition is True
+			for _, condition := range currentCR.Status.Conditions {
+				if condition.Type == v1alpha1.UnstructuredDataProductCondition {
+					if condition.Status == metav1.ConditionTrue {
+						t.Log("Reconciliation completed successfully")
+						return true, nil
+					}
+					t.Logf("Waiting for condition to be ready, current status: %s, reason: %s",
+						condition.Status, condition.Reason)
+					return false, nil
+				}
+			}
+
+			t.Log("UnstructuredDataProductReady condition not found yet")
+			return false, nil
+		})
+		if err != nil {
+			t.Fatalf("Timeout waiting for reconciliation to complete: %v", err)
+		}
+
+		// Now check first file's hash and timestamp - should be UNCHANGED
+		t.Log("Checking if first file was re-uploaded...")
+		headAfter, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(firstFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head first file after new upload: %v", err)
+		}
+
+		var hashAfter string
+		if headAfter.ChecksumSHA256 != nil {
+			hashAfter = *headAfter.ChecksumSHA256
+		}
+		timestampAfter := *headAfter.LastModified
+		t.Logf("After new upload - Hash: %s, Timestamp: %v", hashAfter, timestampAfter)
+
+		// Verify hash unchanged
+		if hashBefore != "" && hashAfter != "" {
+			if hashAfter != hashBefore {
+				t.Errorf("Hash changed! First file was re-uploaded even though it was unchanged")
+			} else {
+				t.Logf("Hash unchanged: %s", hashAfter)
+			}
+		}
+
+		// Verify timestamp unchanged
+		if !timestampAfter.Equal(timestampBefore) {
+			t.Errorf("Timestamp changed! First file was re-uploaded even though it was unchanged")
+		} else {
+			t.Logf("Timestamp unchanged: %v", timestampAfter)
+		}
+
+		if timestampAfter.Equal(timestampBefore) {
+			t.Log("SUCCESS: First file was NOT re-uploaded when new file was processed (hash check worked!)")
+		}
+
+		return ctx
+	})
+
+	feature.Assess("Verify hash changed - file IS re-uploaded", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		// TODO: Skipping this test until PR #149 is merged.
+		// This test verifies that when a source file's content changes, the controller detects
+		// the hash change and re-processes the file. Currently, the controller doesn't track
+		// source file hash changes - it only detects config changes.
+		//
+		// Expected behavior after PR #149 (https://github.com/redhat-data-and-ai/unstructured-data-controller/pull/149) is merged:
+		// 1. S3 PutObject on existing key triggers ObjectCreated event to SQS
+		// 2. SQSInformer receives event and adds force-reconcile label to UnstructuredDataProduct CR
+		// 3. DocumentProcessor.needsConversion() detects source file hash changed (NEW - from PR #149)
+		// 4. Controller re-processes file, generates new embeddings with different hash
+		// 5. VectorEmbeddingsGenerator uploads to destination (hash check happens here)
+		// 6. Destination file hash and timestamp should be updated
+		//
+		// Once PR #149 is merged, remove the t.Skip() to enable this test.
+		t.Skip("Skipping until PR #149 (source file hash tracking) is merged")
+
+		// Ensure port-forward is alive before this assessment
+		if err := ensurePortForward(testNamespace); err != nil {
+			t.Fatalf("Failed to ensure port-forward: %s", err)
+		}
+
+		destS3Client, err := awsclienthandler.GetDestinationS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		s3Client, err := awsclienthandler.GetSourceS3Client()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Get first source file
+		t.Log("Getting first source file to modify...")
+		files, err := os.ReadDir(testFilesDirectory)
+		if err != nil {
+			t.Fatalf("Failed to read test files: %v", err)
+		}
+
+		if len(files) == 0 {
+			t.Fatal("No test files found")
+		}
+
+		// Use first file
+		firstFile := files[0]
+		sourceFileKey := fmt.Sprintf("%s/%s", sourcePrefix, firstFile.Name())
+		t.Logf("Using source file: %s", sourceFileKey)
+
+		// Get corresponding destination file metadata BEFORE modification
+		t.Log("Getting initial destination file metadata...")
+		listResp, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(destinationBucketName),
+			Prefix: aws.String(destinationPrefix),
+		})
+		if err != nil {
+			t.Fatalf("Failed to list destination bucket: %v", err)
+		}
+
+		if len(listResp.Contents) == 0 {
+			t.Fatal("No files in destination bucket")
+		}
+
+		// Find the destination file that corresponds to our source file
+		var destFileKey string
+		for _, obj := range listResp.Contents {
+			if strings.Contains(*obj.Key, firstFile.Name()) {
+				destFileKey = *obj.Key
+				break
+			}
+		}
+
+		if destFileKey == "" {
+			// If we can't find by name match, just use first file
+			destFileKey = *listResp.Contents[0].Key
+		}
+		t.Logf("Tracking destination file: %s", destFileKey)
+
+		// Get hash and timestamp BEFORE modifying the source file
+		headBefore, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(destFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head destination file: %v", err)
+		}
+
+		var hashBefore string
+		if headBefore.ChecksumSHA256 != nil {
+			hashBefore = *headBefore.ChecksumSHA256
+		}
+		timestampBefore := *headBefore.LastModified
+		t.Logf("Before modification - Hash: %s, Timestamp: %v", hashBefore, timestampBefore)
+
+		// Read original file content
+		originalContent, err := os.ReadFile(filepath.Join(testFilesDirectory, firstFile.Name()))
+		if err != nil {
+			t.Fatalf("Failed to read original file: %v", err)
+		}
+
+		// Modify the file content (append some text to change the hash)
+		modifiedContent := append(originalContent, []byte("\n\n--- MODIFIED CONTENT FOR TESTING HASH CHANGE ---\n")...)
+		t.Log("Modified file content to trigger hash change")
+
+		// Re-upload the MODIFIED file to source bucket
+		_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(sourceBucketName),
+			Key:    aws.String(sourceFileKey),
+			Body:   bytes.NewReader(modifiedContent),
+		})
+		if err != nil {
+			t.Fatalf("Failed to upload modified file: %v", err)
+		}
+		t.Logf("Re-uploaded modified file to: %s", sourceFileKey)
+
+		// Wait for reconciliation to complete
+		t.Log("Waiting for reconciliation to complete...")
+		err = apimachinerywait.PollUntilContextTimeout(ctx, 2*time.Second, 5*time.Minute, false, func(ctx context.Context) (bool, error) {
+			currentCR := &v1alpha1.UnstructuredDataProduct{}
+			if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, currentCR); err != nil {
+				t.Logf("Failed to get CR: %v", err)
+				return false, nil
+			}
+
+			// Check if the CR has been reconciled
+			if currentCR.Status.LastAppliedGeneration != currentCR.Generation {
+				t.Logf("Waiting for reconciliation, generation: %d, observed: %d",
+					currentCR.Generation, currentCR.Status.LastAppliedGeneration)
+				return false, nil
+			}
+
+			// Check if the UnstructuredDataProductReady condition is True
+			for _, condition := range currentCR.Status.Conditions {
+				if condition.Type == v1alpha1.UnstructuredDataProductCondition {
+					if condition.Status == metav1.ConditionTrue {
+						t.Log("Reconciliation completed successfully")
+						return true, nil
+					}
+					t.Logf("Waiting for condition to be ready, current status: %s, reason: %s",
+						condition.Status, condition.Reason)
+					return false, nil
+				}
+			}
+
+			t.Log("UnstructuredDataProductReady condition not found yet")
+			return false, nil
+		})
+		if err != nil {
+			t.Fatalf("Timeout waiting for reconciliation to complete: %v", err)
+		}
+
+		// Now check destination file's hash and timestamp - should be CHANGED
+		t.Log("Checking if file was re-uploaded after hash change...")
+		headAfter, err := destS3Client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket:       aws.String(destinationBucketName),
+			Key:          aws.String(destFileKey),
+			ChecksumMode: types.ChecksumModeEnabled,
+		})
+		if err != nil {
+			t.Fatalf("Failed to head destination file after modification: %v", err)
+		}
+
+		var hashAfter string
+		if headAfter.ChecksumSHA256 != nil {
+			hashAfter = *headAfter.ChecksumSHA256
+		}
+		timestampAfter := *headAfter.LastModified
+		t.Logf("After modification - Hash: %s, Timestamp: %v", hashAfter, timestampAfter)
+
+		// Verify hash CHANGED
+		if hashBefore != "" && hashAfter != "" {
+			if hashAfter == hashBefore {
+				t.Errorf("Hash unchanged! File was NOT re-uploaded even though source content changed")
+				t.Errorf("   Hash: %s", hashAfter)
+			} else {
+				t.Logf("  ✓ Hash changed: %s -> %s", hashBefore, hashAfter)
+			}
+		}
+
+		// Verify timestamp CHANGED
+		if timestampAfter.Equal(timestampBefore) {
+			t.Errorf("Timestamp unchanged! File was NOT re-uploaded even though source content changed")
+			t.Errorf("   Timestamp: %v", timestampAfter)
+		} else {
+			t.Logf("  ✓ Timestamp changed: %v -> %v", timestampBefore, timestampAfter)
+		}
+
+		if !timestampAfter.Equal(timestampBefore) && hashBefore != hashAfter {
+			t.Log("SUCCESS: File WAS re-uploaded when source hash changed (hash change detection worked!)")
+		}
+
+		return ctx
+	})
+
+	feature.Teardown(
+		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// delete SQSInformer CR
+			SQSInformer := &v1alpha1.SQSInformer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-s3-destination-sqs-informer",
+					Namespace: testNamespace,
+				},
+			}
+			if err := kubeClient.Resources(testNamespace).Delete(ctx, SQSInformer); err != nil {
+				t.Logf("Warning: Failed to delete SQSInformer: %s", err)
+			}
+
+			// delete unstructured data product CR
+			unstructuredDataProduct := &v1alpha1.UnstructuredDataProduct{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dataProductCRName,
+					Namespace: testNamespace,
+				},
+			}
+			if err := kubeClient.Resources(testNamespace).Delete(ctx, unstructuredDataProduct); err != nil {
+				t.Logf("Warning: Failed to delete UnstructuredDataProduct: %s", err)
+			}
+
+			// clean up S3 buckets
+			s3Client, err := awsclienthandler.GetSourceS3Client()
+			if err != nil {
+				t.Logf("Warning: Failed to get S3 client for cleanup: %s", err)
+				return ctx
+			}
+
+			destS3Client, err := awsclienthandler.GetDestinationS3Client()
+			if err != nil {
+				t.Logf("Warning: Failed to get destination S3 client for cleanup: %s", err)
+			}
+
+			// delete all objects in source bucket
+			sourceOutput, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+				Bucket: aws.String(sourceBucketName),
+			})
+			if err == nil {
+				for _, obj := range sourceOutput.Contents {
+					_, _ = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+						Bucket: aws.String(sourceBucketName),
+						Key:    obj.Key,
+					})
+				}
+			}
+
+			// delete all objects in data storage bucket
+			dataStorageOutput, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+				Bucket: aws.String(dataStorageBucket),
+			})
+			if err == nil {
+				for _, obj := range dataStorageOutput.Contents {
+					_, _ = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+						Bucket: aws.String(dataStorageBucket),
+						Key:    obj.Key,
+					})
+				}
+			}
+
+			// delete all objects in destination bucket
+			if destS3Client != nil {
+				destOutput, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+					Bucket: aws.String(destinationBucketName),
+				})
+				if err == nil {
+					for _, obj := range destOutput.Contents {
+						_, _ = destS3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+							Bucket: aws.String(destinationBucketName),
+							Key:    obj.Key,
+						})
+					}
+				}
+			}
+
+			// delete buckets
+			_, _ = s3Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
+				Bucket: aws.String(sourceBucketName),
+			})
+			_, _ = s3Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
+				Bucket: aws.String(dataStorageBucket),
+			})
+			if destS3Client != nil {
+				_, _ = destS3Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
+					Bucket: aws.String(destinationBucketName),
+				})
+			}
+
+			// clean up SQS queue
+			sqsClient, err := awsclienthandler.NewSQSClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+				Region:          "us-east-1",
+				AccessKeyID:     "test",
+				SecretAccessKey: "test",
+				Endpoint:        localstackURL,
+			})
+			if err == nil {
+				_, _ = sqsClient.DeleteQueue(ctx, &sqs.DeleteQueueInput{
+					QueueUrl: aws.String(queueURL),
+				})
+			}
+
+			t.Log("Cleanup completed")
+
+			return ctx
+		},
+	)
+
+	testenv.Test(t, feature.Feature())
+}
