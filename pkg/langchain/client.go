@@ -106,12 +106,6 @@ func convertOptionsToOptionList(options *textsplitter.Options) []textsplitter.Op
 	if options.SecondSplitter != nil {
 		optionList = append(optionList, textsplitter.WithSecondSplitter(options.SecondSplitter))
 	}
-	if len(options.DisallowedSpecial) > 0 {
-		optionList = append(optionList, textsplitter.WithDisallowedSpecial(options.DisallowedSpecial))
-	}
-	if options.SecondSplitter != nil {
-		optionList = append(optionList, textsplitter.WithSecondSplitter(options.SecondSplitter))
-	}
 	if options.CodeBlocks {
 		optionList = append(optionList, textsplitter.WithCodeBlocks(options.CodeBlocks))
 	}
