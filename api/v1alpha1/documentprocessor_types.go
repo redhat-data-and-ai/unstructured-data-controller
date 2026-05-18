@@ -102,9 +102,9 @@ func (d *DocumentProcessor) AddOrUpdateJob(newJob Job) {
 }
 
 func (d *DocumentProcessor) GetJobByFilePath(filePath string) *Job {
-	for _, job := range d.Status.Jobs {
-		if job.FilePath == filePath {
-			return &job
+	for i := range d.Status.Jobs {
+		if d.Status.Jobs[i].FilePath == filePath {
+			return &d.Status.Jobs[i]
 		}
 	}
 	return nil
