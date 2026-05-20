@@ -14,6 +14,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/imdario/mergo v0.3.16
 	github.com/snowflakedb/gosnowflake v1.19.1
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.20.0
 	k8s.io/api v0.34.8
 	k8s.io/apimachinery v0.34.8
