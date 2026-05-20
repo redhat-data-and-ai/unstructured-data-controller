@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"time"
 
@@ -104,15 +105,16 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	cacheDirectory = config.Spec.UnstructuredDataProcessingConfig.CacheDirectory
 
 	unstructuredSecret = &corev1.Secret{}
-	if config.Spec.UnstructuredSecret != "" {
-		if err := r.Get(ctx,
-			types.NamespacedName{Name: config.Spec.UnstructuredSecret, Namespace: req.Namespace}, unstructuredSecret); err != nil {
-			logger.Error(err, fmt.Sprintf("error fetching AWS secret %s, retrying in 10 seconds ", config.Spec.UnstructuredSecret))
-			return ctrl.Result{
-				Requeue:      true,
-				RequeueAfter: 10 * time.Second,
-			}, nil
-		}
+	if config.Spec.UnstructuredSecret == "" {
+		return ctrl.Result{}, errors.New("UnstructuredSecret not configured")
+	}
+	if err := r.Get(ctx,
+		types.NamespacedName{Name: config.Spec.UnstructuredSecret, Namespace: req.Namespace}, unstructuredSecret); err != nil {
+		logger.Error(err, fmt.Sprintf("error fetching AWS secret %s, retrying in 10 seconds ", config.Spec.UnstructuredSecret))
+		return ctrl.Result{
+			Requeue:      true,
+			RequeueAfter: 10 * time.Second,
+		}, nil
 	}
 
 	doclingServeURL := config.Spec.UnstructuredDataProcessingConfig.DoclingServeURL
