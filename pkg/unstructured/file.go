@@ -33,6 +33,10 @@ type RawFileMetadata struct {
 	UID      string `json:"uid,omitempty"`
 }
 
+type ArtifactProcessor interface {
+	GetFileSuffix() string
+}
+
 func GetMetadataFilePath(rawFilePath string) string {
 	return rawFilePath + MetadataFileSuffix
 }

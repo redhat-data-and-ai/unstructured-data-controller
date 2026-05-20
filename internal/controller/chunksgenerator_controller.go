@@ -50,6 +50,13 @@ type ChunksGeneratorReconciler struct {
 	fileStore *filestore.FileStore
 }
 
+// ChunksGenerator handles document chunks
+type ChunksGenerator struct{}
+
+func (ChunksGenerator) GetFileSuffix() string {
+	return unstructured.ChunksFileSuffix
+}
+
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators/finalizers,verbs=update

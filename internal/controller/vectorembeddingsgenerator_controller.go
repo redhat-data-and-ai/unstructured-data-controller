@@ -48,6 +48,13 @@ type VectorEmbeddingsGeneratorReconciler struct {
 	fileStore *filestore.FileStore
 }
 
+// VectorEmbeddings handles vector embeddings
+type VectorEmbeddings struct{}
+
+func (VectorEmbeddings) GetFileSuffix() string {
+	return unstructured.VectorEmbeddingsFileSuffix
+}
+
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators/finalizers,verbs=update
