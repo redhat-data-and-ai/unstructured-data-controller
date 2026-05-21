@@ -179,7 +179,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// wait for SQSInformer CR to be ready
-			if err := operatorUtils.WaitForResourceReady(v1alpha1.SQSInformerCondition, "SQSInformers.operator.dataverse.redhat.com", "test-sqs-informer", testNamespace); err != nil {
+			if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.SQSInformerCondition, "SQSInformers.operator.dataverse.redhat.com", "test-sqs-informer", testNamespace); err != nil {
 				t.Error(err)
 			}
 
@@ -208,7 +208,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 			// wait for unstructured data pipeline CR to be healthy
 			t.Log("wait for unstructured data pipeline CR to be healthy")
-			if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+			if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 				t.Error(err)
 			}
 			t.Log("unstructured data pipeline CR is healthy")
@@ -541,32 +541,32 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		t.Log("Successfully updated the docling config in the unstructured data pipeline CR")
 
 		// wait for the unstructured data pipeline CR to be ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 
 		t.Log("UnstructuredDataPipeline successfully reconciled")
 
 		// wait for the document processor to be ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 
 		t.Log("DocumentProcessor successfully reconciled")
 
 		// wait until the chunksgenerator CR is ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("ChunksGenerator successfully reconciled")
 
 		// wait for the vector embeddings generator to be ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("VectorEmbeddingsGenerator successfully reconciled")
 
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("UnstructuredDataPipeline successfully reconciled, now files are up to date in the internal stage")
@@ -670,31 +670,31 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		t.Log("Successfully updated the chunking config in the unstructured data pipeline CR")
 
 		// wait until the unstructured data pipeline CR is ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("UnstructuredDataPipeline successfully reconciled")
 
 		// wait for the document processor to be ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("DocumentProcessor successfully reconciled")
 
 		// wait for the chunks generator to be ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("ChunksGenerator successfully reconciled")
 
 		// wait for the vector embeddings generator to be ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("VectorEmbeddingsGenerator successfully reconciled")
 
 		// now fetch unstructured data pipeline CR and wait until it is ready
-		if err := operatorUtils.WaitForResourceReady(v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
 			t.Error(err)
 		}
 		t.Log("UnstructuredDataPipeline successfully reconciled, now files are up to date in the internal stage")

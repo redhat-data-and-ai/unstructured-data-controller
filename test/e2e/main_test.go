@@ -117,7 +117,7 @@ func TestMain(m *testing.M) {
 	os.Exit(testenv.Run(m))
 }
 
-func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.Config) error {
+func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envconf.Config) error {
 	// change dir for Makefile or it will fail
 	if err := os.Chdir("../../"); err != nil {
 		log.Printf("Unable to set working directory: %s", err)
@@ -131,21 +131,21 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 
 	log.Println("Install CRDs ...")
 	installCRDCommand := "make install"
-	if p := utils.RunCommand(installCRDCommand); p.Err() != nil {
+	if p := utils.RunCommandContext(ctx, installCRDCommand); p.Err() != nil {
 		log.Printf("Failed to install CRDs: %s", p.Err())
 		return p.Err()
 	}
 
 	log.Println("Deploying operator with CRDs installed...")
 	deployCommand := fmt.Sprintf("make IMG=%s deploy", image)
-	if p := utils.RunCommand(deployCommand); p.Err() != nil {
+	if p := utils.RunCommandContext(ctx, deployCommand); p.Err() != nil {
 		log.Printf("Failed to deploy operator: %s", p.Err())
 		return p.Err()
 	}
 
 	log.Println("Verifying deployment exists...")
 	checkCmd := fmt.Sprintf("kubectl get deployment %s -n %s", deploymentName, testNamespace)
-	if p := utils.RunCommand(checkCmd); p.Err() != nil {
+	if p := utils.RunCommandContext(ctx, checkCmd); p.Err() != nil {
 		log.Printf("Deployment not found: %s", p.Err())
 		return p.Err()
 	}
@@ -166,7 +166,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 	log.Println("Creating consolidated unstructured secret")
 
 	envsubstCmd := fmt.Sprintf("sh -c 'envsubst < test/resources/unstructured/unstructured-secret.yaml | kubectl apply -n %s -f -'", testNamespace)
-	if p := utils.RunCommand(envsubstCmd); p.Err() != nil {
+	if p := utils.RunCommandContext(ctx, envsubstCmd); p.Err() != nil {
 		log.Printf("Failed to substitute unstructured secret")
 		return fmt.Errorf("secret substitution failed")
 	}
@@ -176,12 +176,12 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 	skipLocalstack := os.Getenv("SKIP_LOCALSTACK_SETUP")
 	if skipLocalstack != "true" {
 		log.Println("Deploying localstack...")
-		if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f test/localstack/", testNamespace)); p.Err() != nil {
+		if p := utils.RunCommandContext(ctx, fmt.Sprintf("kubectl apply -n %s -f test/localstack/", testNamespace)); p.Err() != nil {
 			log.Printf("Failed to deploy localstack: %s", p.Err())
 			return p.Err()
 		}
 		log.Println("Checking localstack deployment status...")
-		utils.RunCommand(fmt.Sprintf("kubectl get pods -n %s -l app=localstack", testNamespace))
+		utils.RunCommandContext(ctx, fmt.Sprintf("kubectl get pods -n %s -l app=localstack", testNamespace))
 		log.Println("Waiting for localstack to be ready...")
 		if err := wait.For(
 			conditions.New(client.Resources()).DeploymentAvailable("localstack", testNamespace),
@@ -205,7 +205,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 	skipDocling := os.Getenv("SKIP_DOCLING_SETUP")
 	if skipDocling != "true" {
 		log.Println("Deploying docling-serve...")
-		if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f test/docling-serve/", testNamespace)); p.Err() != nil {
+		if p := utils.RunCommandContext(ctx, fmt.Sprintf("kubectl apply -n %s -f test/docling-serve/", testNamespace)); p.Err() != nil {
 			log.Printf("Failed to deploy docling-serve: %s", p.Err())
 			return p.Err()
 		}
@@ -232,14 +232,14 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 	skipOllama := os.Getenv("SKIP_OLLAMA_SETUP")
 	if skipOllama != "true" {
 		log.Println("Deploying Ollama embedding service...")
-		if p := utils.RunCommand(fmt.Sprintf("kubectl apply -n %s -f test/ollama-embedding/", testNamespace)); p.Err() != nil {
+		if p := utils.RunCommandContext(ctx, fmt.Sprintf("kubectl apply -n %s -f test/ollama-embedding/", testNamespace)); p.Err() != nil {
 			log.Printf("Failed to deploy ollama-embedding: %s", p.Err())
 			return p.Err()
 		}
 		log.Println("Waiting for Ollama to be ready...")
 		if err := wait.For(
 			conditions.New(client.Resources()).DeploymentAvailable("ollama-embedding", testNamespace),
-			wait.WithTimeout(10*time.Minute),
+			wait.WithTimeout(20*time.Minute),
 			wait.WithInterval(5*time.Second),
 		); err != nil {
 			log.Printf("Timed out waiting for ollama-embedding: %s", err)
@@ -251,16 +251,16 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 			"kubectl get pods -n %s -l app=ollama-embedding -o jsonpath='{.items[0].metadata.name}'",
 			testNamespace,
 		)
-		p := utils.RunCommand(cmd)
+		p := utils.RunCommandContext(ctx, cmd)
 		if p.Err() != nil {
 			return fmt.Errorf("failed to get pod name: %v", p.Err())
 		}
 		podName := strings.Trim(p.Result(), "'")
 		log.Printf("Successfully retrieved Ollama pod name: %s", podName)
 
-		// Pull model with 10-minute timeout
+		// Pull model with 20-minute timeout
 		log.Println("Pulling nomic-embed-text model (this may take several minutes)...")
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 		defer cancel()
 
 		pullCmd := exec.CommandContext(ctx, "kubectl", "exec", "-n", testNamespace, podName, "--", "ollama", "pull", "nomic-embed-text:latest")
@@ -280,7 +280,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 
 	// get ControllerConfig from utils/utils_function.go
 	controllerConfig := operatorUtils.GetControllerConfigResource()
-	if err := config.Client().Resources().Create(context.Background(), controllerConfig); err != nil {
+	if err := config.Client().Resources().Create(ctx, controllerConfig); err != nil {
 		log.Printf("failed to apply ControllerConfig: %s", err)
 		return err
 	}
@@ -295,7 +295,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 		"kubectl wait --for=condition=ConfigReady=true controllerconfigs.operator.dataverse.redhat.com/controllerconfig -n %s --timeout=2m",
 		testNamespace,
 	)
-	if p := utils.RunCommand(configWaitCmd); p.Err() != nil {
+	if p := utils.RunCommandContext(ctx, configWaitCmd); p.Err() != nil {
 		log.Printf("failed to meet condition for ControllerConfig: %s", p.Err())
 		return p.Err()
 	}
@@ -303,7 +303,7 @@ func testSetup(_ context.Context, runningProcesses *[]exec.Cmd, config *envconf.
 	return nil
 }
 
-func testCleanup(_ context.Context, _ *envconf.Config, runningProcesses *[]exec.Cmd) error {
+func testCleanup(ctx context.Context, _ *envconf.Config, runningProcesses *[]exec.Cmd) error {
 	log.Println("cleaning up test environment ...")
 	errorList := []error{}
 
@@ -317,7 +317,7 @@ func testCleanup(_ context.Context, _ *envconf.Config, runningProcesses *[]exec.
 		"make uninstall",
 	}
 	for _, command := range commandList {
-		if p := utils.RunCommand(command); p.Err() != nil {
+		if p := utils.RunCommandContext(ctx, command); p.Err() != nil {
 			errorList = append(errorList, fmt.Errorf("failed to run command: %s: %s", command, p.Err()))
 		}
 	}

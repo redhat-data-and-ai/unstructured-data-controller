@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -146,9 +147,10 @@ func GetUnstructuredDataPipelineResourceWithStage(name, namespace, stageName str
 }
 
 // helper function for kubectl wait for a resource to be ready
-func WaitForResourceReady(condition, crdName, resourceName, namespace string) error {
-	p := utils.RunCommand(fmt.Sprintf("kubectl wait --for=condition=%s %s %s -n %s --timeout=10m",
-		condition, crdName, resourceName, namespace))
+func WaitForResourceReady(ctx context.Context, condition, crdName, resourceName, namespace string) error {
+	cmd := fmt.Sprintf("kubectl wait --for=condition=%s %s %s -n %s --timeout=10m",
+		condition, crdName, resourceName, namespace)
+	p := utils.RunCommandContext(ctx, cmd)
 	if p.Err() != nil {
 		return p.Err()
 	}
