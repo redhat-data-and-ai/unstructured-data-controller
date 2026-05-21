@@ -15,9 +15,9 @@ require (
 	github.com/imdario/mergo v0.3.16
 	github.com/snowflakedb/gosnowflake v1.19.1
 	golang.org/x/sync v0.20.0
-	k8s.io/api v0.35.3
-	k8s.io/apimachinery v0.35.3
-	k8s.io/client-go v0.35.3
+	k8s.io/api v0.35.5
+	k8s.io/apimachinery v0.35.5
+	k8s.io/client-go v0.35.5
 	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/e2e-framework v0.7.0
 )
