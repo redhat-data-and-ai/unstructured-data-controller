@@ -11,6 +11,9 @@ updates:
       go-k8s-dependencies:
         patterns:
           - "k8s.io/*"
+      aws-dependencies:
+        patterns:
+          - "github.com/aws/*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
