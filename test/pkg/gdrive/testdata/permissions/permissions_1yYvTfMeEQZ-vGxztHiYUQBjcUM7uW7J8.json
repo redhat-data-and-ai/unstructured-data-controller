@@ -1,0 +1,14 @@
+[
+  {
+    "type": "user",
+    "role": "owner",
+    "uid": "vinjain",
+    "domain": ""
+  },
+  {
+    "type": "user",
+    "role": "writer",
+    "uid": "shmingla",
+    "domain": ""
+  }
+]

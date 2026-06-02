@@ -1,0 +1,18 @@
+[
+  {
+    "uid": "vinjain",
+    "cn": "Vinamra Jain",
+    "sn": "Jain",
+    "givenName": "Vinamra",
+    "mail": "vinjain@redhat.com",
+    "password": "testpass"
+  },
+  {
+    "uid": "shmingla",
+    "cn": "Shubham Minglani",
+    "sn": "Minglani",
+    "givenName": "Shubham",
+    "mail": "shmingla@redhat.com",
+    "password": "testpass"
+  }
+]
