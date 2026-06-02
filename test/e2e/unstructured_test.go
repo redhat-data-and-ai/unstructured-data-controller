@@ -39,15 +39,44 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 	operatorUtils "github.com/redhat-data-and-ai/unstructured-data-controller/test/utils"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apimachinerywait "k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
+
+func updateArtifactsAndWaitReady(ctx context.Context, t *testing.T, kubeClient klient.Client, dataProductCRName string, artifacts []v1alpha1.ArtifactConfig) {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		unstructuredDataPipelineCR := &v1alpha1.UnstructuredDataPipeline{}
+		if err := kubeClient.Resources().Get(ctx, dataProductCRName, testNamespace, unstructuredDataPipelineCR); err != nil {
+			return err
+		}
+		unstructuredDataPipelineCR.Spec.DestinationConfig.Artifacts = artifacts
+		return kubeClient.Resources().WithNamespace(testNamespace).Update(ctx, unstructuredDataPipelineCR)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("updated destination artifacts for selective sync: %+v", artifacts)
+
+	if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.UnstructuredDataPipelineCondition, "unstructureddatapipelines.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		t.Fatal(err)
+	}
+	if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		t.Fatal(err)
+	}
+	if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.ChunksGeneratorCondition, "chunksgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		t.Fatal(err)
+	}
+	if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.VectorEmbeddingGenerationConditionType, "vectorembeddingsgenerators.operator.dataverse.redhat.com", dataProductCRName, testNamespace); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestUnstructuredDataLoad(t *testing.T) {
 	feature := features.New("Unstructured Data Load")
@@ -735,6 +764,348 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 		t.Log("Successfully verified the updation of chunking config for the files in the stage")
 
+		return ctx
+	})
+
+	feature.Assess("Will sync only selected chunks artifacts to destination", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		updateArtifactsAndWaitReady(ctx, t, kubeClient, dataProductCRName, []v1alpha1.ArtifactConfig{
+			{
+				Type: "stage",
+				Name: "chunksGeneratorConfig",
+				Path: "chunks",
+			},
+		})
+		expectedPathBySuffix := map[string]string{
+			unstructured.ChunksFileSuffix: "/stages/chunks/",
+		}
+		excludedArtifactsSuffixes := []string{
+			unstructured.ConvertedFileSuffix,
+			unstructured.VectorEmbeddingsFileSuffix,
+		}
+		type stageFile struct {
+			FileName string `db:"file_name"`
+		}
+		stageFileQuery := fmt.Sprintf("SELECT METADATA$FILENAME AS \"file_name\" FROM @%s.%s.%s", databaseName, schemaName, internalStageName)
+		t.Log("validating selective sync (chunks-only): expecting chunks under /stages/chunks/ and excluding converted/vector artifacts")
+
+		if err := apimachinerywait.PollUntilContextTimeout(
+			context.Background(),
+			5*time.Second,
+			10*time.Minute,
+			false,
+			func(ctx context.Context) (done bool, err error) {
+				rows := []stageFile{}
+				if err := sfClient.QueryTableUsingRole(
+					ctx,
+					stageFileQuery,
+					operatorControllerConfig.Spec.SnowflakeConfig.Warehouse,
+					operatorControllerConfig.Spec.SnowflakeConfig.Role,
+					&rows,
+				); err != nil {
+					t.Logf("stage query failed, retrying: %v", err)
+					return false, nil
+				}
+				t.Logf("stage files observed in this poll: %d", len(rows))
+
+				matchedExpectedSuffixes := map[string]bool{}
+
+				for _, row := range rows {
+					normalizedPath := strings.TrimSuffix(row.FileName, ".gz")
+
+					for _, excludedSuffix := range excludedArtifactsSuffixes {
+						if strings.HasSuffix(normalizedPath, excludedSuffix) {
+							t.Logf("excluded artifact found in destination: %s", normalizedPath)
+							return false, nil
+						}
+					}
+
+					for suffix, expectedPathSegment := range expectedPathBySuffix {
+						if !strings.HasSuffix(normalizedPath, suffix) {
+							continue
+						}
+						if !strings.Contains(normalizedPath, expectedPathSegment) {
+							t.Logf("artifact found in unexpected path: %s (expected to contain: %s)", normalizedPath, expectedPathSegment)
+							return false, nil
+						}
+						matchedExpectedSuffixes[suffix] = true
+					}
+				}
+
+				for expectedSuffix := range expectedPathBySuffix {
+					if !matchedExpectedSuffixes[expectedSuffix] {
+						t.Logf("expected artifact not found yet for suffix: %s", expectedSuffix)
+						return false, nil
+					}
+				}
+				t.Log("validated selective sync (chunks-only): chunks artifacts found under /stages/chunks/ and converted/vector artifacts excluded")
+				return true, nil
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	})
+
+	feature.Assess("Will sync multiple selected artifacts (converted and embeddings) and exclude chunks", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		updateArtifactsAndWaitReady(ctx, t, kubeClient, dataProductCRName, []v1alpha1.ArtifactConfig{
+			{
+				Type: "stage",
+				Name: "documentProcessorConfig",
+				Path: "processed-documents",
+			},
+			{
+				Type: "stage",
+				Name: "vectorEmbeddingsGeneratorConfig",
+				Path: "vector-embeddings",
+			},
+		})
+		expectedPathBySuffix := map[string]string{
+			unstructured.ConvertedFileSuffix:        "/stages/processed-documents/",
+			unstructured.VectorEmbeddingsFileSuffix: "/stages/vector-embeddings/",
+		}
+		excludedArtifactsSuffixes := []string{
+			unstructured.ChunksFileSuffix,
+		}
+		type stageFile struct {
+			FileName string `db:"file_name"`
+		}
+		stageFileQuery := fmt.Sprintf("SELECT METADATA$FILENAME AS \"file_name\" FROM @%s.%s.%s", databaseName, schemaName, internalStageName)
+		t.Log("validating selective sync (converted+embeddings): expecting converted under /stages/processed-documents/, embeddings under /stages/vector-embeddings/, and excluding chunks")
+
+		if err := apimachinerywait.PollUntilContextTimeout(
+			context.Background(),
+			5*time.Second,
+			10*time.Minute,
+			false,
+			func(ctx context.Context) (done bool, err error) {
+				rows := []stageFile{}
+				if err := sfClient.QueryTableUsingRole(
+					ctx,
+					stageFileQuery,
+					operatorControllerConfig.Spec.SnowflakeConfig.Warehouse,
+					operatorControllerConfig.Spec.SnowflakeConfig.Role,
+					&rows,
+				); err != nil {
+					t.Logf("stage query failed, retrying: %v", err)
+					return false, nil
+				}
+				t.Logf("stage files observed in this poll: %d", len(rows))
+
+				matchedExpectedSuffixes := map[string]bool{}
+
+				for _, row := range rows {
+					normalizedPath := strings.TrimSuffix(row.FileName, ".gz")
+
+					isKnownArtifact := strings.HasSuffix(normalizedPath, unstructured.ChunksFileSuffix) ||
+						strings.HasSuffix(normalizedPath, unstructured.ConvertedFileSuffix) ||
+						strings.HasSuffix(normalizedPath, unstructured.VectorEmbeddingsFileSuffix)
+					if !isKnownArtifact {
+						continue
+					}
+
+					for _, excludedSuffix := range excludedArtifactsSuffixes {
+						if strings.HasSuffix(normalizedPath, excludedSuffix) {
+							t.Logf("excluded artifact found in destination: %s", normalizedPath)
+							return false, nil
+						}
+					}
+
+					for suffix, expectedPathSegment := range expectedPathBySuffix {
+						if !strings.HasSuffix(normalizedPath, suffix) {
+							continue
+						}
+						if !strings.Contains(normalizedPath, expectedPathSegment) {
+							t.Logf("artifact found in unexpected path: %s (expected to contain: %s)", normalizedPath, expectedPathSegment)
+							return false, nil
+						}
+						matchedExpectedSuffixes[suffix] = true
+					}
+				}
+
+				for expectedSuffix := range expectedPathBySuffix {
+					if !matchedExpectedSuffixes[expectedSuffix] {
+						t.Logf("expected artifact not found yet for suffix: %s", expectedSuffix)
+						return false, nil
+					}
+				}
+				t.Log("validated selective sync (converted+embeddings): converted and vector artifacts found in expected paths and chunks artifacts excluded")
+				return true, nil
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	})
+
+	feature.Assess("Will sync artifacts to a custom destination path override", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		updateArtifactsAndWaitReady(ctx, t, kubeClient, dataProductCRName, []v1alpha1.ArtifactConfig{
+			{
+				Type: "stage",
+				Name: "documentProcessorConfig",
+				Path: "custom-processed-artifacts",
+			},
+		})
+		expectedPathBySuffix := map[string]string{
+			unstructured.ConvertedFileSuffix: "/stages/custom-processed-artifacts/",
+		}
+		excludedArtifactsSuffixes := []string{
+			unstructured.ChunksFileSuffix,
+			unstructured.VectorEmbeddingsFileSuffix,
+		}
+		type stageFile struct {
+			FileName string `db:"file_name"`
+		}
+		stageFileQuery := fmt.Sprintf("SELECT METADATA$FILENAME AS \"file_name\" FROM @%s.%s.%s", databaseName, schemaName, internalStageName)
+		t.Log("validating selective sync (custom path): expecting converted artifacts under /stages/custom-processed-artifacts/ and excluding chunks/vector artifacts")
+
+		if err := apimachinerywait.PollUntilContextTimeout(
+			context.Background(),
+			5*time.Second,
+			10*time.Minute,
+			false,
+			func(ctx context.Context) (done bool, err error) {
+				rows := []stageFile{}
+				if err := sfClient.QueryTableUsingRole(
+					ctx,
+					stageFileQuery,
+					operatorControllerConfig.Spec.SnowflakeConfig.Warehouse,
+					operatorControllerConfig.Spec.SnowflakeConfig.Role,
+					&rows,
+				); err != nil {
+					t.Logf("stage query failed, retrying: %v", err)
+					return false, nil
+				}
+				t.Logf("stage files observed in this poll: %d", len(rows))
+
+				matchedExpectedSuffixes := map[string]bool{}
+
+				for _, row := range rows {
+					normalizedPath := strings.TrimSuffix(row.FileName, ".gz")
+
+					isKnownArtifact := strings.HasSuffix(normalizedPath, unstructured.ChunksFileSuffix) ||
+						strings.HasSuffix(normalizedPath, unstructured.ConvertedFileSuffix) ||
+						strings.HasSuffix(normalizedPath, unstructured.VectorEmbeddingsFileSuffix)
+					if !isKnownArtifact {
+						continue
+					}
+
+					for _, excludedSuffix := range excludedArtifactsSuffixes {
+						if strings.HasSuffix(normalizedPath, excludedSuffix) {
+							t.Logf("excluded artifact found in destination: %s", normalizedPath)
+							return false, nil
+						}
+					}
+
+					for suffix, expectedPathSegment := range expectedPathBySuffix {
+						if !strings.HasSuffix(normalizedPath, suffix) {
+							continue
+						}
+						if !strings.Contains(normalizedPath, expectedPathSegment) {
+							t.Logf("artifact found in unexpected path: %s (expected to contain: %s)", normalizedPath, expectedPathSegment)
+							return false, nil
+						}
+						matchedExpectedSuffixes[suffix] = true
+					}
+				}
+
+				for expectedSuffix := range expectedPathBySuffix {
+					if !matchedExpectedSuffixes[expectedSuffix] {
+						t.Logf("expected artifact not found yet for suffix: %s", expectedSuffix)
+						return false, nil
+					}
+				}
+				t.Log("validated selective sync (custom path): converted artifacts found under /stages/custom-processed-artifacts/ and non-selected artifacts excluded")
+				return true, nil
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	})
+
+	feature.Assess("Will use default artifact path when destination path is omitted", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		updateArtifactsAndWaitReady(ctx, t, kubeClient, dataProductCRName, []v1alpha1.ArtifactConfig{
+			{
+				Type: "stage",
+				Name: "vectorEmbeddingsGeneratorConfig",
+				Path: "",
+			},
+		})
+		expectedPathBySuffix := map[string]string{
+			unstructured.VectorEmbeddingsFileSuffix: "/stages/" + unstructured.DefaultVectorEmbeddingsPath + "/",
+		}
+		excludedArtifactsSuffixes := []string{
+			unstructured.ConvertedFileSuffix,
+			unstructured.ChunksFileSuffix,
+		}
+		type stageFile struct {
+			FileName string `db:"file_name"`
+		}
+		stageFileQuery := fmt.Sprintf("SELECT METADATA$FILENAME AS \"file_name\" FROM @%s.%s.%s", databaseName, schemaName, internalStageName)
+		t.Logf("validating selective sync (default path fallback): expecting vector artifacts under /stages/%s/ and excluding converted/chunks artifacts", unstructured.DefaultVectorEmbeddingsPath)
+
+		if err := apimachinerywait.PollUntilContextTimeout(
+			context.Background(),
+			5*time.Second,
+			10*time.Minute,
+			false,
+			func(ctx context.Context) (done bool, err error) {
+				rows := []stageFile{}
+				if err := sfClient.QueryTableUsingRole(
+					ctx,
+					stageFileQuery,
+					operatorControllerConfig.Spec.SnowflakeConfig.Warehouse,
+					operatorControllerConfig.Spec.SnowflakeConfig.Role,
+					&rows,
+				); err != nil {
+					t.Logf("stage query failed, retrying: %v", err)
+					return false, nil
+				}
+				t.Logf("stage files observed in this poll: %d", len(rows))
+
+				matchedExpectedSuffixes := map[string]bool{}
+
+				for _, row := range rows {
+					normalizedPath := strings.TrimSuffix(row.FileName, ".gz")
+
+					isKnownArtifact := strings.HasSuffix(normalizedPath, unstructured.ChunksFileSuffix) ||
+						strings.HasSuffix(normalizedPath, unstructured.ConvertedFileSuffix) ||
+						strings.HasSuffix(normalizedPath, unstructured.VectorEmbeddingsFileSuffix)
+					if !isKnownArtifact {
+						continue
+					}
+
+					for _, excludedSuffix := range excludedArtifactsSuffixes {
+						if strings.HasSuffix(normalizedPath, excludedSuffix) {
+							t.Logf("excluded artifact found in destination: %s", normalizedPath)
+							return false, nil
+						}
+					}
+
+					for suffix, expectedPathSegment := range expectedPathBySuffix {
+						if !strings.HasSuffix(normalizedPath, suffix) {
+							continue
+						}
+						if !strings.Contains(normalizedPath, expectedPathSegment) {
+							t.Logf("artifact found in unexpected path: %s (expected to contain: %s)", normalizedPath, expectedPathSegment)
+							return false, nil
+						}
+						matchedExpectedSuffixes[suffix] = true
+					}
+				}
+
+				for expectedSuffix := range expectedPathBySuffix {
+					if !matchedExpectedSuffixes[expectedSuffix] {
+						t.Logf("expected artifact not found yet for suffix: %s", expectedSuffix)
+						return false, nil
+					}
+				}
+				t.Logf("validated selective sync (default path fallback): vector artifacts found under /stages/%s/ and non-selected artifacts excluded", unstructured.DefaultVectorEmbeddingsPath)
+				return true, nil
+			},
+		); err != nil {
+			t.Fatal(err)
+		}
 		return ctx
 	})
 
