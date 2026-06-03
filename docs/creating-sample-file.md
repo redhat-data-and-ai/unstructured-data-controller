@@ -5,10 +5,13 @@ Simple guide to get the first file processed by unstructured controller
 ## What It Does
 
 The controller automatically processes unstructured files from S3:
-1. **Reads files** from S3 bucket
+
+1. **Reads files** from the ingestion S3 bucket
 2. **Converts** them to Markdown using Docling
-3. **Chunks** the content for better processing
-4. **Stores** the results in Snowflake
+3. **Chunks** the content and optionally generates **vector embeddings**
+4. **Syncs selected artifacts** to a destination — Snowflake internal stage or S3
+
+Only artifacts listed under `destinationConfig.artifacts` are uploaded. Each artifact maps to a processing stage and is stored under `{dataProduct}/stages/{path}/` on the destination.
 
 ---
 
@@ -44,9 +47,10 @@ GRANT READ, WRITE ON STAGE TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG T
 GRANT ROLE TESTING_ROLE TO USER SNOWFLAKE_USER;
 ```
 
-### 4. Create Unstructured Data Pipeline
+### 2. Create Unstructured Data Pipeline
 
 **Apply UnstructuredDataPipeline:**
+
 ```bash
 kubectl apply -f config/samples/operator_v1alpha1_unstructureddatapipeline.yaml -n unstructured-controller-namespace
 ```
@@ -64,8 +68,8 @@ aws s3 cp test.pdf s3://data-ingestion-bucket/testunstructureddataproduct/
 # The controller will automatically:
 # 1. Download the file
 # 2. Convert it to Markdown
-# 3. Chunk the content
-# 4. Upload to Snowflake
+# 3. Chunk the content (and generate embeddings if configured)
+# 4. Sync configured artifacts to the destination
 ```
 
 ### Check Results in Snowflake
@@ -77,9 +81,9 @@ USE ROLE TESTING_ROLE;
 -- List files in stage
 LIST @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG;
 
--- View processed data
+-- Example: read a chunks artifact (path depends on your artifacts config)
 SELECT $1 AS data
-FROM @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG
+FROM @TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG/testunstructureddataproduct/stages/chunks/
 LIMIT 1;
 ```
 
@@ -94,6 +98,9 @@ kubectl get documentprocessor -n unstructured-controller-namespace
 
 # Check ChunksGenerator status
 kubectl get chunksgenerator -n unstructured-controller-namespace
+
+# Check VectorEmbeddingsGenerator status (if configured)
+kubectl get vectorembeddingsgenerator -n unstructured-controller-namespace
 
 # View controller logs
 kubectl logs -f deployment/unstructured-data-controller -n unstructured-controller-namespace
@@ -132,29 +139,78 @@ spec:
       chunkSize: 1000
       chunkOverlap: 200
 
-  # Where to store results
+  # Optional: vector embeddings
+  vectorEmbeddingsGeneratorConfig:
+    modelName: nomic-ai/nomic-embed-text-v1.5
+    nomicEmbedTextV15Config:
+      encodingformat: float
+
+  # Where to store results (Snowflake or S3)
   destinationConfig:
     type: snowflakeInternalStage
+    # Required: which processing outputs to sync
+    artifacts:
+      - type: stage
+        name: documentProcessorConfig
+        path: processed-documents   # optional; see defaults below
+      - type: stage
+        name: chunksGeneratorConfig
+        path: chunks
+      - type: stage
+        name: vectorEmbeddingsGeneratorConfig
+        path: vector-embeddings
     snowflakeInternalStageConfig:
       database: TESTING_DB
       schema: TESTINGSCHEMA
       stage: TESTINGSCHEMA_INTERNAL_STG
 ```
 
+### Destination artifacts
+
+`destinationConfig.artifacts` is **required** (at least one entry). Each entry selects a processing stage to sync:
+
+| `name` | File suffix | Default `path` (if omitted) |
+|--------|-------------|-----------------------------|
+| `documentProcessorConfig` | `-converted.json` | `processed-documents` |
+| `chunksGeneratorConfig` | `-chunks.json` | `chunks` |
+| `vectorEmbeddingsGeneratorConfig` | `-vector-embeddings.json` | `vector-embeddings` |
+
+Set `path` to override the folder under `stages/` on the destination. Unknown `name` values are skipped.
+
+You can list only the artifacts you need — for example, chunks only:
+
+```yaml
+destinationConfig:
+  type: snowflakeInternalStage
+  artifacts:
+    - type: stage
+      name: chunksGeneratorConfig
+      path: chunks
+  snowflakeInternalStageConfig:
+    database: TESTING_DB
+    schema: TESTINGSCHEMA
+    stage: TESTINGSCHEMA_INTERNAL_STG
+```
+
+### S3 destination
+
+To write artifacts to S3 instead of Snowflake, set `type: s3` and `s3DestinationConfig`. The controller uses destination AWS credentials from the unstructured secret (`DESTINATION_AWS_*` keys). See [setup guide](setup-unstructured-controller.md) for bucket and credential configuration.
+
+Replace `destinationConfig` in the sample (do not set both Snowflake and S3 `type` at once):
+
+```yaml
+destinationConfig:
+  type: s3
+  artifacts:
+    - type: stage
+      name: chunksGeneratorConfig
+      path: chunks
+  s3DestinationConfig:
+    bucket: output-chunks-bucket
+    prefix: testunstructureddataproduct   # optional; defaults to CR name
+```
+
+Object keys use `{prefix}/stages/{path}/{filename}`.
+
 ---
-
-## Expected Output
-
-After processing, each file produces:
-
-1. **Local Cache** (`tmp/cache/testunstructureddataproduct/`):
-   - `file.pdf` - Original file
-   - `file.pdf-metadata.json` - File metadata
-   - `file.pdf-converted.json` - Converted Markdown
-   - `file.pdf-chunks.json` - Chunked content
-
-2. **Snowflake Stage** (`TESTING_DB.TESTINGSCHEMA.TESTINGSCHEMA_INTERNAL_STG`):
-   - `testunstructureddataproduct/file.pdf-chunks.json` - Complete processed file with:
-     - `convertedDocument`: Original conversion with metadata
-     - `chunksDocument`: Chunked text ready for processing
 
