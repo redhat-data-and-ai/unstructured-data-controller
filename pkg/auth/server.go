@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 )
 
@@ -66,6 +67,7 @@ func (s *OAuthServer) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	var req struct {
 		RedirectURIs            []string `json:"redirect_uris"`
 		GrantTypes              []string `json:"grant_types"`
@@ -317,12 +319,7 @@ func (s *OAuthServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 }
 
 func isValidRedirectURI(client *OAuthClient, uri string) bool {
-	for _, u := range client.RedirectURIs {
-		if u == uri {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(client.RedirectURIs, uri)
 }
 
 func safePrefix(s string, n int) string {

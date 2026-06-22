@@ -93,15 +93,43 @@ type Middleware struct {
 	logger   *slog.Logger
 	cache    sync.Map
 	cacheTTL time.Duration
+	done     chan struct{}
 }
 
 // NewMiddleware creates a new OAuth middleware that validates tokens
 // by delegating introspection to the given Provider.
 func NewMiddleware(provider Provider, logger *slog.Logger) *Middleware {
-	return &Middleware{
+	m := &Middleware{
 		provider: provider,
 		logger:   logger,
 		cacheTTL: 5 * time.Minute,
+		done:     make(chan struct{}),
+	}
+	go m.cleanupLoop()
+	return m
+}
+
+// Close stops the background cache cleanup goroutine.
+func (m *Middleware) Close() {
+	close(m.done)
+}
+
+func (m *Middleware) cleanupLoop() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			m.cache.Range(func(key, value any) bool {
+				if entry, ok := value.(*tokenCacheEntry); ok && now.After(entry.expiresAt) {
+					m.cache.Delete(key)
+				}
+				return true
+			})
+		}
 	}
 }
 
@@ -178,10 +206,6 @@ func (*Middleware) ProtectedResourceMetadataHandler() http.HandlerFunc {
 			"bearer_methods_supported": []string{"header"},
 			"scopes_supported":         []string{},
 			"registration_endpoint":    baseURL + "/auth/register",
-			"introspection_endpoint":   baseURL + "/auth/introspect",
-			"introspection_endpoint_auth_methods_supported": []string{
-				"client_secret_basic", "client_secret_post", "none",
-			},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(metadata)
@@ -198,8 +222,6 @@ func (*Middleware) MetadataHandler() http.HandlerFunc {
 			"authorization_endpoint":                baseURL + "/auth/authorize",
 			"token_endpoint":                        baseURL + "/auth/token",
 			"registration_endpoint":                 baseURL + "/auth/register",
-			"introspection_endpoint":                baseURL + "/auth/introspect",
-			"revocation_endpoint":                   baseURL + "/auth/revoke",
 			"response_types_supported":              []string{"code"},
 			"response_modes_supported":              []string{"query"},
 			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},

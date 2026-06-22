@@ -105,10 +105,10 @@ func (s *OAuthStore) GetCode(code string) (*AuthorizationCode, bool) {
 	return ac, ok
 }
 
-// ConsumeCode retrieves and marks an authorization code as used (single-use).
+// ConsumeCode atomically retrieves and removes an authorization code (single-use).
 // Returns nil if the code is invalid, expired, or already consumed.
 func (s *OAuthStore) ConsumeCode(code string) (*AuthorizationCode, bool) {
-	val, ok := s.codes.Load(code)
+	val, ok := s.codes.LoadAndDelete(code)
 	if !ok {
 		return nil, false
 	}
@@ -116,11 +116,9 @@ func (s *OAuthStore) ConsumeCode(code string) (*AuthorizationCode, bool) {
 	if !ok {
 		return nil, false
 	}
-	if ac.Used || time.Now().After(ac.ExpiresAt) {
-		s.codes.Delete(code)
+	if time.Now().After(ac.ExpiresAt) {
 		return nil, false
 	}
-	ac.Used = true
 	return ac, true
 }
 

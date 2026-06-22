@@ -118,17 +118,22 @@ func main() {
 	<-ctx.Done()
 	slog.Info("shutting down MCP server")
 
-	// Close all active MCP sessions first — this terminates SSE streams
-	// so http.Server.Shutdown won't block waiting for them to become idle.
-	for session := range mcpServer.Sessions() {
-		_ = session.Close()
-	}
-
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// Close active MCP sessions concurrently — terminates SSE streams so
+	// Shutdown doesn't block. Shutdown is called first to stop accepting
+	// new connections, preventing new sessions from sneaking in.
+	go func() {
+		for session := range mcpServer.Sessions() {
+			_ = session.Close()
+		}
+	}()
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown error", "error", err)
 	}
+	oauthMiddleware.Close()
 	slog.Info("MCP server stopped")
 }
 
