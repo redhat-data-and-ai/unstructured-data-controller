@@ -36,7 +36,6 @@ type OAuthConfig struct {
 	AuthorizationURL string
 	TokenURL         string
 	IntrospectionURL string
-	IssuerHost       string
 	CallbackURL      string
 }
 
@@ -48,7 +47,6 @@ func NewOAuthConfigFromEnv() (*OAuthConfig, error) {
 		AuthorizationURL: os.Getenv("SSO_AUTHORIZATION_URL"),
 		TokenURL:         os.Getenv("SSO_TOKEN_URL"),
 		IntrospectionURL: os.Getenv("SSO_INTROSPECTION_URL"),
-		IssuerHost:       os.Getenv("SSO_ISSUER_HOST"),
 		CallbackURL:      os.Getenv("SSO_CALLBACK_URL"),
 	}
 	return cfg, nil

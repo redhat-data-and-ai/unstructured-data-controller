@@ -20,7 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -106,8 +105,7 @@ func (p *GenericProvider) ExchangeCode(ctx context.Context, code, callbackURL st
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token endpoint returned HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token endpoint returned HTTP %d", resp.StatusCode)
 	}
 
 	var token ExternalToken
@@ -139,8 +137,7 @@ func (p *GenericProvider) RefreshToken(ctx context.Context, refreshToken string)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token refresh returned HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("token refresh returned HTTP %d", resp.StatusCode)
 	}
 
 	var token ExternalToken

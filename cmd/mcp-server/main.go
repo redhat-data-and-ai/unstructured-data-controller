@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -134,6 +135,7 @@ func main() {
 		slog.Error("server shutdown error", "error", err)
 	}
 	oauthMiddleware.Close()
+	oauthStore.Close()
 	slog.Info("MCP server stopped")
 }
 
@@ -144,11 +146,20 @@ type pingArgs struct {
 func registerTools(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ping",
-		Description: "Health check tool that returns pong",
-	}, func(_ context.Context, _ *mcp.CallToolRequest, args pingArgs) (*mcp.CallToolResult, any, error) {
-		text := "pong"
+		Description: "Health check tool that returns pong along with the authenticated user's name",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args pingArgs) (*mcp.CallToolResult, any, error) {
+		user := "unknown"
+		if info, ok := auth.TokenInfoFromContext(ctx); ok {
+			if info.Username != "" {
+				user = info.Username
+			} else if info.Sub != "" {
+				user = info.Sub
+			}
+		}
+
+		text := fmt.Sprintf("pong (user: %s)", user)
 		if args.Message != "" {
-			text = "pong: " + args.Message
+			text = fmt.Sprintf("pong: %s (user: %s)", args.Message, user)
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: text}},

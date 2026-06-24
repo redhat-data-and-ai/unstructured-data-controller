@@ -17,7 +17,6 @@ limitations under the License.
 package auth
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -26,6 +25,9 @@ import (
 	"slices"
 	"time"
 )
+
+// dangerousSchemes are URL schemes that must never be accepted as redirect URIs.
+var dangerousSchemes = []string{"javascript", "data", "blob", "vbscript"}
 
 // OAuthServer implements the OAuth 2.1 Authorization Server endpoints that proxy
 // authentication to an external provider via the Provider interface.
@@ -48,15 +50,6 @@ func NewOAuthServer(provider Provider, callbackURL string, store *OAuthStore, lo
 		store:       store,
 		logger:      logger,
 	}
-}
-
-// callbackState is encoded into the SSO state parameter to carry our context
-// through the external authentication redirect.
-type callbackState struct {
-	AuthCode    string `json:"c"`
-	OrigState   string `json:"s,omitempty"`
-	RedirectURI string `json:"r"`
-	ClientID    string `json:"i"`
 }
 
 // HandleRegister implements Dynamic Client Registration (RFC 7591).
@@ -83,6 +76,15 @@ func (s *OAuthServer) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "redirect_uris is required")
 		return
 	}
+	for _, uriStr := range req.RedirectURIs {
+		u, err := url.Parse(uriStr)
+		if err != nil || !u.IsAbs() || slices.Contains(dangerousSchemes, u.Scheme) {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request",
+				"invalid redirect_uri: must be an absolute URL with a safe scheme")
+			return
+		}
+	}
+
 	if len(req.GrantTypes) == 0 {
 		req.GrantTypes = []string{"authorization_code", "refresh_token"}
 	}
@@ -104,8 +106,9 @@ func (s *OAuthServer) HandleRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleAuthorize implements the Authorization Endpoint (RFC 6749 Section 3.1).
-// Validates the request, generates an authorization code, then redirects to the
-// external provider for user authentication.
+// Validates the request, stores a pending authorization with a CSRF token, then
+// redirects to the external provider for user authentication. The authorization
+// code is only generated after successful authentication in HandleCallback.
 // GET /auth/authorize
 func (s *OAuthServer) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -134,32 +137,20 @@ func (s *OAuthServer) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authCode := generateRandomString(32)
-	s.store.StoreCode(&AuthorizationCode{
-		Code:            authCode,
+	// Store the authorization context keyed by an opaque CSRF token.
+	// The auth code is NOT generated here — it is created post-authentication in HandleCallback.
+	csrfToken := generateRandomString(32)
+	s.store.StorePending(&PendingAuthorization{
+		CSRFToken:       csrfToken,
 		ClientID:        clientID,
 		RedirectURI:     redirectURI,
 		CodeChallenge:   codeChallenge,
 		ChallengeMethod: "S256",
-		State:           q.Get("state"),
+		OrigState:       q.Get("state"),
 		ExpiresAt:       time.Now().Add(10 * time.Minute),
 	})
 
-	// Encode our context into the state parameter passed through the external provider
-	cbState := callbackState{
-		AuthCode:    authCode,
-		OrigState:   q.Get("state"),
-		RedirectURI: redirectURI,
-		ClientID:    clientID,
-	}
-	stateJSON, err := json.Marshal(cbState)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "server_error", "failed to encode state")
-		return
-	}
-	encodedState := base64.RawURLEncoding.EncodeToString(stateJSON)
-
-	authURL, err := s.provider.BuildAuthURL(s.callbackURL, encodedState)
+	authURL, err := s.provider.BuildAuthURL(s.callbackURL, csrfToken)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "server_error", "failed to build authorization URL")
 		return
@@ -170,7 +161,8 @@ func (s *OAuthServer) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleCallback handles the redirect from the external provider after user authentication.
-// It exchanges the provider's authorization code for a token and redirects back to the MCP client.
+// It verifies the CSRF token, exchanges the provider's code for a token, generates an
+// authorization code, and redirects back to the MCP client.
 // GET /auth/callback/oidc
 func (s *OAuthServer) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -187,15 +179,11 @@ func (s *OAuthServer) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encodedState := q.Get("state")
-	stateJSON, err := base64.RawURLEncoding.DecodeString(encodedState)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid state parameter")
-		return
-	}
-	var cbState callbackState
-	if err := json.Unmarshal(stateJSON, &cbState); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "malformed state parameter")
+	// Verify CSRF token and retrieve the pending authorization context.
+	csrfToken := q.Get("state")
+	pending, ok := s.store.ConsumePending(csrfToken)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid or expired state parameter")
 		return
 	}
 
@@ -206,26 +194,31 @@ func (s *OAuthServer) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code, ok := s.store.GetCode(cbState.AuthCode)
-	if !ok {
-		writeJSONError(w, http.StatusBadRequest, "invalid_request", "authorization code expired or not found")
-		return
-	}
-	code.ExternalToken = token
+	// Auth code is generated only AFTER successful authentication — never exposed to SSO.
+	authCode := generateRandomString(32)
+	s.store.StoreCode(&AuthorizationCode{
+		Code:            authCode,
+		ClientID:        pending.ClientID,
+		RedirectURI:     pending.RedirectURI,
+		CodeChallenge:   pending.CodeChallenge,
+		ChallengeMethod: pending.ChallengeMethod,
+		ExpiresAt:       time.Now().Add(10 * time.Minute),
+		ExternalToken:   token,
+	})
 
-	redirectURL, err := url.Parse(cbState.RedirectURI)
+	redirectURL, err := url.Parse(pending.RedirectURI)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "server_error", "invalid redirect_uri")
 		return
 	}
 	params := redirectURL.Query()
-	params.Set("code", cbState.AuthCode)
-	if cbState.OrigState != "" {
-		params.Set("state", cbState.OrigState)
+	params.Set("code", authCode)
+	if pending.OrigState != "" {
+		params.Set("state", pending.OrigState)
 	}
 	redirectURL.RawQuery = params.Encode()
 
-	s.logger.Info("authentication successful, redirecting to client", "client_id", cbState.ClientID)
+	s.logger.Info("authentication successful, redirecting to client", "client_id", pending.ClientID)
 	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
 }
 
@@ -267,8 +260,24 @@ func (s *OAuthServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *htt
 	authCode, ok := s.store.ConsumeCode(code)
 	if !ok {
 		s.logger.Warn("token exchange failed: invalid code", "code_prefix", safePrefix(code, 8))
-		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "invalid, expired, or already used authorization code")
+		writeJSONError(w, http.StatusBadRequest, "invalid_grant",
+			"invalid, expired, or already used authorization code")
 		return
+	}
+
+	// Validate client credentials if the client registered with a secret-based auth method.
+	client, clientOK := s.store.GetClient(authCode.ClientID)
+	if clientOK && client.TokenEndpointAuthMethod != "none" {
+		clientID, clientSecret, hasBasic := r.BasicAuth()
+		if !hasBasic {
+			clientID = r.FormValue("client_id")
+			clientSecret = r.FormValue("client_secret")
+		}
+		if clientID != client.ClientID || clientSecret != client.ClientSecret {
+			s.logger.Warn("token exchange failed: client authentication failed", "client_id", clientID)
+			writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+			return
+		}
 	}
 
 	if authCode.RedirectURI != redirectURI {
@@ -280,7 +289,8 @@ func (s *OAuthServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *htt
 
 	if !ValidatePKCE(codeVerifier, authCode.CodeChallenge, authCode.ChallengeMethod) {
 		s.logger.Warn("token exchange failed: PKCE validation failed")
-		writeJSONError(w, http.StatusBadRequest, "invalid_grant", "invalid code_verifier (PKCE validation failed)")
+		writeJSONError(w, http.StatusBadRequest, "invalid_grant",
+			"invalid code_verifier (PKCE validation failed)")
 		return
 	}
 

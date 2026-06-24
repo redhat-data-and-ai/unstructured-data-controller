@@ -33,16 +33,27 @@ type OAuthClient struct {
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method"`
 }
 
-// AuthorizationCode represents a pending authorization code grant with PKCE.
+// PendingAuthorization holds context for an in-flight OAuth authorize request.
+// Keyed by CSRF token in the store; consumed when the SSO callback arrives.
+type PendingAuthorization struct {
+	CSRFToken       string
+	ClientID        string
+	RedirectURI     string
+	CodeChallenge   string
+	ChallengeMethod string
+	OrigState       string
+	ExpiresAt       time.Time
+}
+
+// AuthorizationCode is created after successful authentication and holds the
+// external token for exchange via the token endpoint.
 type AuthorizationCode struct {
 	Code            string
 	ClientID        string
 	RedirectURI     string
 	CodeChallenge   string
 	ChallengeMethod string
-	State           string
 	ExpiresAt       time.Time
-	Used            bool
 	ExternalToken   *ExternalToken
 }
 
@@ -55,15 +66,51 @@ type ExternalToken struct {
 	Scope        string `json:"scope,omitempty"`
 }
 
-// OAuthStore provides in-memory storage for OAuth clients and authorization codes.
+// OAuthStore provides in-memory storage for OAuth clients, pending authorizations,
+// and authorization codes.
 type OAuthStore struct {
 	clients sync.Map
+	pending sync.Map
 	codes   sync.Map
+	done    chan struct{}
 }
 
-// NewOAuthStore creates a new in-memory OAuth store.
+// NewOAuthStore creates a new in-memory OAuth store with a background cleanup
+// goroutine that evicts expired pending authorizations and codes.
 func NewOAuthStore() *OAuthStore {
-	return &OAuthStore{}
+	s := &OAuthStore{done: make(chan struct{})}
+	go s.cleanupLoop()
+	return s
+}
+
+// Close stops the background cleanup goroutine.
+func (s *OAuthStore) Close() {
+	close(s.done)
+}
+
+func (s *OAuthStore) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			now := time.Now()
+			s.pending.Range(func(key, value any) bool {
+				if pa, ok := value.(*PendingAuthorization); ok && now.After(pa.ExpiresAt) {
+					s.pending.Delete(key)
+				}
+				return true
+			})
+			s.codes.Range(func(key, value any) bool {
+				if ac, ok := value.(*AuthorizationCode); ok && now.After(ac.ExpiresAt) {
+					s.codes.Delete(key)
+				}
+				return true
+			})
+		}
+	}
 }
 
 // CreateClient registers a new OAuth client with generated credentials.
@@ -90,19 +137,30 @@ func (s *OAuthStore) GetClient(clientID string) (*OAuthClient, bool) {
 	return client, ok
 }
 
-// StoreCode saves an authorization code for later exchange.
-func (s *OAuthStore) StoreCode(code *AuthorizationCode) {
-	s.codes.Store(code.Code, code)
+// StorePending saves a pending authorization keyed by its CSRF token.
+func (s *OAuthStore) StorePending(pa *PendingAuthorization) {
+	s.pending.Store(pa.CSRFToken, pa)
 }
 
-// GetCode retrieves an authorization code without consuming it.
-func (s *OAuthStore) GetCode(code string) (*AuthorizationCode, bool) {
-	val, ok := s.codes.Load(code)
+// ConsumePending atomically retrieves and removes a pending authorization.
+func (s *OAuthStore) ConsumePending(csrfToken string) (*PendingAuthorization, bool) {
+	val, ok := s.pending.LoadAndDelete(csrfToken)
 	if !ok {
 		return nil, false
 	}
-	ac, ok := val.(*AuthorizationCode)
-	return ac, ok
+	pa, ok := val.(*PendingAuthorization)
+	if !ok {
+		return nil, false
+	}
+	if time.Now().After(pa.ExpiresAt) {
+		return nil, false
+	}
+	return pa, true
+}
+
+// StoreCode saves an authorization code for later exchange.
+func (s *OAuthStore) StoreCode(code *AuthorizationCode) {
+	s.codes.Store(code.Code, code)
 }
 
 // ConsumeCode atomically retrieves and removes an authorization code (single-use).
