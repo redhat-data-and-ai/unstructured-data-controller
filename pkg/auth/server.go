@@ -104,7 +104,7 @@ func (s *OAuthServer) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	client := s.store.CreateClient(req.RedirectURIs, req.GrantTypes, req.ResponseTypes, req.TokenEndpointAuthMethod)
 
-	s.logger.Info("client registered", "client_id", client.ClientID)
+	s.logger.Info("client registered", "client_id", safePrefix(client.ClientID))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(client); err != nil {
@@ -163,8 +163,8 @@ func (s *OAuthServer) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("redirecting to provider for authentication", "client_id", clientID)
-	http.Redirect(w, r, authURL, http.StatusFound)
+	s.logger.Info("redirecting to provider for authentication")
+	writeRedirectPage(w, authURL, "Redirecting to your identity provider...")
 }
 
 // HandleCallback handles the redirect from the external provider after user authentication.
@@ -225,8 +225,8 @@ func (s *OAuthServer) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	redirectURL.RawQuery = params.Encode()
 
-	s.logger.Info("authentication successful, redirecting to client", "client_id", pending.ClientID)
-	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+	s.logger.Info("authentication successful, redirecting to client", "client_id", safePrefix(pending.ClientID))
+	writeAutoClosePage(w, redirectURL.String())
 }
 
 // HandleToken implements the Token Endpoint (RFC 6749 Section 3.2).
@@ -266,31 +266,14 @@ func (s *OAuthServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *htt
 
 	authCode, ok := s.store.ConsumeCode(code)
 	if !ok {
-		s.logger.Warn("token exchange failed: invalid code", "code_prefix", safePrefix(code, 8))
+		s.logger.Warn("token exchange failed: invalid code", "code_prefix", safePrefix(code))
 		writeJSONError(w, http.StatusBadRequest, "invalid_grant",
 			"invalid, expired, or already used authorization code")
 		return
 	}
 
-	client, clientOK := s.store.GetClient(authCode.ClientID)
-	if !clientOK {
-		s.logger.Warn("token exchange failed: client not found", "client_id", authCode.ClientID)
-		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client not found")
+	if !s.authenticateClient(w, r, authCode.ClientID) {
 		return
-	}
-
-	if client.TokenEndpointAuthMethod != "none" {
-		clientID, clientSecret, hasBasic := r.BasicAuth()
-		if !hasBasic {
-			clientID = r.FormValue("client_id")
-			clientSecret = r.FormValue("client_secret")
-		}
-		if clientID != client.ClientID ||
-			subtle.ConstantTimeCompare([]byte(clientSecret), []byte(client.ClientSecret)) != 1 {
-			s.logger.Warn("token exchange failed: client authentication failed", "client_id", clientID)
-			writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
-			return
-		}
 	}
 
 	if authCode.RedirectURI != redirectURI {
@@ -314,7 +297,7 @@ func (s *OAuthServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *htt
 		return
 	}
 
-	s.logger.Info("token exchange successful", "client_id", authCode.ClientID)
+	s.logger.Info("token exchange successful", "client_id", safePrefix(authCode.ClientID))
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(authCode.ExternalToken); err != nil {
 		s.logger.Error("failed to write response", "error", err)
@@ -325,6 +308,10 @@ func (s *OAuthServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 	refreshToken := r.FormValue("refresh_token")
 	if refreshToken == "" {
 		writeJSONError(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
+		return
+	}
+
+	if !s.authenticateClient(w, r, clientIDFromRequest(r)) {
 		return
 	}
 
@@ -341,13 +328,51 @@ func (s *OAuthServer) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// authenticateClient validates client credentials from the request against the
+// registered client. Returns true if authentication passes; writes an error
+// response and returns false otherwise.
+func (s *OAuthServer) authenticateClient(w http.ResponseWriter, r *http.Request, expectedClientID string) bool {
+	client, ok := s.store.GetClient(expectedClientID)
+	if !ok {
+		s.logger.Warn("client authentication failed: client not found", "client_id", safePrefix(expectedClientID))
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client not found")
+		return false
+	}
+
+	if client.TokenEndpointAuthMethod == "none" {
+		return true
+	}
+
+	clientID, clientSecret, hasBasic := r.BasicAuth()
+	if !hasBasic {
+		clientID = r.FormValue("client_id")
+		clientSecret = r.FormValue("client_secret")
+	}
+	if clientID != client.ClientID ||
+		subtle.ConstantTimeCompare([]byte(clientSecret), []byte(client.ClientSecret)) != 1 {
+		s.logger.Warn("client authentication failed: invalid credentials", "client_id", safePrefix(clientID))
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return false
+	}
+	return true
+}
+
+func clientIDFromRequest(r *http.Request) string {
+	if id, _, ok := r.BasicAuth(); ok {
+		return id
+	}
+	return r.FormValue("client_id")
+}
+
 func isValidRedirectURI(client *OAuthClient, uri string) bool {
 	return slices.Contains(client.RedirectURIs, uri)
 }
 
-func safePrefix(s string, n int) string {
-	if len(s) <= n {
+const safePrefixLen = 4
+
+func safePrefix(s string) string {
+	if len(s) <= safePrefixLen {
 		return s
 	}
-	return s[:n] + "..."
+	return s[:safePrefixLen] + "..."
 }

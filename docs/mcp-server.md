@@ -43,7 +43,6 @@ All configuration is via environment variables.
 
 | Variable          | Default | Description                |
 | ----------------- | ------- | -------------------------- |
-| `SSO_ISSUER_HOST` | —       | SSO issuer identifier      |
 | `MCP_SERVER_PORT` | `8080`  | Port the server listens on |
 
 ### Example `.env`
@@ -55,7 +54,6 @@ SSO_AUTHORIZATION_URL=https://sso.example.com/auth/realms/myrealm/protocol/openi
 SSO_TOKEN_URL=https://sso.example.com/auth/realms/myrealm/protocol/openid-connect/token
 SSO_INTROSPECTION_URL=https://sso.example.com/auth/realms/myrealm/protocol/openid-connect/token/introspect
 SSO_CALLBACK_URL=http://localhost:8080/auth/callback/oidc
-SSO_ISSUER_HOST=https://sso.example.com/auth/realms/myrealm
 ```
 
 ## Running
