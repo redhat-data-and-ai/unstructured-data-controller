@@ -17,6 +17,7 @@ limitations under the License.
 package auth
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -81,6 +82,12 @@ func (s *OAuthServer) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		if err != nil || !u.IsAbs() || slices.Contains(dangerousSchemes, u.Scheme) {
 			writeJSONError(w, http.StatusBadRequest, "invalid_request",
 				"invalid redirect_uri: must be an absolute URL with a safe scheme")
+			return
+		}
+		isLocalhost := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "[::1]"
+		if u.Scheme == "http" && !isLocalhost {
+			writeJSONError(w, http.StatusBadRequest, "invalid_request",
+				"invalid redirect_uri: http is only allowed for localhost")
 			return
 		}
 	}
@@ -265,15 +272,21 @@ func (s *OAuthServer) handleAuthorizationCodeGrant(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Validate client credentials if the client registered with a secret-based auth method.
 	client, clientOK := s.store.GetClient(authCode.ClientID)
-	if clientOK && client.TokenEndpointAuthMethod != "none" {
+	if !clientOK {
+		s.logger.Warn("token exchange failed: client not found", "client_id", authCode.ClientID)
+		writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client not found")
+		return
+	}
+
+	if client.TokenEndpointAuthMethod != "none" {
 		clientID, clientSecret, hasBasic := r.BasicAuth()
 		if !hasBasic {
 			clientID = r.FormValue("client_id")
 			clientSecret = r.FormValue("client_secret")
 		}
-		if clientID != client.ClientID || clientSecret != client.ClientSecret {
+		if clientID != client.ClientID ||
+			subtle.ConstantTimeCompare([]byte(clientSecret), []byte(client.ClientSecret)) != 1 {
 			s.logger.Warn("token exchange failed: client authentication failed", "client_id", clientID)
 			writeJSONError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 			return

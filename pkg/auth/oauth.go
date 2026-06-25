@@ -238,8 +238,13 @@ func setWWWAuthenticate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, resourceMetadataURL))
 }
 
-// requestBaseURL derives the server's base URL from the incoming request.
+// requestBaseURL returns the server's public base URL. Prefers the static
+// MCP_PUBLIC_URL env var to prevent host header injection; falls back to
+// deriving from the request if not configured.
 func requestBaseURL(r *http.Request) string {
+	if publicURL := os.Getenv("MCP_PUBLIC_URL"); publicURL != "" {
+		return strings.TrimSuffix(publicURL, "/")
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
