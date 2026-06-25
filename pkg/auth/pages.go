@@ -26,39 +26,40 @@ const pageStyle = `font-family:system-ui,sans-serif;display:flex;` +
 	`justify-content:center;align-items:center;height:100vh;margin:0`
 
 const redirectPageTmpl = `<!DOCTYPE html>
-<html><head><title>%s</title></head>
+<html>
+<head>
+<title>%s</title>
+<meta http-equiv="refresh" content="0; url=%s" />
+</head>
 <body style="` + pageStyle + `">
 <div style="text-align:center"><p>%s</p></div>
-<script>window.location.href = %q;</script>
-</body></html>`
+</body>
+</html>`
 
-const autoClosePageTmpl = `<!DOCTYPE html>
-<html><head><title>Authentication Successful</title></head>
+const callbackPageTmpl = `<!DOCTYPE html>
+<html>
+<head>
+<title>Authentication Successful</title>
+<meta http-equiv="refresh" content="0; url=%s" />
+</head>
 <body style="` + pageStyle + `">
 <div style="text-align:center">
-<h2>Authentication successful</h2>
-<p id="msg">Completing authentication...</p>
+<h2>Authentication complete</h2>
+<p>You may now close this window.</p>
 </div>
-<script>
-(function() {
-  window.location.href = %q;
-  document.getElementById("msg").textContent =
-    "This tab will close automatically.";
-  setTimeout(function(){ window.close(); }, 2000);
-})();
-</script>
-</body></html>`
+</body>
+</html>`
 
 func writeRedirectPage(w http.ResponseWriter, targetURL, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := fmt.Fprintf(w, redirectPageTmpl, message, message, targetURL); err != nil {
+	if _, err := fmt.Fprintf(w, redirectPageTmpl, message, targetURL, message); err != nil {
 		slog.Error("failed to write redirect page", "error", err)
 	}
 }
 
-func writeAutoClosePage(w http.ResponseWriter, redirectURL string) {
+func writeCallbackPage(w http.ResponseWriter, redirectURL string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := fmt.Fprintf(w, autoClosePageTmpl, redirectURL); err != nil {
-		slog.Error("failed to write auto-close page", "error", err)
+	if _, err := fmt.Fprintf(w, callbackPageTmpl, redirectURL); err != nil {
+		slog.Error("failed to write callback page", "error", err)
 	}
 }

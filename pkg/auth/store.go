@@ -66,13 +66,19 @@ type ExternalToken struct {
 	Scope        string `json:"scope,omitempty"`
 }
 
+type completionEntry struct {
+	redirectURL string
+	expiresAt   time.Time
+}
+
 // OAuthStore provides in-memory storage for OAuth clients, pending authorizations,
-// and authorization codes.
+// authorization codes, and completion redirects.
 type OAuthStore struct {
-	clients sync.Map
-	pending sync.Map
-	codes   sync.Map
-	done    chan struct{}
+	clients     sync.Map
+	pending     sync.Map
+	codes       sync.Map
+	completions sync.Map
+	done        chan struct{}
 }
 
 // NewOAuthStore creates a new in-memory OAuth store with a background cleanup
@@ -106,6 +112,12 @@ func (s *OAuthStore) cleanupLoop() {
 			s.codes.Range(func(key, value any) bool {
 				if ac, ok := value.(*AuthorizationCode); ok && now.After(ac.ExpiresAt) {
 					s.codes.Delete(key)
+				}
+				return true
+			})
+			s.completions.Range(func(key, value any) bool {
+				if ce, ok := value.(*completionEntry); ok && now.After(ce.expiresAt) {
+					s.completions.Delete(key)
 				}
 				return true
 			})
@@ -178,6 +190,30 @@ func (s *OAuthStore) ConsumeCode(code string) (*AuthorizationCode, bool) {
 		return nil, false
 	}
 	return ac, true
+}
+
+// StoreCompletion saves a redirect URL keyed by a short-lived token.
+// Used to redirect from the callback to a clean URL before showing the success page.
+func (s *OAuthStore) StoreCompletion(redirectURL string) string {
+	token := generateRandomString(16)
+	s.completions.Store(token, &completionEntry{
+		redirectURL: redirectURL,
+		expiresAt:   time.Now().Add(2 * time.Minute),
+	})
+	return token
+}
+
+// ConsumeCompletion atomically retrieves and removes a completion redirect URL.
+func (s *OAuthStore) ConsumeCompletion(token string) (string, bool) {
+	val, ok := s.completions.LoadAndDelete(token)
+	if !ok {
+		return "", false
+	}
+	ce, ok := val.(*completionEntry)
+	if !ok || time.Now().After(ce.expiresAt) {
+		return "", false
+	}
+	return ce.redirectURL, true
 }
 
 func generateRandomString(length int) string {

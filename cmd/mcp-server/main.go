@@ -87,6 +87,7 @@ func main() {
 	mux.HandleFunc("/auth/register", oauthServer.HandleRegister)
 	mux.HandleFunc("/auth/authorize", oauthServer.HandleAuthorize)
 	mux.HandleFunc("/auth/callback/oidc", oauthServer.HandleCallback)
+	mux.HandleFunc("/auth/complete/{token}", oauthServer.HandleComplete)
 	mux.HandleFunc("/auth/token", oauthServer.HandleToken)
 
 	mux.HandleFunc("/healthz", healthHandler)

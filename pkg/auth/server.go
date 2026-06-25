@@ -225,8 +225,26 @@ func (s *OAuthServer) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	redirectURL.RawQuery = params.Encode()
 
+	// Store the client redirect URL behind an opaque token so the browser
+	// navigates to a clean /auth/complete URL with no sensitive parameters.
+	completionToken := s.store.StoreCompletion(redirectURL.String())
+
 	s.logger.Info("authentication successful, redirecting to client", "client_id", safePrefix(pending.ClientID))
-	writeAutoClosePage(w, redirectURL.String())
+	http.Redirect(w, r, "/auth/complete/"+completionToken, http.StatusFound)
+}
+
+// HandleComplete serves the post-authentication success page at a clean URL
+// with no OAuth parameters exposed. It renders a meta-refresh redirect to the
+// MCP client's redirect_uri.
+// GET /auth/complete/{token}
+func (s *OAuthServer) HandleComplete(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	clientRedirectURL, ok := s.store.ConsumeCompletion(token)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid_request", "invalid or expired completion token")
+		return
+	}
+	writeCallbackPage(w, clientRedirectURL)
 }
 
 // HandleToken implements the Token Endpoint (RFC 6749 Section 3.2).
