@@ -215,7 +215,12 @@ func (fs *FileStore) Retrieve(ctx context.Context, path string) ([]byte, error) 
 		return nil, err
 	}
 
-	// write to local filesystem
+	// write to local filesystem — create parent directories if they don't exist
+	if dir := filepath.Dir(localPath); dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, err
+		}
+	}
 	err = os.WriteFile(localPath, data, 0644)
 	if err != nil {
 		return nil, err
