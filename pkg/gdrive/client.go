@@ -49,6 +49,11 @@ func NewClient(
 	}, nil
 }
 
+// Close releases resources held by the underlying clients.
+func (c *Client) Close() {
+	c.googleClient.Close()
+}
+
 // DownloadFile downloads the content of a Google Drive file.
 // For Google Workspace files (Docs, Sheets, Slides), it exports
 // to a portable format. The caller must close the returned

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	cloudidentity "google.golang.org/api/cloudidentity/v1"
 	drive "google.golang.org/api/drive/v3"
@@ -49,6 +50,7 @@ type GoogleClient interface {
 	DownloadFile(
 		ctx context.Context, fileID string, maxRetries int,
 	) (io.ReadCloser, error)
+	Close()
 }
 
 // Client implements GoogleClient using Google Drive and Cloud
@@ -58,7 +60,15 @@ type Client struct {
 	cloudIdentityService *cloudidentity.Service
 	// httpClient is an authenticated HTTP client used for direct
 	// export URL requests (bypasses the 10 MB Files.Export limit).
-	httpClient *http.Client
+	httpClient           *http.Client
+	importFormatsMu      sync.Mutex
+	importFormatsCache   map[string][]string
+	importFormatsFetched bool
+}
+
+// Close releases resources held by the client, including idle HTTP connections.
+func (c *Client) Close() {
+	c.httpClient.CloseIdleConnections()
 }
 
 // NewClient creates a new Google API client using service account

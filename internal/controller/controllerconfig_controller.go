@@ -32,7 +32,10 @@ import (
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
+	pkgcache "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/cache"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/cache/inmemory"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/ldap"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/langchain"
 )
 
@@ -42,7 +45,9 @@ var (
 	embeddingEndpoint                      string
 	embeddingAPIKey                        string
 	UnstructuredDataPipelineResyncInterval *int
-	gdriveControllerConfig                 *operatorv1alpha1.GDriveControllerConfig
+	LDAPClient                             ldap.Client
+	CacheClient                            pkgcache.Cache
+	GoogleDriveControllerCfg               *operatorv1alpha1.GoogleDriveControllerConfig
 )
 
 // ControllerConfigReconciler reconciles a ControllerConfig object
@@ -111,14 +116,43 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	embeddingEndpoint = string(secret.Data["EMBEDDING_ENDPOINT"])
 	embeddingAPIKey = string(secret.Data["EMBEDDING_API_KEY"])
 
+	// initialize LDAP client and cache if configured
+	if config.Spec.LDAPConfig.Server != "" {
+		ldapCfg := config.Spec.LDAPConfig
+		lc, err := ldap.InitLDAP(ldap.Config{
+			Server:           ldapCfg.Server,
+			GroupDN:          ldapCfg.GroupDN,
+			UserDN:           ldapCfg.UserDN,
+			BaseUserDN:       ldapCfg.BaseUserDN,
+			UserSearchFilter: ldapCfg.UserSearchFilter,
+			EmailAttribute:   ldapCfg.EmailAttribute,
+			Attributes:       ldapCfg.Attributes,
+		})
+		if err != nil {
+			logger.Error(err, "failed to initialize LDAP client, will retry")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		LDAPClient = lc
+
+		cc, err := pkgcache.New(&pkgcache.Config{
+			Driver: pkgcache.DriverMemory,
+			InMemory: &inmemory.Config{
+				DefaultExpiration: -1,
+				CleanupInterval:   -1,
+			},
+		})
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create cache client: %w", err)
+		}
+		CacheClient = cc
+		logger.Info("LDAP client and cache initialized")
+	}
+
+	GoogleDriveControllerCfg = config.Spec.GoogleDriveConfig
+
 	if config.Spec.UnstructuredDataPipelineResyncInterval != nil {
 		UnstructuredDataPipelineResyncInterval = config.Spec.UnstructuredDataPipelineResyncInterval
 		logger.Info("setting unstructured data pipeline resync interval", "minutes", *UnstructuredDataPipelineResyncInterval)
-	}
-
-	if config.Spec.GDriveConfig != nil {
-		gdriveControllerConfig = config.Spec.GDriveConfig.DeepCopy()
-		logger.Info("gdrive controller config loaded")
 	}
 
 	if config.Status.LastAppliedGeneration == config.Generation && config.IsHealthy() {

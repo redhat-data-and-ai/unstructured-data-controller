@@ -22,8 +22,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
+
+	"google.golang.org/api/googleapi"
 
 	drive "google.golang.org/api/drive/v3"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -293,37 +294,35 @@ func (c *Client) resolveWorkspaceCompatibleExportURL(
 	return ""
 }
 
-// importFormats cache — fetched once per Client lifetime from
-// Drive about.importFormats.
-var (
-	importFormatsOnce  sync.Once
-	importFormatsCache map[string][]string
-)
-
 // fetchImportFormats returns the Drive importFormats mapping
 // (uploaded MIME type → list of Google Workspace MIME types it
-// can be converted to). Cached after the first successful call.
+// can be converted to). Cached on the Client after the first
+// successful call; retries on transient failures.
 func (c *Client) fetchImportFormats(
 	ctx context.Context,
 ) map[string][]string {
-	importFormatsOnce.Do(func() {
-		logger := log.FromContext(ctx)
-		about, err := c.driveService.About.Get().
-			Context(ctx).
-			Fields("importFormats").
-			Do()
-		if err != nil {
-			logger.Error(err,
-				"failed to fetch Drive importFormats")
-			importFormatsCache = map[string][]string{}
-			return
-		}
-		importFormatsCache = about.ImportFormats
-		logger.V(1).Info("fetched Drive importFormats",
-			"formatCount", len(importFormatsCache),
-		)
-	})
-	return importFormatsCache
+	c.importFormatsMu.Lock()
+	defer c.importFormatsMu.Unlock()
+
+	if c.importFormatsFetched {
+		return c.importFormatsCache
+	}
+
+	logger := log.FromContext(ctx)
+	about, err := c.driveService.About.Get().
+		Context(ctx).
+		Fields("importFormats").
+		Do()
+	if err != nil {
+		logger.Error(err, "failed to fetch Drive importFormats")
+		return map[string][]string{}
+	}
+	c.importFormatsCache = about.ImportFormats
+	c.importFormatsFetched = true
+	logger.V(1).Info("fetched Drive importFormats",
+		"formatCount", len(c.importFormatsCache),
+	)
+	return c.importFormatsCache
 }
 
 // downloadFromURL performs an authenticated GET request to the
@@ -349,9 +348,10 @@ func (c *Client) downloadFromURL(
 			}
 			if resp.StatusCode != http.StatusOK {
 				_ = resp.Body.Close()
-				return fmt.Errorf(
-					"export returned HTTP %d",
-					resp.StatusCode)
+				return &googleapi.Error{
+					Code:    resp.StatusCode,
+					Message: fmt.Sprintf("export returned HTTP %d", resp.StatusCode),
+				}
 			}
 			body = resp.Body
 			return nil

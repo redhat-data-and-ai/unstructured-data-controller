@@ -30,6 +30,16 @@ import (
 //	  maxConcurrentDoclingTasks: 5
 //	  maxConcurrentLangchainTasks: 3
 //	  unstructuredDataPipelineResyncInterval: 300  # seconds
+//	  ldapConfig:                            # optional, required for googleDrive source type
+//	    server: "ldap://ldap.example.com:389"
+//	    baseUserDN: "ou=People,dc=example,dc=com"
+//	    userSearchFilter: "(objectClass=person)"
+//	    emailAttribute: "mail"
+//	    attributes: ["uid", "mail"]
+//	  googleDriveConfig:                     # optional, required for googleDrive source type
+//	    maxRetries: 3
+//	    concurrentFolders: 5
+//	    concurrentDownloads: 10
 //	status:
 //	  conditions:
 //	    - type: ConfigReady
@@ -52,11 +62,13 @@ type ControllerConfigSpec struct {
 	UnstructuredDataPipelineResyncInterval *int `json:"unstructuredDataPipelineResyncInterval,omitempty"`
 	// GDriveConfig holds operator-level Google Drive crawling settings.
 	// +optional
-	GDriveConfig *GDriveControllerConfig `json:"gdriveConfig,omitempty"`
+	GoogleDriveConfig *GoogleDriveControllerConfig `json:"googleDriveConfig,omitempty"`
+	// LDAPConfig holds LDAP configuration for user/group identity resolution.
+	LDAPConfig LDAPConfig `json:"ldapConfig"`
 }
 
 // GDriveControllerConfig holds operator-level settings for Google Drive crawling.
-type GDriveControllerConfig struct {
+type GoogleDriveControllerConfig struct {
 	// MaxRetries is the maximum number of retries for Google API calls. Defaults to 3.
 	// +optional
 	MaxRetries int `json:"maxRetries,omitempty"`
@@ -66,8 +78,30 @@ type GDriveControllerConfig struct {
 	// ConcurrentDownloads is the maximum number of files to download concurrently. Defaults to 10.
 	// +optional
 	ConcurrentDownloads int `json:"concurrentDownloads,omitempty"`
-	// LDAPConfig holds LDAP configuration for user/group identity resolution.
-	LDAPConfig LDAPConfig `json:"ldapConfig"`
+}
+
+// LDAPConfig holds configuration for connecting to an LDAP server for identity resolution.
+type LDAPConfig struct {
+	// Server is the LDAP server URL (e.g., "ldap://ldap.example.com:389").
+	Server string `json:"server"`
+	// GroupDN is the base DN for group searches.
+	// +optional
+	GroupDN string `json:"groupDN,omitempty"`
+	// UserDN is the DN template for user lookups (must contain %s for the user ID).
+	// +optional
+	UserDN string `json:"userDN,omitempty"`
+	// BaseUserDN is the base DN for user searches.
+	// +optional
+	BaseUserDN string `json:"baseUserDN,omitempty"`
+	// UserSearchFilter is the LDAP filter for user searches (e.g., "(objectClass=person)").
+	// +optional
+	UserSearchFilter string `json:"userSearchFilter,omitempty"`
+	// EmailAttribute is the LDAP attribute containing user email addresses (e.g., "mail").
+	// +optional
+	EmailAttribute string `json:"emailAttribute,omitempty"`
+	// Attributes is the list of LDAP attributes to retrieve.
+	// +optional
+	Attributes []string `json:"attributes,omitempty"`
 }
 
 // ControllerConfigStatus defines the observed state of ControllerConfig.

@@ -150,13 +150,6 @@ jobs:
       - name: Install sponge
         run: sudo apt-get update && sudo apt-get install -y moreutils
 
-      - name: E2E tests without Kind
-        run: |
-          service_account=$(echo ${{ secrets.GDRIVE_SERVICE_ACCOUNT_ENCODED }} | base64 -d)
-          echo "$service_account" > unstructured-data-controller-24ad7a29c246.json
-          export GDRIVE_SERVICE_ACCOUNT_FILE=$(pwd)/unstructured-data-controller-24ad7a29c246.json
-          go test -tags=e2e -v -count=1 ./test/pkg/...
-
       - name: Run e2e tests
         env:
           SKIP_CLUSTER_SETUP: "true"

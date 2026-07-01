@@ -20,16 +20,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// sample spec:
+// sample spec (S3):
 //
 //	spec:
-//	  stageName: crawl                       # this stage's name in the pipeline
+//	  stageName: crawl
 //	  sourceCrawlerConfig:
 //	    type: s3
 //	    s3Config:
 //	      bucket: data-ingestion-bucket
 //	      prefix: documents/
 //	      sqsQueueURL: https://sqs...        # optional, enables real-time S3 notifications
+//
+// sample spec (Google Drive):
+//
+//	spec:
+//	  stageName: crawl
+//	  sourceCrawlerConfig:
+//	    type: googleDrive
+//	    googleDriveConfig:
+//	      folders:
+//	        - url: "https://drive.google.com/drive/folders/1ABCdef_example_folder_id"
+//	      skipFolders:
+//	        - pattern: ".archive"
 //	status:
 //	  conditions:
 //	    - type: SourceCrawlerReady

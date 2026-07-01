@@ -4,9 +4,10 @@ import (
 	"context"
 	"strings"
 
-	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
 
 // AWS client "not initialized" error messages (from pkg/awsclienthandler).
@@ -23,10 +24,6 @@ func IsAWSClientNotInitializedError(err error) bool {
 	return strings.Contains(msg, errMsgS3NotInitialized) ||
 		strings.Contains(msg, errMsgSQSNotInitialized) ||
 		strings.Contains(msg, errMsgPresignNotInitialized)
-}
-
-func GetGDriveControllerConfig() *operatorv1alpha1.GDriveControllerConfig {
-	return gdriveControllerConfig
 }
 
 func IsConfigCRHealthy(ctx context.Context, kubeClient client.Client, namespace string) (bool, error) {

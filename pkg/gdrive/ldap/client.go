@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	ldap "github.com/go-ldap/ldap/v3"
@@ -61,6 +62,7 @@ type LDAPConnClient interface {
 
 // LDAPConn manages an LDAP connection and provides query methods.
 type LDAPConn struct {
+	mu               sync.Mutex
 	conn             LDAPConnClient
 	userDN           string
 	groupDN          string
@@ -111,6 +113,8 @@ func InitLDAP(config Config) (Client, error) {
 
 // getConn returns the underlying LDAP connection, re-establishing it if necessary.
 func (l *LDAPConn) getConn() LDAPConnClient {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.conn != nil && l.conn.IsClosing() {
 		newConn, err := ldap.DialURL(l.server, ldap.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}))
 		if err != nil {

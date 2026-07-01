@@ -12,16 +12,17 @@ spec:
   cacheDirectory: "tmp/cache/"
   maxConcurrentDoclingTasks: 5
   maxConcurrentLangchainTasks: 10
-  # Optional: Google Drive controller-level settings (required when using gdrive source type)
-  # gdriveConfig:
+  # Optional: LDAP configuration for user/group identity resolution
+  # ldapConfig:
+  #   server: "ldap://ldap.example.com:389"
+  #   groupDN: "ou=Groups,dc=example,dc=com"
+  #   userDN: "uid=%s,ou=People,dc=example,dc=com"
+  #   baseUserDN: "ou=People,dc=example,dc=com"
+  #   userSearchFilter: "(objectClass=person)"
+  #   emailAttribute: "mail"
+  #   attributes: ["uid", "mail"]
+  # Optional: Google Drive controller-level settings (required when using googleDrive source type)
+  # googleDriveConfig:
   #   maxRetries: 3
   #   concurrentFolders: 5
   #   concurrentDownloads: 10
-  #   ldapConfig:
-  #     server: "ldap://ldap.example.com:389"
-  #     groupDN: "ou=Groups,dc=example,dc=com"
-  #     userDN: "uid=%s,ou=People,dc=example,dc=com"
-  #     baseUserDN: "ou=People,dc=example,dc=com"
-  #     userSearchFilter: "(objectClass=person)"
-  #     emailAttribute: "mail"
-  #     attributes: ["uid", "mail"]

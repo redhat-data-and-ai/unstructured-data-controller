@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// sample spec:
+// sample spec (S3 source):
 //
 //	spec:
 //	  secretRef: pipeline-secret             # k8s secret with source/destination AWS credentials
@@ -33,6 +33,21 @@ import (
 //	        s3Config:
 //	          bucket: data-ingestion-bucket
 //	          prefix: documents/
+//
+// sample spec (Google Drive source):
+//
+//	spec:
+//	  secretRef: pipeline-secret             # k8s secret with GOOGLE_SERVICE_ACCOUNT_JSON + destination AWS credentials
+//	  stages:
+//	    - name: crawl
+//	      type: SourceCrawler
+//	      sourceCrawlerConfig:
+//	        type: googleDrive
+//	        googleDriveConfig:
+//	          folders:
+//	            - url: "https://drive.google.com/drive/folders/1ABCdef_example_folder_id"
+//	          skipFolders:
+//	            - pattern: ".archive"
 //	    - name: convert
 //	      type: DocumentProcessor
 //	      dependsOn:
@@ -73,7 +88,7 @@ type (
 
 const (
 	TypeS3                             UnstructuredDataType = "s3"
-	TypeGDrive                         UnstructuredDataType = "gdrive"
+	TypeGoogleDrive                    UnstructuredDataType = "googleDrive"
 	ChunkingStrategyRecursiveCharacter ChunkingStrategy     = "recursiveCharacterTextSplitter"
 	ChunkingStrategyMarkdown           ChunkingStrategy     = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy     = "tokenTextSplitter"
@@ -144,44 +159,28 @@ type PipelineStage struct {
 
 // SourceCrawlerConfig configures where to read unstructured data from.
 type SourceCrawlerConfig struct {
-	Type         UnstructuredDataType `json:"type,omitempty"`
-	S3Config     S3Config             `json:"s3Config,omitempty"`
-	GDriveConfig *GDriveConfig        `json:"gdriveConfig,omitempty"`
+	Type              UnstructuredDataType `json:"type,omitempty"`
+	S3Config          S3Config             `json:"s3Config,omitempty"`
+	GoogleDriveConfig *GoogleDriveConfig   `json:"googleDriveConfig,omitempty"`
 }
 
 // GDriveConfig configures Google Drive folder crawling at the pipeline level.
 // Controller-level settings (maxRetries, concurrency, LDAP) are in ControllerConfig.
-type GDriveConfig struct {
+type GoogleDriveConfig struct {
 	// FolderIDs is the list of Google Drive folder IDs to crawl recursively.
 	// +kubebuilder:validation:MinItems=1
-	FolderIDs []string `json:"folderIDs"`
+	Folders []GoogleDriveFolders `json:"folders"`
 	// SkipFolderNames is an optional list of folder names to skip during crawling.
 	// +optional
-	SkipFolderNames []string `json:"skipFolderNames,omitempty"`
+	SkipFolders []SkipFolders `json:"skipFolders,omitempty"`
 }
 
-// LDAPConfig holds configuration for connecting to an LDAP server for identity resolution.
-type LDAPConfig struct {
-	// Server is the LDAP server URL (e.g., "ldap://ldap.example.com:389").
-	Server string `json:"server"`
-	// GroupDN is the base DN for group searches.
-	// +optional
-	GroupDN string `json:"groupDN,omitempty"`
-	// UserDN is the DN template for user lookups (must contain %s for the user ID).
-	// +optional
-	UserDN string `json:"userDN,omitempty"`
-	// BaseUserDN is the base DN for user searches.
-	// +optional
-	BaseUserDN string `json:"baseUserDN,omitempty"`
-	// UserSearchFilter is the LDAP filter for user searches (e.g., "(objectClass=person)").
-	// +optional
-	UserSearchFilter string `json:"userSearchFilter,omitempty"`
-	// EmailAttribute is the LDAP attribute containing user email addresses (e.g., "mail").
-	// +optional
-	EmailAttribute string `json:"emailAttribute,omitempty"`
-	// Attributes is the list of LDAP attributes to retrieve.
-	// +optional
-	Attributes []string `json:"attributes,omitempty"`
+type GoogleDriveFolders struct {
+	URL string `json:"url"`
+}
+
+type SkipFolders struct {
+	Pattern string `json:"pattern"`
 }
 
 // DestinationSyncerConfig configures where to write processed data.

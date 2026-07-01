@@ -240,6 +240,11 @@ type GDriveSource struct {
 	OutputDir           string
 }
 
+// Close releases resources held by the underlying clients.
+func (g *GDriveSource) Close() {
+	g.GDriveClient.Close()
+}
+
 func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error) {
 	logger := log.FromContext(ctx)
 
@@ -298,15 +303,20 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 	var mu sync.Mutex
 	var storedFiles []RawFileMetadata
 	errorList := map[string]error{}
-	currentFileIDs := make(map[string]bool, len(fileRecords))
+	// Maps fileID → expected fileName for GC rename detection
+	currentFiles := make(map[string]string, len(fileRecords))
 
 	dlGroup, _ := errgroup.WithContext(ctx)
 	dlGroup.SetLimit(g.ConcurrentDownloads)
 
 	for _, record := range fileRecords {
-		currentFileIDs[record.FileID] = true
+		ext := path.Ext(record.FileName)
+		if strings.HasPrefix(record.MimeType, "application/vnd.google-apps.") {
+			ext = ".pdf"
+		}
+		currentFiles[record.FileID] = ext
 		dlGroup.Go(func() error {
-			filestorePath := path.Join(g.OutputDir, record.FileID, record.FileName)
+			filestorePath := path.Join(g.OutputDir, record.FileID+ext)
 			uid := record.FileID + ":" + record.UpdatedAt
 			file := RawFileMetadata{
 				FilePath: filestorePath,
@@ -341,17 +351,10 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 	} else {
 		permissionsPrefix := path.Join(g.OutputDir, "permissions") + "/"
 		for _, localFilePath := range localFiles {
-			// Handle permissions directory: only keep permissions_<fileID>.json files
+			// Handle permissions directory: delete orphaned <fileID>.json files
 			if baseName, ok := strings.CutPrefix(localFilePath, permissionsPrefix); ok {
-				if !strings.HasPrefix(baseName, "permissions_") {
-					logger.Info("deleting legacy permissions file without prefix", "file", localFilePath)
-					if err := fs.Delete(ctx, localFilePath); err != nil {
-						logger.Error(err, "failed to delete permissions file", "file", localFilePath)
-					}
-					continue
-				}
-				permFileID := strings.TrimSuffix(strings.TrimPrefix(baseName, "permissions_"), ".json")
-				if !currentFileIDs[permFileID] {
+				permFileID := strings.TrimSuffix(baseName, ".json")
+				if _, exists := currentFiles[permFileID]; !exists {
 					logger.Info("permissions file no longer in source, deleting", "file", localFilePath)
 					if err := fs.Delete(ctx, localFilePath); err != nil {
 						logger.Error(err, "failed to delete permissions file", "file", localFilePath)
@@ -364,7 +367,7 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 			if fileID == "" {
 				continue
 			}
-			if !currentFileIDs[fileID] {
+			if _, exists := currentFiles[fileID]; !exists {
 				logger.Info("file no longer in source, deleting from filestore", "file", localFilePath)
 				if err := fs.Delete(ctx, localFilePath); err != nil {
 					logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
@@ -461,7 +464,7 @@ func (g *GDriveSource) storeFile(
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal permissions for %s: %w", fileID, err)
 	}
-	permissionsPath := path.Join(g.OutputDir, "permissions", "permissions_"+fileID+".json")
+	permissionsPath := path.Join(g.OutputDir, "permissions", fileID+".json")
 	if err := fs.Store(ctx, permissionsPath, permissionsData); err != nil {
 		return false, fmt.Errorf("failed to store permissions for %s: %w", fileID, err)
 	}
@@ -470,13 +473,18 @@ func (g *GDriveSource) storeFile(
 }
 
 // extractFileID extracts the Google Drive file ID from a filestore
-// path of the form "<outputDir>/<fileID>/<fileName>".
+// path like "<outputDir>/<fileID>.pdf" or "<outputDir>/<fileID>.pdf.json".
 func (g *GDriveSource) extractFileID(filestorePath string) string {
 	rel := strings.TrimPrefix(filestorePath, g.OutputDir)
 	rel = strings.TrimPrefix(rel, "/")
-	parts := strings.SplitN(rel, "/", 2)
-	if len(parts) < 2 {
+	if rel == "" || strings.Contains(rel, "/") {
 		return ""
 	}
-	return parts[0]
+	// Strip .json metadata suffix first, then the file extension
+	name := strings.TrimSuffix(rel, ".json")
+	fileID := strings.TrimSuffix(name, path.Ext(name))
+	if fileID == "" {
+		return name
+	}
+	return fileID
 }

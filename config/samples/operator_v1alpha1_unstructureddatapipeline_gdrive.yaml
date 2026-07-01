@@ -3,19 +3,19 @@ kind: UnstructuredDataPipeline
 metadata:
   name: gdrive-pipeline
 spec:
-  secretRef: gdrive-pipeline-secret
+  secretRef: pipeline-secret
   description: "Pipeline for crawling Google Drive folders"
   stages:
     - name: crawl
       type: SourceCrawler
       sourceCrawlerConfig:
-        type: gdrive
-        gdriveConfig:
-          folderIDs:
-            - "1ua4tWAwVVZV_0p93asX5KJt7ycKH03ta"
-          skipFolderNames:
-            - "_indexes"
-            - "_synthesized"
+        type: googleDrive
+        googleDriveConfig:
+          folders:
+            - url: "1ua4tWAwVVZV_0p93asX5KJt7ycKH03ta"
+          skipFolders:
+            - pattern: "_indexes"
+            - pattern: "_synthesized"
     - name: convert
       type: DocumentProcessor
       dependsOn:
