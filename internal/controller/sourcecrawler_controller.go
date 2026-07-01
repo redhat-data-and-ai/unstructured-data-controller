@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -191,12 +192,12 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 	outputDir string,
 ) (*unstructured.GDriveSource, error) {
 	if gdriveConfig == nil {
-		return nil, fmt.Errorf("gdriveConfig is required when source type is gdrive")
+		return nil, errors.New("gdriveConfig is required when source type is gdrive")
 	}
 
 	ctrlConfig := GetGDriveControllerConfig()
 	if ctrlConfig == nil {
-		return nil, fmt.Errorf("gdriveConfig is not set in ControllerConfig")
+		return nil, errors.New("gdriveConfig is not set in ControllerConfig")
 	}
 
 	credentialsJSON, err := controllerutils.GDriveCredentialsFromSecret(

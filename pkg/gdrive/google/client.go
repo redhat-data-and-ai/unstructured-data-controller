@@ -78,7 +78,6 @@ func NewClient(
 			"failed to create Drive service: %w", err)
 	}
 
-	//nolint:staticcheck // TODO: migrate to credentials.DetectDefault
 	cloudIdentityService, err := cloudidentity.NewService(
 		ctx,
 		option.WithAuthCredentialsFile(option.ServiceAccount, credentialsFile),
@@ -123,7 +122,6 @@ func NewClientFromJSON(
 			"failed to create Drive service: %w", err)
 	}
 
-	//nolint:staticcheck // TODO: migrate to credentials.DetectDefault
 	cloudIdentityService, err := cloudidentity.NewService(
 		ctx,
 		option.WithAuthCredentialsJSON(option.ServiceAccount, credentialsJSON),

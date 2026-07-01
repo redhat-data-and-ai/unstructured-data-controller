@@ -389,7 +389,9 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 // even when file content hasn't changed, since permissions can change
 // independently. Returns true if the file content was newly stored or
 // updated, false if file content was skipped due to dedup.
-func (g *GDriveSource) storeFile(ctx context.Context, fs *filestore.FileStore, file *RawFileMetadata, fileID string) (bool, error) {
+func (g *GDriveSource) storeFile(
+	ctx context.Context, fs *filestore.FileStore, file *RawFileMetadata, fileID string,
+) (bool, error) {
 	logger := log.FromContext(ctx)
 	filePath := file.FilePath
 	metadataPath := MetadataPath(filePath)
@@ -426,7 +428,7 @@ func (g *GDriveSource) storeFile(ctx context.Context, fs *filestore.FileStore, f
 		if err != nil {
 			return false, fmt.Errorf("failed to download file %s: %w", fileID, err)
 		}
-		defer reader.Close()
+		defer func() { _ = reader.Close() }()
 
 		data, err := io.ReadAll(reader)
 		if err != nil {

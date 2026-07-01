@@ -18,6 +18,7 @@ package controllerutils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -60,7 +61,7 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 // "GOOGLE_SERVICE_ACCOUNT_JSON".
 func GDriveCredentialsFromSecret(ctx context.Context, c client.Client, secretName, namespace string) ([]byte, error) {
 	if secretName == "" {
-		return nil, fmt.Errorf("secretRef is required for gdrive source type")
+		return nil, errors.New("secretRef is required for gdrive source type")
 	}
 	secret := &corev1.Secret{}
 	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
