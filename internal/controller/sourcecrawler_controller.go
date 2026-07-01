@@ -47,7 +47,7 @@ import (
 
 const (
 	SourceCrawlerControllerName  = "SourceCrawler"
-	defaultCrawlerResyncInterval = 5 * time.Minute
+	defaultCrawlerResyncInterval = 2 * time.Minute
 )
 
 // SourceCrawlerReconciler reconciles a SourceCrawler object
