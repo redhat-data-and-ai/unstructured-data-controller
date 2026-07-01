@@ -42,6 +42,7 @@ var (
 	embeddingEndpoint                      string
 	embeddingAPIKey                        string
 	UnstructuredDataPipelineResyncInterval *int
+	gdriveControllerConfig                 *operatorv1alpha1.GDriveControllerConfig
 )
 
 // ControllerConfigReconciler reconciles a ControllerConfig object
@@ -113,6 +114,11 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if config.Spec.UnstructuredDataPipelineResyncInterval != nil {
 		UnstructuredDataPipelineResyncInterval = config.Spec.UnstructuredDataPipelineResyncInterval
 		logger.Info("setting unstructured data pipeline resync interval", "minutes", *UnstructuredDataPipelineResyncInterval)
+	}
+
+	if config.Spec.GDriveConfig != nil {
+		gdriveControllerConfig = config.Spec.GDriveConfig.DeepCopy()
+		logger.Info("gdrive controller config loaded")
 	}
 
 	if config.Status.LastAppliedGeneration == config.Generation && config.IsHealthy() {

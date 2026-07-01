@@ -35,7 +35,12 @@ import (
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/cache"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/cache/inmemory"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/ldap"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
@@ -100,25 +105,31 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	sourceCrawlerConfig := sourceCrawlerCR.Spec.SourceCrawlerConfig
 	outputDir := unstructured.StagePath(parentPipeline, sourceCrawlerCR.Spec.StageName)
 
-	// fetch source credentials and create S3 client
-	sourceAWSConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace)
-	if err != nil {
-		return r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to get source credentials: %w", err))
-	}
-	sourceS3Client, err := awsclienthandler.NewS3Client(ctx, sourceAWSConfig)
-	if err != nil {
-		return r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to create source S3 client: %w", err))
-	}
-
 	var source unstructured.DataSource
 	switch sourceCrawlerConfig.Type {
 	case operatorv1alpha1.TypeS3:
+		sourceAWSConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace)
+		if err != nil {
+			return r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to get source credentials: %w", err))
+		}
+		sourceS3Client, err := awsclienthandler.NewS3Client(ctx, sourceAWSConfig)
+		if err != nil {
+			return r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to create source S3 client: %w", err))
+		}
 		source = &unstructured.S3BucketSource{
 			S3Client:  sourceS3Client,
 			Bucket:    sourceCrawlerConfig.S3Config.Bucket,
 			Prefix:    sourceCrawlerConfig.S3Config.Prefix,
 			OutputDir: outputDir,
 		}
+
+	case operatorv1alpha1.TypeGDrive:
+		gdriveSource, err := r.buildGDriveSource(ctx, sourceCrawlerCR, sourceCrawlerConfig.GDriveConfig, outputDir)
+		if err != nil {
+			return r.handleError(ctx, sourceCrawlerCR, err)
+		}
+		source = gdriveSource
+
 	default:
 		return r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("unsupported source type: %s", sourceCrawlerConfig.Type))
 	}
@@ -138,15 +149,12 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.handleError(ctx, sourceCrawlerCR, err)
 	}
 
-	// determine requeue strategy based on SQS configuration
-	sqsQueueURL := sourceCrawlerConfig.S3Config.SQSQueueURL
-	if sqsQueueURL != "" {
-		_, err := awsclienthandler.NewSQSClientFromConfig(ctx, sourceAWSConfig)
-		if err != nil {
-			logger.Error(err, "failed to initialize SQS client")
-			return r.handleError(ctx, sourceCrawlerCR, err)
+	// determine requeue strategy
+	if sourceCrawlerConfig.Type == operatorv1alpha1.TypeS3 {
+		sqsQueueURL := sourceCrawlerConfig.S3Config.SQSQueueURL
+		if sqsQueueURL != "" {
+			return handleSQSWakeUp(ctx, sqsQueueURL, sourceCrawlerConfig.S3Config.Bucket, sourceCrawlerConfig.S3Config.Prefix)
 		}
-		return handleSQSWakeUp(ctx, sqsQueueURL, sourceCrawlerConfig.S3Config.Bucket, sourceCrawlerConfig.S3Config.Prefix)
 	}
 	return ctrl.Result{RequeueAfter: defaultCrawlerResyncInterval}, nil
 }
@@ -174,6 +182,85 @@ func handleSQSWakeUp(ctx context.Context, queueURL, bucket, prefix string) (ctrl
 
 	// requeue immediately — the long poll inside DrainSQSQueue is the wait
 	return ctrl.Result{Requeue: true}, nil
+}
+
+func (r *SourceCrawlerReconciler) buildGDriveSource(
+	ctx context.Context,
+	sourceCrawlerCR *operatorv1alpha1.SourceCrawler,
+	gdriveConfig *operatorv1alpha1.GDriveConfig,
+	outputDir string,
+) (*unstructured.GDriveSource, error) {
+	if gdriveConfig == nil {
+		return nil, fmt.Errorf("gdriveConfig is required when source type is gdrive")
+	}
+
+	ctrlConfig := GetGDriveControllerConfig()
+	if ctrlConfig == nil {
+		return nil, fmt.Errorf("gdriveConfig is not set in ControllerConfig")
+	}
+
+	credentialsJSON, err := controllerutils.GDriveCredentialsFromSecret(
+		ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get gdrive credentials: %w", err)
+	}
+
+	googleClient, err := google.NewClientFromJSON(ctx, credentialsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create google client: %w", err)
+	}
+
+	ldapClient, err := ldap.InitLDAP(ldap.Config{
+		Server:           ctrlConfig.LDAPConfig.Server,
+		GroupDN:          ctrlConfig.LDAPConfig.GroupDN,
+		UserDN:           ctrlConfig.LDAPConfig.UserDN,
+		BaseUserDN:       ctrlConfig.LDAPConfig.BaseUserDN,
+		UserSearchFilter: ctrlConfig.LDAPConfig.UserSearchFilter,
+		EmailAttribute:   ctrlConfig.LDAPConfig.EmailAttribute,
+		Attributes:       ctrlConfig.LDAPConfig.Attributes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize LDAP client: %w", err)
+	}
+
+	cacheClient, err := cache.New(&cache.Config{
+		Driver: cache.DriverMemory,
+		InMemory: &inmemory.Config{
+			DefaultExpiration: -1,
+			CleanupInterval:   -1,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cache client: %w", err)
+	}
+
+	gdriveClient, err := gdrive.NewClient(googleClient, ldapClient, cacheClient)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gdrive client: %w", err)
+	}
+
+	maxRetries := ctrlConfig.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+	concurrentFolders := ctrlConfig.ConcurrentFolders
+	if concurrentFolders == 0 {
+		concurrentFolders = 5
+	}
+	concurrentDownloads := ctrlConfig.ConcurrentDownloads
+	if concurrentDownloads == 0 {
+		concurrentDownloads = 10
+	}
+
+	return &unstructured.GDriveSource{
+		GDriveClient:        gdriveClient,
+		FolderIDs:           gdriveConfig.FolderIDs,
+		SkipFolderNames:     gdriveConfig.SkipFolderNames,
+		MaxRetries:          maxRetries,
+		ConcurrentFolders:   concurrentFolders,
+		ConcurrentDownloads: concurrentDownloads,
+		OutputDir:           outputDir,
+	}, nil
 }
 
 func (r *SourceCrawlerReconciler) handleError(ctx context.Context, sourceCrawlerCR *operatorv1alpha1.SourceCrawler, err error) (ctrl.Result, error) {

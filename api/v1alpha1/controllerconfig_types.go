@@ -50,6 +50,24 @@ type ControllerConfigSpec struct {
 	DataStorageBucket           string `json:"dataStorageBucket,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	UnstructuredDataPipelineResyncInterval *int `json:"unstructuredDataPipelineResyncInterval,omitempty"`
+	// GDriveConfig holds operator-level Google Drive crawling settings.
+	// +optional
+	GDriveConfig *GDriveControllerConfig `json:"gdriveConfig,omitempty"`
+}
+
+// GDriveControllerConfig holds operator-level settings for Google Drive crawling.
+type GDriveControllerConfig struct {
+	// MaxRetries is the maximum number of retries for Google API calls. Defaults to 3.
+	// +optional
+	MaxRetries int `json:"maxRetries,omitempty"`
+	// ConcurrentFolders is the maximum number of folders to crawl concurrently. Defaults to 5.
+	// +optional
+	ConcurrentFolders int `json:"concurrentFolders,omitempty"`
+	// ConcurrentDownloads is the maximum number of files to download concurrently. Defaults to 10.
+	// +optional
+	ConcurrentDownloads int `json:"concurrentDownloads,omitempty"`
+	// LDAPConfig holds LDAP configuration for user/group identity resolution.
+	LDAPConfig LDAPConfig `json:"ldapConfig"`
 }
 
 // ControllerConfigStatus defines the observed state of ControllerConfig.

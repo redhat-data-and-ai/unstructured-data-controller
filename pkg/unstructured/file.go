@@ -45,6 +45,10 @@ func MetadataPath(rawFilePath string) string {
 	return rawFilePath + ".json"
 }
 
+func PermissionsPath(rawFilePath string) string {
+	return rawFilePath + ".permissions.json"
+}
+
 func FilterRawFilePaths(filePaths []string) []string {
 	rawFilePaths := []string{}
 	for _, filePath := range filePaths {

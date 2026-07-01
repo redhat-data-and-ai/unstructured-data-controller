@@ -68,7 +68,7 @@ func NewClient(
 	credentialsFile string,
 ) (*Client, error) {
 	opts := []option.ClientOption{
-		option.WithCredentialsFile(credentialsFile), //nolint:staticcheck // TODO: migrate to credentials.DetectDefault
+		option.WithAuthCredentialsFile(option.ServiceAccount, credentialsFile),
 		option.WithScopes(drive.DriveReadonlyScope),
 	}
 
@@ -81,7 +81,7 @@ func NewClient(
 	//nolint:staticcheck // TODO: migrate to credentials.DetectDefault
 	cloudIdentityService, err := cloudidentity.NewService(
 		ctx,
-		option.WithCredentialsFile(credentialsFile),
+		option.WithAuthCredentialsFile(option.ServiceAccount, credentialsFile),
 		option.WithScopes(
 			cloudidentity.CloudIdentityGroupsReadonlyScope),
 	)
@@ -92,6 +92,49 @@ func NewClient(
 
 	// Create an authenticated HTTP client with the same
 	// credentials for direct export URL requests.
+	httpClient, _, err := htransport.NewClient(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create HTTP client: %w", err)
+	}
+
+	return &Client{
+		driveService:         driveService,
+		cloudIdentityService: cloudIdentityService,
+		httpClient:           httpClient,
+	}, nil
+}
+
+// NewClientFromJSON creates a new Google API client using raw service
+// account credentials JSON, avoiding the need to write credentials
+// to a temporary file.
+func NewClientFromJSON(
+	ctx context.Context,
+	credentialsJSON []byte,
+) (*Client, error) {
+	opts := []option.ClientOption{
+		option.WithAuthCredentialsJSON(option.ServiceAccount, credentialsJSON),
+		option.WithScopes(drive.DriveReadonlyScope),
+	}
+
+	driveService, err := drive.NewService(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create Drive service: %w", err)
+	}
+
+	//nolint:staticcheck // TODO: migrate to credentials.DetectDefault
+	cloudIdentityService, err := cloudidentity.NewService(
+		ctx,
+		option.WithAuthCredentialsJSON(option.ServiceAccount, credentialsJSON),
+		option.WithScopes(
+			cloudidentity.CloudIdentityGroupsReadonlyScope),
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create Cloud Identity service: %w", err)
+	}
+
 	httpClient, _, err := htransport.NewClient(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf(

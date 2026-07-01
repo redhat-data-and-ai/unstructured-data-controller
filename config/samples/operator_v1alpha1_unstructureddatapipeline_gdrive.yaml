@@ -1,0 +1,55 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: UnstructuredDataPipeline
+metadata:
+  name: gdrive-pipeline
+spec:
+  secretRef: gdrive-pipeline-secret
+  description: "Pipeline for crawling Google Drive folders"
+  stages:
+    - name: crawl
+      type: SourceCrawler
+      sourceCrawlerConfig:
+        type: gdrive
+        gdriveConfig:
+          folderIDs:
+            - "1ua4tWAwVVZV_0p93asX5KJt7ycKH03ta"
+          skipFolderNames:
+            - "_indexes"
+            - "_synthesized"
+    - name: convert
+      type: DocumentProcessor
+      dependsOn:
+        - name: crawl
+      documentProcessorConfig:
+        type: docling
+        doclingConfig:
+          from_formats: [pdf, docx]
+          do_ocr: true
+          ocr_engine: easyocr
+    - name: chunk
+      type: ChunksGenerator
+      dependsOn:
+        - name: convert
+      chunksGeneratorConfig:
+        strategy: recursiveCharacterTextSplitter
+        recursiveCharacterSplitterConfig:
+          chunkSize: 1000
+          chunkOverlap: 200
+    - name: embed
+      type: VectorEmbeddingsGenerator
+      dependsOn:
+        - name: chunk
+      vectorEmbeddingsGeneratorConfig:
+        modelName: nomic-ai/nomic-embed-text-v1.5
+    - name: sync
+      type: DestinationSyncer
+      dependsOn:
+        - name: crawl
+        - name: convert
+        - name: chunk
+        - name: embed
+      destinationSyncerConfig:
+        type: s3
+        s3DestinationConfig:
+          bucket: dataverse-internal-unstructured
+          prefix: gdrive/

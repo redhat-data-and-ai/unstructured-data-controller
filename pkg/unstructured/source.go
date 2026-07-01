@@ -24,11 +24,15 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"golang.org/x/sync/errgroup"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 )
 
 type DataSource interface {
@@ -223,4 +227,254 @@ func (s *S3BucketSource) s3Key(filestorePath string) string {
 	}
 	baseName := strings.TrimPrefix(filestorePath, s.OutputDir)
 	return path.Join(s.Prefix, baseName)
+}
+
+// GDriveSource implements DataSource for Google Drive folders.
+type GDriveSource struct {
+	GDriveClient        *gdrive.Client
+	FolderIDs           []string
+	SkipFolderNames     []string
+	MaxRetries          int
+	ConcurrentFolders   int
+	ConcurrentDownloads int
+	OutputDir           string
+}
+
+func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error) {
+	logger := log.FromContext(ctx)
+
+	// Phase 1: Crawl all root folders concurrently
+	logger.Info("starting gdrive folder crawl",
+		"folderCount", len(g.FolderIDs),
+		"concurrentFolders", g.ConcurrentFolders,
+	)
+
+	type folderResult struct {
+		result *gdrive.CrawlResult
+		err    error
+	}
+	results := make([]folderResult, len(g.FolderIDs))
+	crawlGroup, _ := errgroup.WithContext(ctx)
+	crawlGroup.SetLimit(g.ConcurrentFolders)
+
+	for i, folderID := range g.FolderIDs {
+		crawlGroup.Go(func() error {
+			crawlRes, crawlErr := g.GDriveClient.CrawlFolder(
+				ctx, folderID, g.SkipFolderNames, g.MaxRetries)
+			results[i] = folderResult{result: crawlRes, err: crawlErr}
+			return nil
+		})
+	}
+	_ = crawlGroup.Wait()
+
+	// Merge and filter crawl records to only successful non-folder files
+	var fileRecords []gdrive.CrawlRecord
+	seen := make(map[string]bool)
+	for i, r := range results {
+		if r.err != nil {
+			logger.Error(r.err, "folder crawl failed", "folderID", g.FolderIDs[i])
+			continue
+		}
+		for _, record := range r.result.Records {
+			if record.Status != "successful" {
+				continue
+			}
+			if record.MimeType == "application/vnd.google-apps.folder" {
+				continue
+			}
+			if !seen[record.FileID] {
+				seen[record.FileID] = true
+				fileRecords = append(fileRecords, record)
+			}
+		}
+	}
+
+	logger.Info("gdrive crawl complete, starting file download",
+		"discoveredFiles", len(fileRecords),
+		"concurrentDownloads", g.ConcurrentDownloads,
+	)
+
+	// Phase 2: Download files, fetch permissions, store to filestore
+	var mu sync.Mutex
+	var storedFiles []RawFileMetadata
+	errorList := map[string]error{}
+	currentFileIDs := make(map[string]bool, len(fileRecords))
+
+	dlGroup, _ := errgroup.WithContext(ctx)
+	dlGroup.SetLimit(g.ConcurrentDownloads)
+
+	for _, record := range fileRecords {
+		currentFileIDs[record.FileID] = true
+		dlGroup.Go(func() error {
+			filestorePath := path.Join(g.OutputDir, record.FileID, record.FileName)
+			uid := record.FileID + ":" + record.UpdatedAt
+			file := RawFileMetadata{
+				FilePath: filestorePath,
+				UID:      uid,
+			}
+
+			stored, err := g.storeFile(ctx, fs, &file, record.FileID)
+			if err != nil {
+				logger.Error(err, "failed to store gdrive file",
+					"fileID", record.FileID, "fileName", record.FileName)
+				mu.Lock()
+				errorList[record.FileID] = err
+				mu.Unlock()
+				return nil
+			}
+			if stored {
+				logger.Info("stored gdrive file",
+					"fileID", record.FileID, "fileName", record.FileName)
+				mu.Lock()
+				storedFiles = append(storedFiles, file)
+				mu.Unlock()
+			}
+			return nil
+		})
+	}
+	_ = dlGroup.Wait()
+
+	// Phase 3: Garbage collection — delete files and permissions no longer in source
+	localFiles, err := fs.ListFilesInPath(ctx, g.OutputDir)
+	if err != nil {
+		logger.Error(err, "failed to list files in filestore for gc", "outputDir", g.OutputDir)
+	} else {
+		permissionsPrefix := path.Join(g.OutputDir, "permissions") + "/"
+		for _, localFilePath := range localFiles {
+			// Handle permissions directory: only keep permissions_<fileID>.json files
+			if baseName, ok := strings.CutPrefix(localFilePath, permissionsPrefix); ok {
+				if !strings.HasPrefix(baseName, "permissions_") {
+					logger.Info("deleting legacy permissions file without prefix", "file", localFilePath)
+					if err := fs.Delete(ctx, localFilePath); err != nil {
+						logger.Error(err, "failed to delete permissions file", "file", localFilePath)
+					}
+					continue
+				}
+				permFileID := strings.TrimSuffix(strings.TrimPrefix(baseName, "permissions_"), ".json")
+				if !currentFileIDs[permFileID] {
+					logger.Info("permissions file no longer in source, deleting", "file", localFilePath)
+					if err := fs.Delete(ctx, localFilePath); err != nil {
+						logger.Error(err, "failed to delete permissions file", "file", localFilePath)
+					}
+				}
+				continue
+			}
+
+			fileID := g.extractFileID(localFilePath)
+			if fileID == "" {
+				continue
+			}
+			if !currentFileIDs[fileID] {
+				logger.Info("file no longer in source, deleting from filestore", "file", localFilePath)
+				if err := fs.Delete(ctx, localFilePath); err != nil {
+					logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
+				}
+			}
+		}
+	}
+
+	errorMessage := ""
+	for fileID, err := range errorList {
+		errorMessage += fmt.Sprintf("fileID: %s, error: %v\n", fileID, err)
+	}
+	if len(errorMessage) > 0 {
+		return storedFiles, errors.New(errorMessage)
+	}
+
+	return storedFiles, nil
+}
+
+// storeFile downloads a Google Drive file and stores it with metadata,
+// then fetches and stores permissions. Permissions are always refreshed
+// even when file content hasn't changed, since permissions can change
+// independently. Returns true if the file content was newly stored or
+// updated, false if file content was skipped due to dedup.
+func (g *GDriveSource) storeFile(ctx context.Context, fs *filestore.FileStore, file *RawFileMetadata, fileID string) (bool, error) {
+	logger := log.FromContext(ctx)
+	filePath := file.FilePath
+	metadataPath := MetadataPath(filePath)
+
+	// Check dedup via metadata sidecar — only for file content
+	fileChanged := true
+	fileExists, err := fs.Exists(ctx, filePath)
+	if err != nil {
+		return false, err
+	}
+	metadataExists, err := fs.Exists(ctx, metadataPath)
+	if err != nil {
+		return false, err
+	}
+
+	if fileExists && metadataExists {
+		metadata, err := fs.Retrieve(ctx, metadataPath)
+		if err != nil {
+			return false, err
+		}
+		var existingFile RawFileMetadata
+		if err := json.Unmarshal(metadata, &existingFile); err != nil {
+			return false, err
+		}
+		if existingFile.UID == file.UID {
+			logger.V(1).Info("gdrive file unchanged, skipping download",
+				"fileID", fileID, "file", filePath)
+			fileChanged = false
+		}
+	}
+
+	if fileChanged {
+		reader, err := g.GDriveClient.DownloadFile(ctx, fileID, g.MaxRetries)
+		if err != nil {
+			return false, fmt.Errorf("failed to download file %s: %w", fileID, err)
+		}
+		defer reader.Close()
+
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return false, fmt.Errorf("failed to read file %s: %w", fileID, err)
+		}
+
+		if err := fs.Store(ctx, filePath, data); err != nil {
+			return false, fmt.Errorf("failed to store file %s: %w", fileID, err)
+		}
+
+		metadataData, err := json.Marshal(file)
+		if err != nil {
+			return false, fmt.Errorf("failed to marshal metadata for %s: %w", fileID, err)
+		}
+		if err := fs.Store(ctx, metadataPath, metadataData); err != nil {
+			return false, fmt.Errorf("failed to store metadata for %s: %w", fileID, err)
+		}
+	}
+
+	// Always fetch and store permissions — they can change independently of file content
+	permissions, warnings, err := g.GDriveClient.GetFilePermissions(ctx, fileID, g.MaxRetries)
+	if err != nil {
+		return false, fmt.Errorf("failed to get permissions for %s: %w", fileID, err)
+	}
+	if len(warnings) > 0 {
+		logger.Info("permission warnings", "fileID", fileID, "warnings", warnings)
+	}
+
+	permissionsData, err := json.Marshal(permissions)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal permissions for %s: %w", fileID, err)
+	}
+	permissionsPath := path.Join(g.OutputDir, "permissions", "permissions_"+fileID+".json")
+	if err := fs.Store(ctx, permissionsPath, permissionsData); err != nil {
+		return false, fmt.Errorf("failed to store permissions for %s: %w", fileID, err)
+	}
+
+	return fileChanged, nil
+}
+
+// extractFileID extracts the Google Drive file ID from a filestore
+// path of the form "<outputDir>/<fileID>/<fileName>".
+func (g *GDriveSource) extractFileID(filestorePath string) string {
+	rel := strings.TrimPrefix(filestorePath, g.OutputDir)
+	rel = strings.TrimPrefix(rel, "/")
+	parts := strings.SplitN(rel, "/", 2)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0]
 }

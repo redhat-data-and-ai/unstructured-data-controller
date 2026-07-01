@@ -25,6 +25,10 @@ func IsAWSClientNotInitializedError(err error) bool {
 		strings.Contains(msg, errMsgPresignNotInitialized)
 }
 
+func GetGDriveControllerConfig() *operatorv1alpha1.GDriveControllerConfig {
+	return gdriveControllerConfig
+}
+
 func IsConfigCRHealthy(ctx context.Context, kubeClient client.Client, namespace string) (bool, error) {
 	controllerConfigCR := &operatorv1alpha1.ControllerConfig{}
 	if err := kubeClient.Get(ctx, types.NamespacedName{

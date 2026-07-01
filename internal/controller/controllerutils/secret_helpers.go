@@ -54,3 +54,21 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 		Endpoint:        string(secret.Data["AWS_ENDPOINT"]),
 	}, nil
 }
+
+// GDriveCredentialsFromSecret reads the Google service account JSON
+// from a K8s Secret. The secret must contain a key named
+// "GOOGLE_SERVICE_ACCOUNT_JSON".
+func GDriveCredentialsFromSecret(ctx context.Context, c client.Client, secretName, namespace string) ([]byte, error) {
+	if secretName == "" {
+		return nil, fmt.Errorf("secretRef is required for gdrive source type")
+	}
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return nil, fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
+	}
+	credentialsJSON, ok := secret.Data["GOOGLE_SERVICE_ACCOUNT_JSON"]
+	if !ok || len(credentialsJSON) == 0 {
+		return nil, fmt.Errorf("secret %s does not contain key GOOGLE_SERVICE_ACCOUNT_JSON", secretName)
+	}
+	return credentialsJSON, nil
+}

@@ -52,6 +52,59 @@ spec:
                 type: string
               doclingServeURL:
                 type: string
+              gdriveConfig:
+                description: GDriveConfig holds operator-level Google Drive crawling
+                  settings.
+                properties:
+                  concurrentDownloads:
+                    description: ConcurrentDownloads is the maximum number of files
+                      to download concurrently. Defaults to 10.
+                    type: integer
+                  concurrentFolders:
+                    description: ConcurrentFolders is the maximum number of folders
+                      to crawl concurrently. Defaults to 5.
+                    type: integer
+                  ldapConfig:
+                    description: LDAPConfig holds LDAP configuration for user/group
+                      identity resolution.
+                    properties:
+                      attributes:
+                        description: Attributes is the list of LDAP attributes to
+                          retrieve.
+                        items:
+                          type: string
+                        type: array
+                      baseUserDN:
+                        description: BaseUserDN is the base DN for user searches.
+                        type: string
+                      emailAttribute:
+                        description: EmailAttribute is the LDAP attribute containing
+                          user email addresses (e.g., "mail").
+                        type: string
+                      groupDN:
+                        description: GroupDN is the base DN for group searches.
+                        type: string
+                      server:
+                        description: Server is the LDAP server URL (e.g., "ldap://ldap.example.com:389").
+                        type: string
+                      userDN:
+                        description: UserDN is the DN template for user lookups (must
+                          contain %s for the user ID).
+                        type: string
+                      userSearchFilter:
+                        description: UserSearchFilter is the LDAP filter for user
+                          searches (e.g., "(objectClass=person)").
+                        type: string
+                    required:
+                    - server
+                    type: object
+                  maxRetries:
+                    description: MaxRetries is the maximum number of retries for Google
+                      API calls. Defaults to 3.
+                    type: integer
+                required:
+                - ldapConfig
+                type: object
               maxConcurrentDoclingTasks:
                 type: integer
               maxConcurrentLangchainTasks:
