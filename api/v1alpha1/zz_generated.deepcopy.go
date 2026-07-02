@@ -217,7 +217,11 @@ func (in *ControllerConfigSpec) DeepCopyInto(out *ControllerConfigSpec) {
 		*out = new(GoogleDriveControllerConfig)
 		**out = **in
 	}
-	in.LDAPConfig.DeepCopyInto(&out.LDAPConfig)
+	if in.LDAPConfig != nil {
+		in, out := &in.LDAPConfig, &out.LDAPConfig
+		*out = new(LDAPConfig)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.SnowflakeConfig != nil {
 		in, out := &in.SnowflakeConfig, &out.SnowflakeConfig
 		*out = new(SnowflakeConfig)

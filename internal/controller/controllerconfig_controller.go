@@ -117,8 +117,8 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	embeddingAPIKey = string(secret.Data["EMBEDDING_API_KEY"])
 
 	// initialize LDAP client and cache if configured
-	if config.Spec.LDAPConfig.Server != "" {
-		ldapCfg := config.Spec.LDAPConfig
+	if config.Spec.LDAPConfig != nil && config.Spec.LDAPConfig.Server != "" {
+		ldapCfg := *config.Spec.LDAPConfig
 		lc, err := ldap.InitLDAP(ldap.Config{
 			Server:           ldapCfg.Server,
 			GroupDN:          ldapCfg.GroupDN,

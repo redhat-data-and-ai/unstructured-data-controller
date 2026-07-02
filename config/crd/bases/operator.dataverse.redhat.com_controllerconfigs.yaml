@@ -146,8 +146,6 @@ spec:
               unstructuredSecret:
                 description: 'Deprecated: use SecretRef instead.'
                 type: string
-            required:
-            - ldapConfig
             type: object
           status:
             description: ControllerConfigStatus defines the observed state of ControllerConfig.

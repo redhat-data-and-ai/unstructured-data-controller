@@ -64,7 +64,8 @@ type ControllerConfigSpec struct {
 	// +optional
 	GoogleDriveConfig *GoogleDriveControllerConfig `json:"googleDriveConfig,omitempty"`
 	// LDAPConfig holds LDAP configuration for user/group identity resolution.
-	LDAPConfig LDAPConfig `json:"ldapConfig"`
+	// +optional
+	LDAPConfig *LDAPConfig `json:"ldapConfig,omitempty"`
 
 	// Deprecated: use SecretRef instead.
 	// +optional
