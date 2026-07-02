@@ -65,6 +65,36 @@ type ControllerConfigSpec struct {
 	GoogleDriveConfig *GoogleDriveControllerConfig `json:"googleDriveConfig,omitempty"`
 	// LDAPConfig holds LDAP configuration for user/group identity resolution.
 	LDAPConfig LDAPConfig `json:"ldapConfig"`
+
+	// Deprecated: use SecretRef instead.
+	// +optional
+	UnstructuredSecret string `json:"unstructuredSecret,omitempty"`
+	// Deprecated: fields are now top-level on ControllerConfigSpec.
+	// +optional
+	SnowflakeConfig *SnowflakeConfig `json:"snowflakeConfig,omitempty"`
+	// Deprecated: fields are now top-level on ControllerConfigSpec.
+	// +optional
+	UnstructuredDataProcessingConfig *UnstructuredDataProcessingConfigSpec `json:"unstructuredDataProcessingConfig,omitempty"`
+}
+
+// Deprecated: SnowflakeConfig is no longer used.
+type SnowflakeConfig struct {
+	Name      string `json:"name,omitempty"`
+	Account   string `json:"account,omitempty"`
+	User      string `json:"user,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Region    string `json:"region,omitempty"`
+	Warehouse string `json:"warehouse,omitempty"`
+}
+
+// Deprecated: fields are now top-level on ControllerConfigSpec.
+type UnstructuredDataProcessingConfigSpec struct {
+	MaxConcurrentDoclingTasks   int    `json:"maxConcurrentDoclingTasks,omitempty"`
+	MaxConcurrentLangchainTasks int    `json:"maxConcurrentLangchainTasks,omitempty"`
+	IngestionBucket             string `json:"ingestionBucket,omitempty"`
+	DoclingServeURL             string `json:"doclingServeURL,omitempty"`
+	CacheDirectory              string `json:"cacheDirectory,omitempty"`
+	DataStorageBucket           string `json:"dataStorageBucket,omitempty"`
 }
 
 // GDriveControllerConfig holds operator-level settings for Google Drive crawling.

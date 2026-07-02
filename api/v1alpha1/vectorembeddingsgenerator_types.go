@@ -45,6 +45,9 @@ type VectorEmbeddingsGeneratorSpec struct {
 	StageName                       string                          `json:"stageName,omitempty"`
 	DependsOn                       []StageDependency               `json:"dependsOn,omitempty"`
 	VectorEmbeddingsGeneratorConfig VectorEmbeddingsGeneratorConfig `json:"embeddingGeneratorConfig,omitempty"`
+	// Deprecated: use StageName and DependsOn instead.
+	// +optional
+	DataProduct string `json:"dataProduct,omitempty"`
 }
 
 // VectorEmbeddingsGeneratorStatus defines the observed state of VectorEmbeddingsGenerator.

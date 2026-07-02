@@ -46,6 +46,9 @@ type ChunksGeneratorSpec struct {
 	StageName             string                `json:"stageName,omitempty"`
 	DependsOn             []StageDependency     `json:"dependsOn,omitempty"`
 	ChunksGeneratorConfig ChunksGeneratorConfig `json:"config,omitempty"`
+	// Deprecated: use StageName and DependsOn instead.
+	// +optional
+	DataProduct string `json:"dataProduct,omitempty"`
 }
 
 // ChunksGeneratorStatus defines the observed state of ChunksGenerator

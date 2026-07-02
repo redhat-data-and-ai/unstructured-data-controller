@@ -51,6 +51,9 @@ type DocumentProcessorSpec struct {
 	StageName               string                  `json:"stageName,omitempty"`
 	DependsOn               []StageDependency       `json:"dependsOn,omitempty"`
 	DocumentProcessorConfig DocumentProcessorConfig `json:"config,omitempty"`
+	// Deprecated: use StageName and DependsOn instead.
+	// +optional
+	DataProduct string `json:"dataProduct,omitempty"`
 }
 
 // DocumentProcessorStatus defines the observed state of DocumentProcessor

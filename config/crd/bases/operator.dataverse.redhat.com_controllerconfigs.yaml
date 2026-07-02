@@ -108,9 +108,44 @@ spec:
                 type: integer
               secretRef:
                 type: string
+              snowflakeConfig:
+                description: 'Deprecated: fields are now top-level on ControllerConfigSpec.'
+                properties:
+                  account:
+                    type: string
+                  name:
+                    type: string
+                  region:
+                    type: string
+                  role:
+                    type: string
+                  user:
+                    type: string
+                  warehouse:
+                    type: string
+                type: object
               unstructuredDataPipelineResyncInterval:
                 minimum: 1
                 type: integer
+              unstructuredDataProcessingConfig:
+                description: 'Deprecated: fields are now top-level on ControllerConfigSpec.'
+                properties:
+                  cacheDirectory:
+                    type: string
+                  dataStorageBucket:
+                    type: string
+                  doclingServeURL:
+                    type: string
+                  ingestionBucket:
+                    type: string
+                  maxConcurrentDoclingTasks:
+                    type: integer
+                  maxConcurrentLangchainTasks:
+                    type: integer
+                type: object
+              unstructuredSecret:
+                description: 'Deprecated: use SecretRef instead.'
+                type: string
             required:
             - ldapConfig
             type: object

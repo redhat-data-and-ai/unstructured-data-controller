@@ -51,6 +51,9 @@ spec:
             description: VectorEmbeddingsGeneratorSpec defines the desired state of
               VectorEmbeddingsGenerator.
             properties:
+              dataProduct:
+                description: 'Deprecated: use StageName and DependsOn instead.'
+                type: string
               dependsOn:
                 items:
                   description: StageDependency identifies an upstream stage by name.
