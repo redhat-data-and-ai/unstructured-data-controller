@@ -29,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -54,11 +55,6 @@ var (
 type DocumentProcessorReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-
-	doclingConfig *docling.DoclingConfig
-	fileStore     *filestore.FileStore
-	inputPath     string
-	outputPath    string
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors,verbs=get;list;watch;create;update;patch;delete
@@ -95,7 +91,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	r.doclingConfig = &docling.DoclingConfig{
+	doclingCfg := &docling.DoclingConfig{
 		FromFormats:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.FromFormats,
 		ImageExportMode: documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.ImageExportMode,
 		DoOCR:           documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig.DoOCR,
@@ -115,26 +111,26 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
-	r.fileStore = fs
-
-	// first, let's figure out the jobs that are currently running
-	jobProcessingErrors := []error{}
-	for _, job := range documentProcessorCR.Status.Jobs {
-		logger.Info("reconciling job", "job", job)
-		if err := r.reconcileJob(ctx, job, documentProcessorCR); err != nil {
-			jobProcessingErrors = append(jobProcessingErrors, err)
-			logger.Error(err, "failed to process job", "job", job.FilePath)
-		}
-	}
 
 	// read from upstream stage directory, write to own stage directory
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(documentProcessorCR)
 	if err != nil {
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
-	r.inputPath = unstructured.StagePath(pipelineName, documentProcessorCR.Spec.DependsOn[0].Name)
-	r.outputPath = unstructured.StagePath(pipelineName, documentProcessorCR.Spec.StageName)
-	filePaths, err := r.fileStore.ListFilesInPath(ctx, r.inputPath)
+	inputPath := unstructured.StagePath(pipelineName, documentProcessorCR.Spec.DependsOn[0].Name)
+	outputPath := unstructured.StagePath(pipelineName, documentProcessorCR.Spec.StageName)
+
+	// first, let's figure out the jobs that are currently running
+	jobProcessingErrors := []error{}
+	for _, job := range documentProcessorCR.Status.Jobs {
+		logger.Info("reconciling job", "job", job)
+		if err := r.reconcileJob(ctx, fs, inputPath, outputPath, job, documentProcessorCR); err != nil {
+			jobProcessingErrors = append(jobProcessingErrors, err)
+			logger.Error(err, "failed to process job", "job", job.FilePath)
+		}
+	}
+
+	filePaths, err := fs.ListFilesInPath(ctx, inputPath)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, documentProcessorCR, err)
@@ -144,7 +140,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	rawFilePaths := unstructured.FilterRawFilePaths(filePaths)
 	for _, rawFilePath := range rawFilePaths {
 		logger.Info("processing document", "document", rawFilePath)
-		if err := r.processDocument(ctx, rawFilePath, documentProcessorCR); err != nil {
+		if err := r.processDocument(ctx, fs, inputPath, outputPath, doclingCfg, rawFilePath, documentProcessorCR); err != nil {
 			documentProcessingErrors = append(documentProcessingErrors, err)
 			logger.Error(err, "failed to process document", "document", rawFilePath)
 		}
@@ -175,7 +171,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor) (err error) {
+func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, fs *filestore.FileStore, inputPath, outputPath string, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor) (err error) {
 	logger := log.FromContext(ctx)
 	// recover from panic semaphore panic
 	defer func() {
@@ -228,8 +224,8 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		if err != nil {
 			return err
 		}
-		convertedFilePath := unstructured.RemapToOutputDir(job.FilePath+".json", r.inputPath, r.outputPath)
-		if err := r.fileStore.Store(ctx, convertedFilePath, convertedFileBytes); err != nil {
+		convertedFilePath := unstructured.RemapToOutputDir(job.FilePath+".json", inputPath, outputPath)
+		if err := fs.Store(ctx, convertedFilePath, convertedFileBytes); err != nil {
 			return err
 		}
 		logger.Info("successfully stored the converted file in the filestore", "filePath", convertedFilePath)
@@ -271,12 +267,12 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 	return nil
 }
 
-func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor) error {
+func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, fs *filestore.FileStore, inputPath, outputPath string, doclingCfg *docling.DoclingConfig, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor) error {
 	logger := log.FromContext(ctx)
 	logger.Info("processing document", "rawFilePath", rawFilePath)
 
 	// check if the document needs to be converted
-	needsConversion, err := r.needsConversion(ctx, rawFilePath, documentProcessorCR)
+	needsConversion, err := r.needsConversion(ctx, fs, inputPath, outputPath, rawFilePath, documentProcessorCR)
 	if err != nil {
 		logger.Error(err, "failed to check if document needs conversion")
 		return err
@@ -287,19 +283,19 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	}
 
 	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	fileUID, err := r.getFileUID(ctx, fs, rawFilePath)
 	if err != nil {
 		logger.Error(err, "Failed to get file UID")
 		return err
 	}
 
 	// create a new job for the document
-	fileURL, err := r.fileStore.GetFileURL(ctx, rawFilePath)
+	fileURL, err := fs.GetFileURL(ctx, rawFilePath)
 	if err != nil {
 		logger.Error(err, "failed to get file URL")
 		return err
 	}
-	response, err := doclingClient.ConvertFile(ctx, fileURL, *r.doclingConfig)
+	response, err := doclingClient.ConvertFile(ctx, fileURL, *doclingCfg)
 	if err != nil {
 		logger.Error(err, "failed to convert file")
 		if strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
@@ -337,13 +333,13 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	return nil
 }
 
-func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor) (bool, error) {
+func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, fs *filestore.FileStore, inputPath, outputPath, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	logger.Info("checking if document should be converted", "filePath", rawFilePath)
 
 	// does the raw file even exist? this is unlikely to happen, but just in case
-	rawFileExists, err := r.fileStore.Exists(ctx, rawFilePath)
+	rawFileExists, err := fs.Exists(ctx, rawFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -354,7 +350,7 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 
 	// check whether metadata file exists
-	rawMetadataFileExists, err := r.fileStore.Exists(ctx, unstructured.MetadataPath(rawFilePath))
+	rawMetadataFileExists, err := fs.Exists(ctx, unstructured.MetadataPath(rawFilePath))
 	if err != nil {
 		return false, err
 	}
@@ -364,21 +360,21 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 
 	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	fileUID, err := r.getFileUID(ctx, fs, rawFilePath)
 	if err != nil {
 		logger.Error(err, "Failed to get file UID")
 		return false, err
 	}
 
 	// does the converted file exist in the output directory?
-	convertedFilePath := unstructured.RemapToOutputDir(rawFilePath+".json", r.inputPath, r.outputPath)
-	convertedFileExists, err := r.fileStore.Exists(ctx, convertedFilePath)
+	convertedFilePath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+	convertedFileExists, err := fs.Exists(ctx, convertedFilePath)
 	if err != nil {
 		return false, err
 	}
 	if convertedFileExists {
 		// if the converted file exists, then we need to check if it has the same configuration
-		convertedFileRaw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
+		convertedFileRaw, err := fs.Retrieve(ctx, convertedFilePath)
 		if err != nil {
 			return false, err
 		}
@@ -458,9 +454,9 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	return true, nil
 }
 
-func (r *DocumentProcessorReconciler) getFileUID(ctx context.Context, rawFilePath string) (string, error) {
+func (r *DocumentProcessorReconciler) getFileUID(ctx context.Context, fs *filestore.FileStore, rawFilePath string) (string, error) {
 	logger := log.FromContext(ctx)
-	metaDataFileRaw, err := r.fileStore.Retrieve(ctx, unstructured.MetadataPath(rawFilePath))
+	metaDataFileRaw, err := fs.Retrieve(ctx, unstructured.MetadataPath(rawFilePath))
 	if err != nil {
 		logger.Error(err, "Failed to retrieve metadata file")
 		return "", err
@@ -503,8 +499,9 @@ func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj cl
 // SetupWithManager sets up the controller with the Manager.
 // SetupWithManager registers this controller. Spec changes trigger via GenerationChangedPredicate.
 // Watches on other stage types trigger reconcile when an upstream dependency's status changes.
-func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconciles int) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&operatorv1alpha1.SourceCrawler{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.ChunksGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).

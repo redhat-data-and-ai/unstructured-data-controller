@@ -63,6 +63,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var watchNamespace string
+	var maxConcurrentReconciles int
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -84,6 +85,9 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&watchNamespace, "watch-namespace", "",
 		"The namespace to watch for changes. If not specified, all namespaces will be watched.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 10,
+		"Maximum number of concurrent reconciles per controller. "+
+			"Does not apply to the ControllerConfig controller which always uses 1.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -221,7 +225,7 @@ func main() {
 	if err := (&controller.UnstructuredDataPipelineReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "UnstructuredDataPipeline")
 		os.Exit(1)
 	}
@@ -229,7 +233,7 @@ func main() {
 	if err := (&controller.DocumentProcessorReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DocumentProcessor")
 		os.Exit(1)
 	}
@@ -237,28 +241,28 @@ func main() {
 	if err := (&controller.ChunksGeneratorReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ChunksGenerator")
 		os.Exit(1)
 	}
 	if err := (&controller.VectorEmbeddingsGeneratorReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VectorEmbeddingsGenerator")
 		os.Exit(1)
 	}
 	if err := (&controller.SourceCrawlerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SourceCrawler")
 		os.Exit(1)
 	}
 	if err := (&controller.DestinationSyncerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DestinationSyncer")
 		os.Exit(1)
 	}

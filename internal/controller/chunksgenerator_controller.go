@@ -28,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -49,10 +50,6 @@ const (
 type ChunksGeneratorReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-
-	fileStore  *filestore.FileStore
-	inputPath  string
-	outputPath string
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators,verbs=get;list;watch;create;update;patch;delete
@@ -109,15 +106,13 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
-	r.fileStore = fs
-
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(chunksGeneratorCR)
 	if err != nil {
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
-	r.inputPath = unstructured.StagePath(pipelineName, chunksGeneratorCR.Spec.DependsOn[0].Name)
-	r.outputPath = unstructured.StagePath(pipelineName, chunksGeneratorCR.Spec.StageName)
-	filePaths, err := r.fileStore.ListFilesInPath(ctx, r.inputPath)
+	inputPath := unstructured.StagePath(pipelineName, chunksGeneratorCR.Spec.DependsOn[0].Name)
+	outputPath := unstructured.StagePath(pipelineName, chunksGeneratorCR.Spec.StageName)
+	filePaths, err := fs.ListFilesInPath(ctx, inputPath)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, chunksGeneratorCR, err)
@@ -129,7 +124,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	for _, convertedFilePath := range filePaths {
 		logger.Info("processing converted file", "file", convertedFilePath)
-		processed, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR)
+		processed, err := r.processConvertedFile(ctx, fs, inputPath, outputPath, convertedFilePath, chunksGeneratorCR)
 		if err != nil {
 			if strings.Contains(err.Error(), langchain.SemaphoreAcquireError) {
 				logger.Error(err, "failed to process converted file, semaphore acquire error, will try again later", "file", convertedFilePath)
@@ -172,14 +167,14 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (bool, error) {
+func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, fs *filestore.FileStore, inputPath, outputPath, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("processing converted file", "file", convertedFilePath)
 
-	chunksFilePath := unstructured.RemapToOutputDir(convertedFilePath, r.inputPath, r.outputPath)
+	chunksFilePath := unstructured.RemapToOutputDir(convertedFilePath, inputPath, outputPath)
 
 	// figure out if the file is already chunked
-	needsChunking, err := r.needsChunking(ctx, convertedFilePath, chunksGeneratorCR)
+	needsChunking, err := r.needsChunking(ctx, fs, inputPath, outputPath, convertedFilePath, chunksGeneratorCR)
 	if err != nil {
 		logger.Error(err, "failed to check if file needs chunking")
 		return false, err
@@ -190,7 +185,7 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 	}
 
 	// chunk the file
-	chunksFile, err := r.chunkFile(ctx, convertedFilePath, chunksGeneratorCR)
+	chunksFile, err := r.chunkFile(ctx, fs, convertedFilePath, chunksGeneratorCR)
 	if err != nil {
 		logger.Error(err, "failed to chunk file")
 		return false, err
@@ -202,7 +197,7 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 		logger.Error(err, "failed to marshal chunks file")
 		return false, err
 	}
-	if err := r.fileStore.Store(ctx, chunksFilePath, chunksFileBytes); err != nil {
+	if err := fs.Store(ctx, chunksFilePath, chunksFileBytes); err != nil {
 		logger.Error(err, "failed to store chunks file")
 		return false, err
 	}
@@ -210,15 +205,15 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 	return true, nil
 }
 
-func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (bool, error) {
+func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, fs *filestore.FileStore, inputPath, outputPath, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("checking if file needs chunking", "file", convertedFilePath)
 
-	chunksFilePath := unstructured.RemapToOutputDir(convertedFilePath, r.inputPath, r.outputPath)
+	chunksFilePath := unstructured.RemapToOutputDir(convertedFilePath, inputPath, outputPath)
 
 	// fetch the converted file from the filestore
 	// this will also make sure that the converted file exists in the filestore
-	convertedFileRaw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
+	convertedFileRaw, err := fs.Retrieve(ctx, convertedFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -232,7 +227,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	convertedFileMetadata := convertedFile.ConvertedDocument.Metadata
 
 	// check if the chunked file does not exist in the filestore then return true
-	chunksFileExists, err := r.fileStore.Exists(ctx, chunksFilePath)
+	chunksFileExists, err := fs.Exists(ctx, chunksFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -241,7 +236,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	}
 
 	// if the chunked file exists, then we need to check if it has the same configuration
-	chunksFileRaw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	chunksFileRaw, err := fs.Retrieve(ctx, chunksFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -266,12 +261,12 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	return false, nil
 }
 
-func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (*unstructured.ChunksFile, error) {
+func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, fs *filestore.FileStore, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (*unstructured.ChunksFile, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("chunking file", "file", convertedFilePath)
 
 	// read the converted file from the filestore
-	convertedFileRaw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
+	convertedFileRaw, err := fs.Retrieve(ctx, convertedFilePath)
 	if err != nil {
 		return nil, err
 	}
@@ -367,8 +362,9 @@ func (r *ChunksGeneratorReconciler) findDependents(ctx context.Context, obj clie
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *ChunksGeneratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ChunksGeneratorReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconciles int) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&operatorv1alpha1.ChunksGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&operatorv1alpha1.SourceCrawler{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
