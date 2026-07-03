@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -28,10 +29,17 @@ type S3Destination struct {
 	StageName string
 }
 
-// s3Key returns the destination key: <prefix>/stages/<stageName>/<filename>
+// s3Key returns the destination key, preserving the path structure
+// relative to the stage directory.
+// e.g. "pipelines/p/stages/crawl/permissions/1ABC.json"
+//
+//	→ "<prefix>/stages/crawl/permissions/1ABC.json"
 func (d *S3Destination) s3Key(filePath string) string {
-	baseName := filepath.Base(filePath)
-	key := filepath.Join(d.Prefix, "stages", d.StageName, baseName)
+	rel := filePath
+	if idx := strings.Index(filePath, "stages/"+d.StageName+"/"); idx >= 0 {
+		rel = filePath[idx+len("stages/"+d.StageName+"/"):]
+	}
+	key := filepath.Join(d.Prefix, "stages", d.StageName, rel)
 	if filepath.Separator != '/' {
 		key = filepath.ToSlash(key)
 	}
