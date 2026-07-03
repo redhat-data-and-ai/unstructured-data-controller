@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -264,6 +265,10 @@ func (fs *FileStore) ListFilesInPath(ctx context.Context, path string) ([]string
 	if err != nil {
 		return nil, err
 	}
+
+	sort.Slice(objects, func(i, j int) bool {
+		return *objects[i].Size < *objects[j].Size
+	})
 
 	files := []string{}
 	for _, object := range objects {
