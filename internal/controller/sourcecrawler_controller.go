@@ -108,7 +108,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	var source unstructured.DataSource
 	switch sourceCrawlerConfig.Type {
 	case operatorv1alpha1.TypeS3:
-		sourceAWSConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace)
+		sourceAWSConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace, "SOURCE_S3_")
 		if err != nil {
 			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to get source credentials: %w", err))
 		}

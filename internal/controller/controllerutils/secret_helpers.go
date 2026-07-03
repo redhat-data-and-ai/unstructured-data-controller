@@ -39,7 +39,10 @@ func ParentPipelineNameFromOwnerReference(obj client.Object) (string, error) {
 }
 
 // AWSConfigFromSecret reads a K8s secret and returns an AWSConfig.
-func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, namespace string) (*awsclienthandler.AWSConfig, error) {
+// The prefix selects which set of keys to read (e.g. "SOURCE_S3_" or
+// "DESTINATION_S3_"), so the same secret can carry separate credentials
+// for source and destination.
+func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, namespace, prefix string) (*awsclienthandler.AWSConfig, error) {
 	if secretName == "" {
 		return &awsclienthandler.AWSConfig{}, nil
 	}
@@ -48,17 +51,17 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 		return nil, fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
 	}
 	return &awsclienthandler.AWSConfig{
-		Region:          string(secret.Data["AWS_REGION"]),
-		AccessKeyID:     string(secret.Data["AWS_ACCESS_KEY_ID"]),
-		SecretAccessKey: string(secret.Data["AWS_SECRET_ACCESS_KEY"]),
-		SessionToken:    string(secret.Data["AWS_SESSION_TOKEN"]),
-		Endpoint:        string(secret.Data["AWS_ENDPOINT"]),
+		Region:          string(secret.Data[prefix+"REGION"]),
+		AccessKeyID:     string(secret.Data[prefix+"ACCESS_KEY_ID"]),
+		SecretAccessKey: string(secret.Data[prefix+"SECRET_ACCESS_KEY"]),
+		SessionToken:    string(secret.Data[prefix+"SESSION_TOKEN"]),
+		Endpoint:        string(secret.Data[prefix+"ENDPOINT"]),
 	}, nil
 }
 
 // GDriveCredentialsFromSecret reads the Google service account JSON
 // from a K8s Secret. The secret must contain a key named
-// "GOOGLE_SERVICE_ACCOUNT_JSON".
+// "SOURCE_GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON".
 func GDriveCredentialsFromSecret(ctx context.Context, c client.Client, secretName, namespace string) ([]byte, error) {
 	if secretName == "" {
 		return nil, errors.New("secretRef is required for gdrive source type")
@@ -67,9 +70,10 @@ func GDriveCredentialsFromSecret(ctx context.Context, c client.Client, secretNam
 	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
 		return nil, fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
 	}
-	credentialsJSON, ok := secret.Data["GOOGLE_SERVICE_ACCOUNT_JSON"]
+	const key = "SOURCE_GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON"
+	credentialsJSON, ok := secret.Data[key]
 	if !ok || len(credentialsJSON) == 0 {
-		return nil, fmt.Errorf("secret %s does not contain key GOOGLE_SERVICE_ACCOUNT_JSON", secretName)
+		return nil, fmt.Errorf("secret %s does not contain key %s", secretName, key)
 	}
 	return credentialsJSON, nil
 }

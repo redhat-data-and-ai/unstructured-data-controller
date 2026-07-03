@@ -101,7 +101,7 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if destConfig.Type != operatorv1alpha1.TypeS3 {
 		return r.handleError(ctx, destinationSyncCR, fmt.Errorf("unsupported destination type: %s", destConfig.Type))
 	}
-	awsConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, destinationSyncCR.Spec.SecretRef, destinationSyncCR.Namespace)
+	awsConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, destinationSyncCR.Spec.SecretRef, destinationSyncCR.Namespace, "DESTINATION_S3_")
 	if err != nil {
 		return r.handleError(ctx, destinationSyncCR, fmt.Errorf("failed to get destination S3 credentials: %w", err))
 	}
