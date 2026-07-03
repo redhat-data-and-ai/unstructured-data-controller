@@ -41,7 +41,7 @@ type PipelineInfo struct {
 func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 	pipelineList := &operatorv1alpha1.UnstructuredDataPipelineList{}
 
-	namespace := os.Getenv("PIPELINE_NAMESPACE")
+	namespace := os.Getenv("UNSTRUCTURED_DATA_CONTROLLER_NAMESPACE")
 	if namespace == "" {
 		namespace = defaultPipelineNamespace
 	}

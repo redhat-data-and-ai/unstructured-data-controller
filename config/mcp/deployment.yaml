@@ -35,7 +35,7 @@ spec:
           protocol: TCP
 
         env:
-        - name: PIPELINE_NAMESPACE
+        - name: UNSTRUCTURED_DATA_CONTROLLER_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
