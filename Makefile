@@ -6,6 +6,7 @@
 VERSION ?= 0.0.1
 
 OUTPUT_FILE ?= manifest.yaml
+MCP_SERVER_OUTPUT_FILE ?= mcp-server-manifest.yaml
 DEPLOYMENT_NAMESPACE ?= unstructured-controller-namespace
 SUFFIX ?= "-test"
 PVC_SIZE ?= 10Gi
@@ -262,7 +263,7 @@ deploy-mcp: kustomize ## Deploy MCP server to the K8s cluster specified in ~/.ku
 .PHONY: generate-mcp-manifests
 generate-mcp-manifests: kustomize
 	cd config/mcp && $(KUSTOMIZE) edit set image unstructured-data-mcp-server=${IMG_MCP} && $(KUSTOMIZE) edit set namespace "${DEPLOYMENT_NAMESPACE}"
-	$(KUSTOMIZE) build config/mcp -o ${OUTPUT_FILE}
+	$(KUSTOMIZE) build config/mcp -o ${MCP_SERVER_OUTPUT_FILE}
 
 .PHONY: undeploy-mcp
 undeploy-mcp: kustomize ## Undeploy MCP server from the K8s cluster specified in ~/.kube/config.
