@@ -92,6 +92,8 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	chunksGeneratorCR.Spec.ChunksGeneratorConfig.SetDefaults()
+
 	// set status to waiting
 	if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
 		chunksGeneratorCR.SetWaiting()

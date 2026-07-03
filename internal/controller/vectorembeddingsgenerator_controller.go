@@ -82,6 +82,8 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 
+	vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.SetDefaults()
+
 	// set status to waiting
 	if err := controllerutils.StatusPatch(ctx, r.Client, vectorEmbeddingsGeneratorCR, func() {
 		vectorEmbeddingsGeneratorCR.SetWaiting()
