@@ -267,7 +267,14 @@ func (fs *FileStore) ListFilesInPath(ctx context.Context, path string) ([]string
 	}
 
 	sort.Slice(objects, func(i, j int) bool {
-		return *objects[i].Size < *objects[j].Size
+		var sizeI, sizeJ int64
+		if objects[i].Size != nil {
+			sizeI = *objects[i].Size
+		}
+		if objects[j].Size != nil {
+			sizeJ = *objects[j].Size
+		}
+		return sizeI < sizeJ
 	})
 
 	files := []string{}
