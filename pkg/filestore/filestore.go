@@ -18,13 +18,14 @@ package filestore
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -266,15 +267,15 @@ func (fs *FileStore) ListFilesInPath(ctx context.Context, path string) ([]string
 		return nil, err
 	}
 
-	sort.Slice(objects, func(i, j int) bool {
-		var sizeI, sizeJ int64
-		if objects[i].Size != nil {
-			sizeI = *objects[i].Size
+	slices.SortStableFunc(objects, func(a, b s3types.Object) int {
+		var sizeA, sizeB int64
+		if a.Size != nil {
+			sizeA = *a.Size
 		}
-		if objects[j].Size != nil {
-			sizeJ = *objects[j].Size
+		if b.Size != nil {
+			sizeB = *b.Size
 		}
-		return sizeI < sizeJ
+		return cmp.Compare(sizeA, sizeB)
 	})
 
 	files := []string{}
