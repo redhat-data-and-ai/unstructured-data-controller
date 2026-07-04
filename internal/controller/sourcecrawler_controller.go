@@ -81,8 +81,6 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	sourceCrawlerCR.Spec.SourceCrawlerConfig.SetDefaults()
-
 	if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
 		sourceCrawlerCR.SetWaiting()
 	}); err != nil {

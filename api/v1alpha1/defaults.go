@@ -123,18 +123,3 @@ func (c *VectorEmbeddingsGeneratorConfig) SetDefaults() {
 		c.ModelName = DefaultEmbeddingModelName
 	}
 }
-
-// SetDefaults infers the source type from the populated sub-config when Type is
-// not explicitly set.
-func (c *SourceCrawlerConfig) SetDefaults() {
-	if c.Type != "" {
-		return
-	}
-	if c.GoogleDriveConfig != nil {
-		c.Type = TypeGoogleDrive
-		return
-	}
-	if c.S3Config.Bucket != "" {
-		c.Type = TypeS3
-	}
-}
