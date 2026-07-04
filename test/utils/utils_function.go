@@ -77,7 +77,6 @@ func GetUnstructuredDataPipelineResourceWithStage(name, namespace string) v1alph
 							OCRLang:         []string{"en"},
 							PDFBackend:      "pypdf",
 							TableMode:       "none",
-							AbortOnError:    true,
 						},
 					},
 				},

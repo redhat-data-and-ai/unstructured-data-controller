@@ -53,8 +53,6 @@ spec:
                 properties:
                   doclingConfig:
                     properties:
-                      abort_on_error:
-                        type: boolean
                       do_chart_extraction:
                         type: boolean
                       do_code_enrichment:
@@ -203,8 +201,6 @@ spec:
                       type: string
                     doclingConfig:
                       properties:
-                        abort_on_error:
-                          type: boolean
                         do_chart_extraction:
                           type: boolean
                         do_code_enrichment:

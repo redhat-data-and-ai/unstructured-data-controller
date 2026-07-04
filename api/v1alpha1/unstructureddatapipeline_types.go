@@ -250,7 +250,6 @@ type DoclingConfig struct {
 	PageRange []int `json:"page_range,omitempty"`
 	// +optional
 	MdPageBreakPlaceholder string `json:"md_page_break_placeholder,omitempty"`
-	AbortOnError           bool   `json:"abort_on_error,omitempty"`
 }
 
 type ChunksGeneratorConfig struct {

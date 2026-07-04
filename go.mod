@@ -11,7 +11,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.29
 	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/google/go-cmp v0.7.0
-	github.com/imdario/mergo v0.3.16
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/snowflakedb/gosnowflake v1.19.1

@@ -88,6 +88,8 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	documentProcessorCR.Spec.DocumentProcessorConfig.SetDefaults()
+
 	// set status to waiting
 	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 		documentProcessorCR.SetWaiting()
@@ -121,7 +123,6 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		DocumentTimeout:                 parseFloat64Ptr(cfg.DocumentTimeout),
 		PageRange:                       cfg.PageRange,
 		MdPageBreakPlaceholder:          cfg.MdPageBreakPlaceholder,
-		AbortOnError:                    cfg.AbortOnError,
 	}
 
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)

@@ -27,7 +27,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/imdario/mergo"
 	"golang.org/x/sync/semaphore"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -155,33 +154,6 @@ func (c *Client) getTaskResultEndpoint(taskID string) (string, error) {
 	return url.JoinPath(c.ClientConfig.URL, "/v1/result", taskID)
 }
 
-func mergeDoclingConfigs(doclingConfig DoclingConfig) (DoclingConfig, error) {
-	boolTrue := true
-	imagesScale := 2.0
-	defaultDoclingConfig := DoclingConfig{
-		FromFormats:       []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"},
-		ToFormats:         []string{"md"},
-		ImageExportMode:   "embedded",
-		DoOCR:             true,
-		ForceOCR:          false,
-		OCRPreset:         "auto",
-		PDFBackend:        "docling_parse",
-		Pipeline:          "standard",
-		TableMode:         "accurate",
-		TableCellMatching: &boolTrue,
-		DoTableStructure:  &boolTrue,
-		IncludeImages:     &boolTrue,
-		ImagesScale:       &imagesScale,
-		AbortOnError:      false,
-	}
-
-	err := mergo.Merge(&doclingConfig, defaultDoclingConfig, mergo.WithOverride)
-	if err != nil {
-		return DoclingConfig{}, fmt.Errorf("failed to merge docling configs: %w", err)
-	}
-	return doclingConfig, nil
-}
-
 func (c *Client) createHTTPRequest(ctx context.Context, method, endpoint string, payload []byte, authFormat string) (
 	*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
@@ -240,12 +212,6 @@ func (c *Client) ConvertFile(
 	ctx context.Context, fileURL string, doclingConfig DoclingConfig,
 ) (*AsyncDoclingResponse, error) {
 	logger := log.FromContext(ctx)
-	var err error
-
-	finalDoclingConfig, err := mergeDoclingConfigs(doclingConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to merge docling configs: %w", err)
-	}
 
 	// we are using TryAcquire to avoid blocking the main thread
 	acquired := c.ClientConfig.sem.TryAcquire(1)
@@ -266,7 +232,7 @@ func (c *Client) ConvertFile(
 	}
 
 	payload, err := json.Marshal(DoclingRequestPayload{
-		Options: &finalDoclingConfig,
+		Options: &doclingConfig,
 		Sources: []DoclingSource{
 			{
 				URL:  fileURL,
