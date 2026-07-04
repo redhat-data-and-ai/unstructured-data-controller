@@ -54,6 +54,7 @@ func (c *ChunksGeneratorConfig) SetDefaults() {
 		if c.TokenSplitterConfig.ChunkOverlap == 0 {
 			c.TokenSplitterConfig.ChunkOverlap = DefaultChunkOverlap
 		}
+	default:
 	}
 }
 
