@@ -128,6 +128,70 @@ func (c *ChunksGenerator) UpdateStatus(message string, err error) {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
+type ChunksGeneratorConfig struct {
+	Strategy                         ChunkingStrategy                 `json:"strategy"`
+	RecursiveCharacterSplitterConfig RecursiveCharacterSplitterConfig `json:"recursiveCharacterSplitterConfig,omitempty"`
+	MarkdownSplitterConfig           MarkdownSplitterConfig           `json:"markdownSplitterConfig,omitempty"`
+	TokenSplitterConfig              TokenSplitterConfig              `json:"tokenSplitterConfig,omitempty"`
+}
+
+type RecursiveCharacterSplitterConfig struct {
+	Separators    []string `json:"separators,omitempty"`
+	ChunkSize     int      `json:"chunkSize,omitempty"`
+	ChunkOverlap  int      `json:"chunkOverlap,omitempty"`
+	KeepSeparator bool     `json:"keepSeparator,omitempty"`
+}
+
+type MarkdownSplitterConfig struct {
+	ChunkSize        int  `json:"chunkSize,omitempty"`
+	ChunkOverlap     int  `json:"chunkOverlap,omitempty"`
+	CodeBlocks       bool `json:"codeBlocks,omitempty"`
+	ReferenceLinks   bool `json:"referenceLinks,omitempty"`
+	HeadingHierarchy bool `json:"headingHierarchy,omitempty"`
+	JoinTableRows    bool `json:"joinTableRows,omitempty"`
+}
+
+type TokenSplitterConfig struct {
+	ChunkSize         int      `json:"chunkSize,omitempty"`
+	ChunkOverlap      int      `json:"chunkOverlap,omitempty"`
+	ModelName         string   `json:"modelName,omitempty"`
+	EncodingName      string   `json:"encodingName,omitempty"`
+	AllowedSpecial    []string `json:"allowedSpecial,omitempty"`
+	DisallowedSpecial []string `json:"disallowedSpecial,omitempty"`
+}
+
+// SetDefaults fills in sane defaults for any unset fields.
+func (c *ChunksGeneratorConfig) SetDefaults() {
+	if c.Strategy == "" {
+		c.Strategy = DefaultChunkingStrategy
+	}
+
+	switch c.Strategy {
+	case ChunkingStrategyRecursiveCharacter:
+		if c.RecursiveCharacterSplitterConfig.ChunkSize == 0 {
+			c.RecursiveCharacterSplitterConfig.ChunkSize = DefaultChunkSize
+		}
+		if c.RecursiveCharacterSplitterConfig.ChunkOverlap == 0 {
+			c.RecursiveCharacterSplitterConfig.ChunkOverlap = DefaultChunkOverlap
+		}
+	case ChunkingStrategyMarkdown:
+		if c.MarkdownSplitterConfig.ChunkSize == 0 {
+			c.MarkdownSplitterConfig.ChunkSize = DefaultChunkSize
+		}
+		if c.MarkdownSplitterConfig.ChunkOverlap == 0 {
+			c.MarkdownSplitterConfig.ChunkOverlap = DefaultChunkOverlap
+		}
+	case ChunkingStrategyToken:
+		if c.TokenSplitterConfig.ChunkSize == 0 {
+			c.TokenSplitterConfig.ChunkSize = DefaultChunkSize
+		}
+		if c.TokenSplitterConfig.ChunkOverlap == 0 {
+			c.TokenSplitterConfig.ChunkOverlap = DefaultChunkOverlap
+		}
+	default:
+	}
+}
+
 func init() {
 	SchemeBuilder.Register(&ChunksGenerator{}, &ChunksGeneratorList{})
 }

@@ -127,6 +127,25 @@ func (c *VectorEmbeddingsGenerator) UpdateStatus(message string, err error) {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
+type VectorEmbeddingsGeneratorConfig struct {
+	ModelName string `json:"modelName,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	BatchSize               int                     `json:"batchSize,omitempty"`
+	NomicEmbedTextV15Config NomicEmbedTextV15Config `json:"nomicEmbedTextV15Config,omitempty"`
+}
+
+type NomicEmbedTextV15Config struct {
+	EncodingFormat string `json:"encodingformat,omitempty"`
+}
+
+// SetDefaults fills in sane defaults for any unset fields.
+func (c *VectorEmbeddingsGeneratorConfig) SetDefaults() {
+	if c.ModelName == "" {
+		c.ModelName = DefaultEmbeddingModelName
+	}
+}
+
 func init() {
 	SchemeBuilder.Register(&VectorEmbeddingsGenerator{}, &VectorEmbeddingsGeneratorList{})
 }
