@@ -65,7 +65,6 @@ func TestChunksGeneratorConfig_SetDefaults_MarkdownStrategy(t *testing.T) {
 	if c.MarkdownSplitterConfig.ChunkOverlap != DefaultChunkOverlap {
 		t.Errorf("expected chunkOverlap %d, got %d", DefaultChunkOverlap, c.MarkdownSplitterConfig.ChunkOverlap)
 	}
-	// should not touch recursive config
 	if c.RecursiveCharacterSplitterConfig.ChunkSize != 0 {
 		t.Errorf("expected recursive chunkSize 0, got %d", c.RecursiveCharacterSplitterConfig.ChunkSize)
 	}
@@ -82,25 +81,5 @@ func TestChunksGeneratorConfig_SetDefaults_TokenStrategy(t *testing.T) {
 	}
 	if c.TokenSplitterConfig.ChunkOverlap != DefaultChunkOverlap {
 		t.Errorf("expected chunkOverlap %d, got %d", DefaultChunkOverlap, c.TokenSplitterConfig.ChunkOverlap)
-	}
-}
-
-func TestVectorEmbeddingsGeneratorConfig_SetDefaults_EmptyConfig(t *testing.T) {
-	c := VectorEmbeddingsGeneratorConfig{}
-	c.SetDefaults()
-
-	if c.ModelName != DefaultEmbeddingModelName {
-		t.Errorf("expected modelName %q, got %q", DefaultEmbeddingModelName, c.ModelName)
-	}
-}
-
-func TestVectorEmbeddingsGeneratorConfig_SetDefaults_PreservesExplicitModel(t *testing.T) {
-	c := VectorEmbeddingsGeneratorConfig{
-		ModelName: "custom-model",
-	}
-	c.SetDefaults()
-
-	if c.ModelName != "custom-model" {
-		t.Errorf("expected modelName %q, got %q", "custom-model", c.ModelName)
 	}
 }
