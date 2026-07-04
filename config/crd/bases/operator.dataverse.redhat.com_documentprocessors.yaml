@@ -53,6 +53,10 @@ spec:
                 properties:
                   doclingConfig:
                     properties:
+                      abort_on_error:
+                        description: 'Deprecated: this field is ignored; abort_on_error
+                          is always false.'
+                        type: boolean
                       do_chart_extraction:
                         type: boolean
                       do_code_enrichment:
@@ -201,6 +205,10 @@ spec:
                       type: string
                     doclingConfig:
                       properties:
+                        abort_on_error:
+                          description: 'Deprecated: this field is ignored; abort_on_error
+                            is always false.'
+                          type: boolean
                         do_chart_extraction:
                           type: boolean
                         do_code_enrichment:
