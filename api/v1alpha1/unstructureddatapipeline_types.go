@@ -54,16 +54,25 @@ import (
 //	        - name: crawl
 //	      documentProcessorConfig:
 //	        type: docling
+//	        doclingConfig:
+//	          do_ocr: true
+//	          ocr_preset: auto
+//	          pdf_backend: docling_parse
+//	          pipeline: standard
+//	          table_mode: accurate
 //	    - name: chunk
 //	      type: ChunksGenerator
 //	      dependsOn: [convert]
 //	      chunksGeneratorConfig:
 //	        strategy: recursiveCharacterTextSplitter
+//	        recursiveCharacterSplitterConfig:
+//	          chunkSize: 1000
+//	          chunkOverlap: 200
 //	    - name: embed
 //	      type: VectorEmbeddingsGenerator
 //	      dependsOn: [chunk]
 //	      vectorEmbeddingsGeneratorConfig:
-//	        modelName: nomic-embed-text-v1.5
+//	        modelName: nomic-ai/nomic-embed-text-v1.5
 //	    - name: sync
 //	      type: DestinationSyncer
 //	      dependsOn: [embed]
@@ -205,11 +214,43 @@ type DoclingConfig struct {
 	ImageExportMode string   `json:"image_export_mode,omitempty"`
 	DoOCR           bool     `json:"do_ocr,omitempty"`
 	ForceOCR        bool     `json:"force_ocr,omitempty"`
-	OCREngine       string   `json:"ocr_engine,omitempty"`
-	OCRLang         []string `json:"ocr_lang,omitempty"`
-	PDFBackend      string   `json:"pdf_backend,omitempty"`
-	TableMode       string   `json:"table_mode,omitempty"`
-	AbortOnError    bool     `json:"abort_on_error,omitempty"`
+	// Deprecated: use OCRPreset instead.
+	// +optional
+	OCREngine string   `json:"ocr_engine,omitempty"`
+	OCRLang   []string `json:"ocr_lang,omitempty"`
+	// +optional
+	OCRPreset  string `json:"ocr_preset,omitempty"`
+	PDFBackend string `json:"pdf_backend,omitempty"`
+	// +optional
+	Pipeline  string `json:"pipeline,omitempty"`
+	TableMode string `json:"table_mode,omitempty"`
+	// +optional
+	TableCellMatching *bool `json:"table_cell_matching,omitempty"`
+	// +optional
+	DoTableStructure *bool `json:"do_table_structure,omitempty"`
+	// +optional
+	IncludeImages *bool `json:"include_images,omitempty"`
+	// +optional
+	ImagesScale string `json:"images_scale,omitempty"`
+	// +optional
+	DoCodeEnrichment bool `json:"do_code_enrichment,omitempty"`
+	// +optional
+	DoFormulaEnrichment bool `json:"do_formula_enrichment,omitempty"`
+	// +optional
+	DoPictureClassification bool `json:"do_picture_classification,omitempty"`
+	// +optional
+	DoPictureDescription bool `json:"do_picture_description,omitempty"`
+	// +optional
+	DoChartExtraction bool `json:"do_chart_extraction,omitempty"`
+	// +optional
+	PictureDescriptionAreaThreshold string `json:"picture_description_area_threshold,omitempty"`
+	// +optional
+	DocumentTimeout string `json:"document_timeout,omitempty"`
+	// +optional
+	PageRange []int `json:"page_range,omitempty"`
+	// +optional
+	MdPageBreakPlaceholder string `json:"md_page_break_placeholder,omitempty"`
+	AbortOnError           bool   `json:"abort_on_error,omitempty"`
 }
 
 type ChunksGeneratorConfig struct {

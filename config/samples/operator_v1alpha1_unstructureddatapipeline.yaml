@@ -23,9 +23,12 @@ spec:
       documentProcessorConfig:
         type: docling
         doclingConfig:
-          from_formats: [pdf, docx, html]
+          from_formats: [docx, pptx, html, image, pdf, asciidoc, md, csv, xlsx]
           do_ocr: true
-          ocr_engine: easyocr
+          ocr_preset: auto
+          pdf_backend: docling_parse
+          pipeline: standard
+          table_mode: accurate
     - name: chunk
       type: ChunksGenerator
       dependsOn:

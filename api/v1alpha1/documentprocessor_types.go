@@ -31,10 +31,16 @@ import (
 //	  config:
 //	    type: docling
 //	    doclingConfig:
-//	      from_formats: [pdf, docx, html]
+//	      from_formats: [docx, pptx, html, image, pdf, asciidoc, md, csv, xlsx]
 //	      do_ocr: true
-//	      ocr_engine: easyocr
+//	      ocr_preset: auto
+//	      pdf_backend: docling_parse
+//	      pipeline: standard
 //	      table_mode: accurate
+//	      table_cell_matching: true
+//	      do_table_structure: true
+//	      include_images: true
+//	      images_scale: "2.0"
 //	status:
 //	  conditions:
 //	    - type: DocumentProcessorReady

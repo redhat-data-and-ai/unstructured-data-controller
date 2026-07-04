@@ -12,9 +12,16 @@ spec:
   config:
     type: docling
     doclingConfig:
-      from_formats: [pdf, docx, pptx, xlsx]
+      from_formats: [docx, pptx, html, image, pdf, asciidoc, md, csv, xlsx]
+      to_formats: [md]
+      image_export_mode: embedded
       do_ocr: true
-      ocr_engine: easyocr
-      ocr_lang: [en]
-      pdf_backend: dlparse_v4
-      table_mode: fast
+      ocr_preset: auto
+      pdf_backend: docling_parse
+      pipeline: standard
+      table_mode: accurate
+      table_cell_matching: true
+      do_table_structure: true
+      include_images: true
+      images_scale: "2.0"
+      abort_on_error: false

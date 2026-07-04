@@ -55,8 +55,22 @@ spec:
                     properties:
                       abort_on_error:
                         type: boolean
+                      do_chart_extraction:
+                        type: boolean
+                      do_code_enrichment:
+                        type: boolean
+                      do_formula_enrichment:
+                        type: boolean
                       do_ocr:
                         type: boolean
+                      do_picture_classification:
+                        type: boolean
+                      do_picture_description:
+                        type: boolean
+                      do_table_structure:
+                        type: boolean
+                      document_timeout:
+                        type: string
                       force_ocr:
                         type: boolean
                       from_formats:
@@ -65,14 +79,33 @@ spec:
                         type: array
                       image_export_mode:
                         type: string
+                      images_scale:
+                        type: string
+                      include_images:
+                        type: boolean
+                      md_page_break_placeholder:
+                        type: string
                       ocr_engine:
+                        description: 'Deprecated: use OCRPreset instead.'
                         type: string
                       ocr_lang:
                         items:
                           type: string
                         type: array
+                      ocr_preset:
+                        type: string
+                      page_range:
+                        items:
+                          type: integer
+                        type: array
                       pdf_backend:
                         type: string
+                      picture_description_area_threshold:
+                        type: string
+                      pipeline:
+                        type: string
+                      table_cell_matching:
+                        type: boolean
                       table_mode:
                         type: string
                       to_formats:
@@ -172,8 +205,22 @@ spec:
                       properties:
                         abort_on_error:
                           type: boolean
+                        do_chart_extraction:
+                          type: boolean
+                        do_code_enrichment:
+                          type: boolean
+                        do_formula_enrichment:
+                          type: boolean
                         do_ocr:
                           type: boolean
+                        do_picture_classification:
+                          type: boolean
+                        do_picture_description:
+                          type: boolean
+                        do_table_structure:
+                          type: boolean
+                        document_timeout:
+                          type: string
                         force_ocr:
                           type: boolean
                         from_formats:
@@ -182,14 +229,33 @@ spec:
                           type: array
                         image_export_mode:
                           type: string
+                        images_scale:
+                          type: string
+                        include_images:
+                          type: boolean
+                        md_page_break_placeholder:
+                          type: string
                         ocr_engine:
+                          description: 'Deprecated: use OCRPreset instead.'
                           type: string
                         ocr_lang:
                           items:
                             type: string
                           type: array
+                        ocr_preset:
+                          type: string
+                        page_range:
+                          items:
+                            type: integer
+                          type: array
                         pdf_backend:
                           type: string
+                        picture_description_area_threshold:
+                          type: string
+                        pipeline:
+                          type: string
+                        table_cell_matching:
+                          type: boolean
                         table_mode:
                           type: string
                         to_formats:

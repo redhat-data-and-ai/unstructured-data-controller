@@ -49,16 +49,31 @@ type TaskStatus string
 
 // +kubebuilder:object:generate=true
 type DoclingConfig struct {
-	FromFormats     []string `json:"from_formats"`
-	ToFormats       []string `json:"to_formats"`
-	ImageExportMode string   `json:"image_export_mode"`
-	DoOCR           bool     `json:"do_ocr"`
-	ForceOCR        bool     `json:"force_ocr"`
-	OCREngine       string   `json:"ocr_engine"`
-	OCRLang         []string `json:"ocr_lang"`
-	PDFBackend      string   `json:"pdf_backend"`
-	TableMode       string   `json:"table_mode"`
-	AbortOnError    bool     `json:"abort_on_error"`
+	FromFormats                     []string `json:"from_formats"`
+	ToFormats                       []string `json:"to_formats"`
+	ImageExportMode                 string   `json:"image_export_mode"`
+	DoOCR                           bool     `json:"do_ocr"`
+	ForceOCR                        bool     `json:"force_ocr"`
+	OCREngine                       string   `json:"ocr_engine,omitempty"`
+	OCRLang                         []string `json:"ocr_lang"`
+	OCRPreset                       string   `json:"ocr_preset,omitempty"`
+	PDFBackend                      string   `json:"pdf_backend"`
+	Pipeline                        string   `json:"pipeline,omitempty"`
+	TableMode                       string   `json:"table_mode"`
+	TableCellMatching               *bool    `json:"table_cell_matching,omitempty"`
+	DoTableStructure                *bool    `json:"do_table_structure,omitempty"`
+	IncludeImages                   *bool    `json:"include_images,omitempty"`
+	ImagesScale                     *float64 `json:"images_scale,omitempty"`
+	DoCodeEnrichment                bool     `json:"do_code_enrichment,omitempty"`
+	DoFormulaEnrichment             bool     `json:"do_formula_enrichment,omitempty"`
+	DoPictureClassification         bool     `json:"do_picture_classification,omitempty"`
+	DoPictureDescription            bool     `json:"do_picture_description,omitempty"`
+	DoChartExtraction               bool     `json:"do_chart_extraction,omitempty"`
+	PictureDescriptionAreaThreshold *float64 `json:"picture_description_area_threshold,omitempty"`
+	DocumentTimeout                 *float64 `json:"document_timeout,omitempty"`
+	PageRange                       []int    `json:"page_range,omitempty"`
+	MdPageBreakPlaceholder          string   `json:"md_page_break_placeholder,omitempty"`
+	AbortOnError                    bool     `json:"abort_on_error"`
 }
 
 type ClientConfig struct {
@@ -141,16 +156,23 @@ func (c *Client) getTaskResultEndpoint(taskID string) (string, error) {
 }
 
 func mergeDoclingConfigs(doclingConfig DoclingConfig) (DoclingConfig, error) {
+	boolTrue := true
+	imagesScale := 2.0
 	defaultDoclingConfig := DoclingConfig{
-		FromFormats:     []string{"pdf", "md", "docx", "pptx"},
-		ToFormats:       []string{"md"},
-		ImageExportMode: "embedded",
-		DoOCR:           true,
-		ForceOCR:        false,
-		OCREngine:       "easyocr",
-		PDFBackend:      "dlparse_v4",
-		TableMode:       "fast",
-		AbortOnError:    true,
+		FromFormats:       []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"},
+		ToFormats:         []string{"md"},
+		ImageExportMode:   "embedded",
+		DoOCR:             true,
+		ForceOCR:          false,
+		OCRPreset:         "auto",
+		PDFBackend:        "docling_parse",
+		Pipeline:          "standard",
+		TableMode:         "accurate",
+		TableCellMatching: &boolTrue,
+		DoTableStructure:  &boolTrue,
+		IncludeImages:     &boolTrue,
+		ImagesScale:       &imagesScale,
+		AbortOnError:      false,
 	}
 
 	err := mergo.Merge(&doclingConfig, defaultDoclingConfig, mergo.WithOverride)
