@@ -336,16 +336,6 @@ spec:
                   - message: sourceCrawlerConfig is required when type is SourceCrawler
                     rule: 'self.type == ''SourceCrawler'' ? has(self.sourceCrawlerConfig)
                       : true'
-                  - message: documentProcessorConfig is required when type is DocumentProcessor
-                    rule: 'self.type == ''DocumentProcessor'' ? has(self.documentProcessorConfig)
-                      : true'
-                  - message: chunksGeneratorConfig is required when type is ChunksGenerator
-                    rule: 'self.type == ''ChunksGenerator'' ? has(self.chunksGeneratorConfig)
-                      : true'
-                  - message: vectorEmbeddingsGeneratorConfig is required when type
-                      is VectorEmbeddingsGenerator
-                    rule: 'self.type == ''VectorEmbeddingsGenerator'' ? has(self.vectorEmbeddingsGeneratorConfig)
-                      : true'
                   - message: destinationSyncerConfig is required when type is DestinationSyncer
                     rule: 'self.type == ''DestinationSyncer'' ? has(self.destinationSyncerConfig)
                       : true'

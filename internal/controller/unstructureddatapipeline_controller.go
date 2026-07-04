@@ -258,10 +258,14 @@ func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, 
 				cr.Labels = make(map[string]string)
 			}
 			cr.Labels[PipelineLabel] = unstructuredDataPipelineCR.Name
+			dpConfig := operatorv1alpha1.DocumentProcessorConfig{}
+			if stage.DocumentProcessorConfig != nil {
+				dpConfig = *stage.DocumentProcessorConfig
+			}
 			cr.Spec = operatorv1alpha1.DocumentProcessorSpec{
 				StageName:               stage.Name,
 				DependsOn:               deps,
-				DocumentProcessorConfig: *stage.DocumentProcessorConfig,
+				DocumentProcessorConfig: dpConfig,
 			}
 			return controllerutil.SetControllerReference(unstructuredDataPipelineCR, cr, r.Scheme)
 		})
@@ -279,10 +283,14 @@ func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, 
 				cr.Labels = make(map[string]string)
 			}
 			cr.Labels[PipelineLabel] = unstructuredDataPipelineCR.Name
+			cgConfig := operatorv1alpha1.ChunksGeneratorConfig{}
+			if stage.ChunksGeneratorConfig != nil {
+				cgConfig = *stage.ChunksGeneratorConfig
+			}
 			cr.Spec = operatorv1alpha1.ChunksGeneratorSpec{
 				StageName:             stage.Name,
 				DependsOn:             deps,
-				ChunksGeneratorConfig: *stage.ChunksGeneratorConfig,
+				ChunksGeneratorConfig: cgConfig,
 			}
 			return controllerutil.SetControllerReference(unstructuredDataPipelineCR, cr, r.Scheme)
 		})
@@ -300,10 +308,14 @@ func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, 
 				cr.Labels = make(map[string]string)
 			}
 			cr.Labels[PipelineLabel] = unstructuredDataPipelineCR.Name
+			vegConfig := operatorv1alpha1.VectorEmbeddingsGeneratorConfig{}
+			if stage.VectorEmbeddingsGeneratorConfig != nil {
+				vegConfig = *stage.VectorEmbeddingsGeneratorConfig
+			}
 			cr.Spec = operatorv1alpha1.VectorEmbeddingsGeneratorSpec{
 				StageName:                       stage.Name,
 				DependsOn:                       deps,
-				VectorEmbeddingsGeneratorConfig: *stage.VectorEmbeddingsGeneratorConfig,
+				VectorEmbeddingsGeneratorConfig: vegConfig,
 			}
 			return controllerutil.SetControllerReference(unstructuredDataPipelineCR, cr, r.Scheme)
 		})

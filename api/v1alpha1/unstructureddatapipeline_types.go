@@ -52,27 +52,12 @@ import (
 //	      type: DocumentProcessor
 //	      dependsOn:
 //	        - name: crawl
-//	      documentProcessorConfig:
-//	        type: docling
-//	        doclingConfig:
-//	          do_ocr: true
-//	          ocr_preset: auto
-//	          pdf_backend: docling_parse
-//	          pipeline: standard
-//	          table_mode: accurate
 //	    - name: chunk
 //	      type: ChunksGenerator
 //	      dependsOn: [convert]
-//	      chunksGeneratorConfig:
-//	        strategy: recursiveCharacterTextSplitter
-//	        recursiveCharacterSplitterConfig:
-//	          chunkSize: 1000
-//	          chunkOverlap: 200
 //	    - name: embed
 //	      type: VectorEmbeddingsGenerator
 //	      dependsOn: [chunk]
-//	      vectorEmbeddingsGeneratorConfig:
-//	        modelName: nomic-ai/nomic-embed-text-v1.5
 //	    - name: sync
 //	      type: DestinationSyncer
 //	      dependsOn: [embed]
@@ -136,9 +121,6 @@ func ListStages() []StageMapping {
 
 // PipelineStage defines a single step in the pipeline DAG.
 // +kubebuilder:validation:XValidation:rule="self.type == 'SourceCrawler' ? has(self.sourceCrawlerConfig) : true",message="sourceCrawlerConfig is required when type is SourceCrawler"
-// +kubebuilder:validation:XValidation:rule="self.type == 'DocumentProcessor' ? has(self.documentProcessorConfig) : true",message="documentProcessorConfig is required when type is DocumentProcessor"
-// +kubebuilder:validation:XValidation:rule="self.type == 'ChunksGenerator' ? has(self.chunksGeneratorConfig) : true",message="chunksGeneratorConfig is required when type is ChunksGenerator"
-// +kubebuilder:validation:XValidation:rule="self.type == 'VectorEmbeddingsGenerator' ? has(self.vectorEmbeddingsGeneratorConfig) : true",message="vectorEmbeddingsGeneratorConfig is required when type is VectorEmbeddingsGenerator"
 // +kubebuilder:validation:XValidation:rule="self.type == 'DestinationSyncer' ? has(self.destinationSyncerConfig) : true",message="destinationSyncerConfig is required when type is DestinationSyncer"
 type PipelineStage struct {
 	// +kubebuilder:validation:Required
