@@ -39,6 +39,9 @@ import (
 
 const (
 	ChunksGeneratorCondition = "ChunksGeneratorReady"
+	DefaultChunkingStrategy  = ChunkingStrategyRecursiveCharacter
+	DefaultChunkSize         = 1000
+	DefaultChunkOverlap      = 200
 )
 
 // ChunksGeneratorSpec defines the desired state of ChunksGenerator

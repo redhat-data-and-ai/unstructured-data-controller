@@ -38,6 +38,7 @@ type EmbeddingProvider string
 
 const (
 	VectorEmbeddingGenerationConditionType = "VectorEmbeddingGenerationReady"
+	DefaultEmbeddingModelName              = "nomic-ai/nomic-embed-text-v1.5"
 )
 
 // VectorEmbeddingsGeneratorSpec defines the desired state of VectorEmbeddingsGenerator.

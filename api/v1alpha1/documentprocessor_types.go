@@ -49,8 +49,19 @@ import (
 //	  jobs: []                               # tracks in-flight docling conversion jobs
 
 const (
-	DocumentProcessorCondition = "DocumentProcessorReady"
+	DocumentProcessorCondition   = "DocumentProcessorReady"
+	DefaultDocumentProcessorType = "docling"
+	DefaultOCRPreset             = "auto"
+	DefaultPDFBackend            = "docling_parse"
+	DefaultPipeline              = "standard"
+	DefaultTableMode             = "accurate"
+	DefaultImageExportMode       = "embedded"
+	DefaultImagesScale           = "2.0"
 )
+
+var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
+
+func boolPtr(b bool) *bool { return &b }
 
 // DocumentProcessorSpec defines the desired state of DocumentProcessor
 type DocumentProcessorSpec struct {
