@@ -268,14 +268,7 @@ func (fs *FileStore) ListFilesInPath(ctx context.Context, path string) ([]string
 	}
 
 	slices.SortStableFunc(objects, func(a, b s3types.Object) int {
-		var sizeA, sizeB int64
-		if a.Size != nil {
-			sizeA = *a.Size
-		}
-		if b.Size != nil {
-			sizeB = *b.Size
-		}
-		return cmp.Compare(sizeA, sizeB)
+		return cmp.Compare(aws.ToInt64(a.Size), aws.ToInt64(b.Size))
 	})
 
 	files := []string{}
