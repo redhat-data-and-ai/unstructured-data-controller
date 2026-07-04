@@ -47,7 +47,7 @@ func (c *DocumentProcessorConfig) SetDefaults() {
 // SetDefaults fills in sane defaults for any unset DoclingConfig fields.
 func (c *DoclingConfig) SetDefaults() {
 	if len(c.FromFormats) == 0 {
-		c.FromFormats = DefaultFromFormats
+		c.FromFormats = append([]string{}, DefaultFromFormats...)
 	}
 	if len(c.ToFormats) == 0 {
 		c.ToFormats = []string{"md"}
