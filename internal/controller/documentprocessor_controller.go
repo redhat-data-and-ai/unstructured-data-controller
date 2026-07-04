@@ -87,7 +87,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to get DocumentProcessor CR")
 		return ctrl.Result{}, err
 	}
-
+	documentProcessorCR = documentProcessorCR.DeepCopy()
 	documentProcessorCR.Spec.DocumentProcessorConfig.SetDefaults()
 
 	// set status to waiting

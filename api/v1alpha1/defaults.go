@@ -31,7 +31,7 @@ const (
 	DefaultEmbeddingModelName = "nomic-ai/nomic-embed-text-v1.5"
 )
 
-var DefaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
+var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -47,7 +47,7 @@ func (c *DocumentProcessorConfig) SetDefaults() {
 // SetDefaults fills in sane defaults for any unset DoclingConfig fields.
 func (c *DoclingConfig) SetDefaults() {
 	if len(c.FromFormats) == 0 {
-		c.FromFormats = append([]string{}, DefaultFromFormats...)
+		c.FromFormats = append([]string{}, defaultFromFormats...)
 	}
 	if len(c.ToFormats) == 0 {
 		c.ToFormats = []string{"md"}

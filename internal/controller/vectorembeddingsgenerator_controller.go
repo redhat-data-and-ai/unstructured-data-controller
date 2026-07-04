@@ -81,7 +81,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		logger.Error(err, "failed to get VectorEmbeddingsGenerator CR")
 		return ctrl.Result{}, err
 	}
-
+	vectorEmbeddingsGeneratorCR = vectorEmbeddingsGeneratorCR.DeepCopy()
 	vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.SetDefaults()
 
 	// set status to waiting
