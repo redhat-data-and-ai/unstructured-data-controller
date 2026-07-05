@@ -19,7 +19,7 @@ spec:
       restartPolicy: Always
       containers:
         - name: api
-          image: ghcr.io/docling-project/docling-serve-cpu:v1.18.0
+          image: ghcr.io/docling-project/docling-serve-cpu:v1.14.3
           resources:
             requests:
               cpu: "1"
