@@ -12,7 +12,6 @@ spec:
   cacheDirectory: "tmp/cache/"
   maxConcurrentDoclingTasks: 5
   maxConcurrentLangchainTasks: 10
-  embeddingBatchSize: 1000
   # Optional: LDAP configuration for user/group identity resolution
   # ldapConfig:
   #   server: "ldap://ldap.example.com:389"

@@ -282,6 +282,8 @@ spec:
                       type: string
                     vectorEmbeddingsGeneratorConfig:
                       properties:
+                        batchSize:
+                          type: integer
                         modelName:
                           type: string
                         nomicEmbedTextV15Config:

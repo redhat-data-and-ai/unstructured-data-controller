@@ -246,6 +246,7 @@ type TokenSplitterConfig struct {
 
 type VectorEmbeddingsGeneratorConfig struct {
 	ModelName               string                  `json:"modelName,omitempty"`
+	BatchSize               int                     `json:"batchSize,omitempty"`
 	NomicEmbedTextV15Config NomicEmbedTextV15Config `json:"nomicEmbedTextV15Config,omitempty"`
 }
 

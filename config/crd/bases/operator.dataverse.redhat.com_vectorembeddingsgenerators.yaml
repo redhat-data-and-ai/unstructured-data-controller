@@ -66,6 +66,8 @@ spec:
                 type: array
               embeddingGeneratorConfig:
                 properties:
+                  batchSize:
+                    type: integer
                   modelName:
                     type: string
                   nomicEmbedTextV15Config:

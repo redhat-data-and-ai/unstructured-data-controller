@@ -211,7 +211,10 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 
 	logger.Info("generating embeddings for chunks", "file", chunksFilePath, "chunkCount", len(texts))
 
-	batchSize := embeddingBatchSize
+	batchSize := vegConfig.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1000
+	}
 	encodingFormat := vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.NomicEmbedTextV15Config.EncodingFormat
 	allEmbeddings := make([][]float64, 0, len(texts))
 

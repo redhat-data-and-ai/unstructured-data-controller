@@ -41,6 +41,7 @@ spec:
         - name: chunk
       vectorEmbeddingsGeneratorConfig:
         modelName: nomic-ai/nomic-embed-text-v1.5
+        batchSize: 1000
     - name: sync
       type: DestinationSyncer
       dependsOn:

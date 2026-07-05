@@ -44,7 +44,6 @@ var (
 	langchainClient                        *langchain.Client
 	embeddingEndpoint                      string
 	embeddingAPIKey                        string
-	embeddingBatchSize                     int
 	UnstructuredDataPipelineResyncInterval *int
 	LDAPClient                             ldap.Client
 	CacheClient                            pkgcache.Cache
@@ -116,12 +115,6 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// embedding model credentials
 	embeddingEndpoint = string(secret.Data["EMBEDDING_ENDPOINT"])
 	embeddingAPIKey = string(secret.Data["EMBEDDING_API_KEY"])
-
-	// embedding batch size (default 1000)
-	embeddingBatchSize = config.Spec.EmbeddingBatchSize
-	if embeddingBatchSize <= 0 {
-		embeddingBatchSize = 1000
-	}
 
 	// initialize LDAP client and cache if configured
 	if config.Spec.LDAPConfig != nil && config.Spec.LDAPConfig.Server != "" {
