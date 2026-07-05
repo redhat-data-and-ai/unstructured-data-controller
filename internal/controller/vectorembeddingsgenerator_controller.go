@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -222,15 +223,24 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 		batchEnd := min(batchStart+batchSize, len(texts))
 		batch := texts[batchStart:batchEnd]
 
+		logger.Info("processing batch", "batchStart", batchStart, "batchEnd", batchEnd, "batchSize", len(batch))
 		embeddingResult, err := embeddingClient.GenerateEmbeddings(ctx, batch, encodingFormat)
 		if err != nil {
+			if strings.Contains(err.Error(), "status 429") {
+				logger.Error(err, "embedding API rate limited (429), will retry on next reconciliation", "file", chunksFilePath, "batchStart", batchStart)
+			} else {
+				logger.Error(err, "failed to generate embeddings for batch", "file", chunksFilePath, "batchStart", batchStart, "batchEnd", batchEnd)
+			}
 			return false, err
 		}
 		allEmbeddings = append(allEmbeddings, embeddingResult.Embeddings...)
+		logger.Info("successfully processed batch", "batchStart", batchStart, "batchEnd", batchEnd, "embeddingsGenerated", len(embeddingResult.Embeddings))
 	}
 
 	if len(allEmbeddings) != len(texts) {
-		return false, fmt.Errorf("embedding count mismatch: expected %d, got %d", len(texts), len(allEmbeddings))
+		err := fmt.Errorf("embedding count mismatch: expected %d, got %d", len(texts), len(allEmbeddings))
+		logger.Error(err, "embedding count does not match input text count", "file", chunksFilePath)
+		return false, err
 	}
 
 	logger.Info("successfully generated embeddings", "file", chunksFilePath, "embeddingCount", len(allEmbeddings))
