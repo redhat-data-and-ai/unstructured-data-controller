@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -271,6 +272,10 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				return true, nil
 			},
 		); err != nil {
+			// dump controller and docling-serve logs to help debug CI failures
+			dumpPodLogs(t, testNamespace, "control-plane=controller-manager", "manager")
+			dumpPodLogs(t, testNamespace, "app=docling-serve", "api")
+			dumpPodEvents(t, testNamespace, "app=docling-serve")
 			t.Error(err)
 		}
 
@@ -470,4 +475,46 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	)
 
 	testenv.Test(t, feature.Feature())
+}
+
+func dumpPodLogs(t *testing.T, namespace, labelSelector, container string) {
+	t.Helper()
+	cmd := fmt.Sprintf(
+		"kubectl logs -n %s -l %s -c %s --tail=100",
+		namespace, labelSelector, container,
+	)
+	t.Logf("=== Pod logs (%s, container=%s) ===", labelSelector, container)
+	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
+	if err != nil {
+		t.Logf("failed to get pod logs: %v", err)
+		return
+	}
+	t.Logf("%s", string(out))
+}
+
+func dumpPodEvents(t *testing.T, namespace, labelSelector string) {
+	t.Helper()
+	// get pod name first
+	nameCmd := fmt.Sprintf(
+		"kubectl get pods -n %s -l %s -o jsonpath='{.items[0].metadata.name}'",
+		namespace, labelSelector,
+	)
+	nameOut, err := exec.Command("sh", "-c", nameCmd).CombinedOutput()
+	if err != nil {
+		t.Logf("failed to get pod name: %v", err)
+		return
+	}
+	podName := strings.Trim(string(nameOut), "'")
+
+	t.Logf("=== Pod events and status (%s) ===", podName)
+	descCmd := fmt.Sprintf(
+		"kubectl describe pod -n %s %s | grep -A 20 'Events:\\|Containers:\\|State:\\|Restart Count:\\|Last State:'",
+		namespace, podName,
+	)
+	out, err := exec.Command("sh", "-c", descCmd).CombinedOutput()
+	if err != nil {
+		t.Logf("failed to describe pod: %v", err)
+		return
+	}
+	t.Logf("%s", string(out))
 }
