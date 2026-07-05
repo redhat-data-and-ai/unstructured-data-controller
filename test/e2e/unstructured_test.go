@@ -392,12 +392,18 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 		t.Log("pipeline successfully reconciled after docling config change")
 
-		dpCRD := "documentprocessors.operator.dataverse.redhat.com"
-		if err := operatorUtils.WaitForResourceReadyWithTimeout(ctx, v1alpha1.DocumentProcessorCondition,
-			dpCRD, dataPipelineCRName+"-convert", testNamespace, "20m"); err != nil {
+		// verify the config change was propagated to the child CR
+		dpCR := &v1alpha1.DocumentProcessor{}
+		if err := kubeClient.Resources(testNamespace).Get(
+			ctx, dataPipelineCRName+"-convert", testNamespace, dpCR,
+		); err != nil {
 			t.Error(err)
 		}
-		t.Log("DocumentProcessor successfully reconciled after config change")
+		if dpCR.Spec.DocumentProcessorConfig.DoclingConfig.TableMode != "fast" {
+			t.Errorf("expected table_mode fast, got %s",
+				dpCR.Spec.DocumentProcessorConfig.DoclingConfig.TableMode)
+		}
+		t.Log("DocumentProcessor config change propagated successfully")
 
 		return ctx
 	})

@@ -19,7 +19,7 @@ spec:
       restartPolicy: Always
       containers:
         - name: api
-          image: ghcr.io/docling-project/docling-serve-cpu:v1.14.3
+          image: ghcr.io/docling-project/docling-serve-cpu:v1.18.0
           resources:
             requests:
               cpu: "1"
@@ -29,7 +29,9 @@ spec:
               memory: "6Gi"
           env:
             - name: DOCLING_SERVE_ENABLE_UI
-              value: 'true'
+              value: 'false'
+            - name: DOCLING_SERVE_NUM_WORKERS
+              value: '1'
             # this is where the detection models are downloaded at runtime and stored
             - name: DOCLING_SERVE_ARTIFACTS_PATH
               value: ""
