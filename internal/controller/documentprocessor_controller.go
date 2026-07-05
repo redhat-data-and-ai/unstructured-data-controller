@@ -101,6 +101,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	cfg := documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig
 	r.doclingConfig = &docling.DoclingConfig{
 		FromFormats:                     cfg.FromFormats,
+		ToFormats:                       cfg.ToFormats,
 		ImageExportMode:                 cfg.ImageExportMode,
 		DoOCR:                           cfg.DoOCR,
 		ForceOCR:                        cfg.ForceOCR,
