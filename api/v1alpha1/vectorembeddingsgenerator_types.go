@@ -39,6 +39,7 @@ type EmbeddingProvider string
 const (
 	VectorEmbeddingGenerationConditionType = "VectorEmbeddingGenerationReady"
 	DefaultEmbeddingModelName              = "nomic-ai/nomic-embed-text-v1.5"
+	DefaultEmbeddingBatchSize              = 1000
 )
 
 // VectorEmbeddingsGeneratorSpec defines the desired state of VectorEmbeddingsGenerator.
@@ -144,6 +145,9 @@ type NomicEmbedTextV15Config struct {
 func (c *VectorEmbeddingsGeneratorConfig) SetDefaults() {
 	if c.ModelName == "" {
 		c.ModelName = DefaultEmbeddingModelName
+	}
+	if c.BatchSize <= 0 {
+		c.BatchSize = DefaultEmbeddingBatchSize
 	}
 }
 
