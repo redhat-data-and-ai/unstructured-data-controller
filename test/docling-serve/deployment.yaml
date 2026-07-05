@@ -22,11 +22,11 @@ spec:
           image: ghcr.io/docling-project/docling-serve-cpu:v1.18.0
           resources:
             requests:
-              cpu: "1"
-              memory: "4Gi"
-            limits:
               cpu: "2"
               memory: "6Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
           env:
             - name: DOCLING_SERVE_ENABLE_UI
               value: 'true'

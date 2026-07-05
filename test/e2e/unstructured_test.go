@@ -247,6 +247,24 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				}
 				if len(output.Contents) == 0 {
 					t.Logf("pipeline in progress: %d intermediate files, 0 output files", storageCount)
+					if storageOutput != nil {
+						for _, obj := range storageOutput.Contents {
+							t.Logf("  intermediate file: %s", *obj.Key)
+						}
+					}
+
+					// log DocumentProcessor CR status
+					dpCR := &v1alpha1.DocumentProcessor{}
+					if getErr := kubeClient.Resources(testNamespace).Get(ctx, dataPipelineCRName+"-convert", testNamespace, dpCR); getErr == nil {
+						for _, cond := range dpCR.Status.Conditions {
+							t.Logf("  DocumentProcessor condition: type=%s status=%s reason=%s message=%s", cond.Type, cond.Status, cond.Reason, cond.Message)
+						}
+						t.Logf("  DocumentProcessor jobs: %d, filesProcessed: %d", len(dpCR.Status.Jobs), dpCR.Status.FilesProcessed)
+						for _, job := range dpCR.Status.Jobs {
+							t.Logf("    job: file=%s taskID=%s status=%s attempts=%d", job.FilePath, job.TaskID, job.Status, job.Attempts)
+						}
+					}
+
 					return false, nil
 				}
 				t.Logf("found %d files in output bucket", len(output.Contents))
