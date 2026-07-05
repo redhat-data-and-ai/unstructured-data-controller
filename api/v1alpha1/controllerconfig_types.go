@@ -55,6 +55,7 @@ type ControllerConfigSpec struct {
 	SecretRef                   string `json:"secretRef,omitempty"`
 	MaxConcurrentDoclingTasks   int    `json:"maxConcurrentDoclingTasks,omitempty"`
 	MaxConcurrentLangchainTasks int    `json:"maxConcurrentLangchainTasks,omitempty"`
+	EmbeddingBatchSize          int    `json:"embeddingBatchSize,omitempty"`
 	DoclingServeURL             string `json:"doclingServeURL,omitempty"`
 	CacheDirectory              string `json:"cacheDirectory,omitempty"`
 	DataStorageBucket           string `json:"dataStorageBucket,omitempty"`

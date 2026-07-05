@@ -52,6 +52,8 @@ spec:
                 type: string
               doclingServeURL:
                 type: string
+              embeddingBatchSize:
+                type: integer
               googleDriveConfig:
                 description: GDriveConfig holds operator-level Google Drive crawling
                   settings.
