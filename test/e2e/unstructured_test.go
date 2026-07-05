@@ -345,10 +345,11 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			ImageExportMode: "embedded",
 			DoOCR:           true,
 			ForceOCR:        false,
-			OCREngine:       "easyocr",
+			OCRPreset:       "auto",
 			OCRLang:         []string{"en"},
-			PDFBackend:      "dlparse_v4",
-			TableMode:       "accurate",
+			PDFBackend:      "docling_parse",
+			Pipeline:        "standard",
+			TableMode:       "fast",
 		}
 
 		// fetch the latest version of the pipeline CR
