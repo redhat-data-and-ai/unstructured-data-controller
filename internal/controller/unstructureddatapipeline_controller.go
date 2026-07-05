@@ -29,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -342,8 +343,9 @@ func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, 
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *UnstructuredDataPipelineReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *UnstructuredDataPipelineReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconciles int) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&operatorv1alpha1.UnstructuredDataPipeline{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.SourceCrawler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).

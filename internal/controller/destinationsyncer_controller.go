@@ -27,6 +27,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -46,8 +47,7 @@ const (
 // DestinationSyncerReconciler reconciles a DestinationSyncer object
 type DestinationSyncerReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=destinationsyncers,verbs=get;list;watch;create;update;patch;delete
@@ -92,7 +92,6 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, destinationSyncCR, err)
 	}
-	r.fileStore = fs
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(destinationSyncCR)
 	if err != nil {
 		return r.handleError(ctx, destinationSyncCR, err)
@@ -120,14 +119,14 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 
 		inputPath := unstructured.StagePath(pipelineName, dep.Name)
-		filePaths, err := r.fileStore.ListFilesInPath(ctx, inputPath)
+		filePaths, err := fs.ListFilesInPath(ctx, inputPath)
 		if err != nil {
 			logger.Error(err, "failed to list files in path", "stage", dep.Name)
 			return r.handleError(ctx, destinationSyncCR, err)
 		}
 		logger.Info("files to ingest to destination", "stage", dep.Name, "count", len(filePaths))
 
-		if err := destination.SyncFilesToDestination(ctx, r.fileStore, filePaths); err != nil {
+		if err := destination.SyncFilesToDestination(ctx, fs, filePaths); err != nil {
 			logger.Error(err, "failed to ingest files to destination", "stage", dep.Name)
 			return r.handleError(ctx, destinationSyncCR, err)
 		}
@@ -202,8 +201,9 @@ func (r *DestinationSyncerReconciler) findSecretDependents(ctx context.Context, 
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *DestinationSyncerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *DestinationSyncerReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconciles int) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&operatorv1alpha1.DestinationSyncer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&operatorv1alpha1.SourceCrawler{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).

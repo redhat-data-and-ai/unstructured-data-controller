@@ -30,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -52,8 +53,7 @@ const (
 // SourceCrawlerReconciler reconciles a SourceCrawler object
 type SourceCrawlerReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sourcecrawlers,verbs=get;list;watch;create;update;patch;delete
@@ -96,8 +96,6 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to create filestore: %w", err))
 	}
-	r.fileStore = fs
-
 	parentPipeline, err := controllerutils.ParentPipelineNameFromOwnerReference(sourceCrawlerCR)
 	if err != nil {
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
@@ -138,7 +136,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("unsupported source type: %s", sourceCrawlerConfig.Type))
 	}
 
-	storedFiles, err := source.SyncFilesToFilestore(ctx, r.fileStore)
+	storedFiles, err := source.SyncFilesToFilestore(ctx, fs)
 	if err != nil {
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to store files to filestore: %w", err))
 	}
@@ -360,8 +358,9 @@ func (r *SourceCrawlerReconciler) findSecretDependents(ctx context.Context, obj 
 
 // SetupWithManager registers watches on all downstream pipeline stages and secrets so that
 // changes to any dependency trigger a reconcile of the owning SourceCrawler.
-func (r *SourceCrawlerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *SourceCrawlerReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconciles int) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		For(&operatorv1alpha1.SourceCrawler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.ChunksGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
