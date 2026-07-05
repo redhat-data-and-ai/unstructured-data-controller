@@ -20,6 +20,15 @@ spec:
       containers:
         - name: api
           image: ghcr.io/docling-project/docling-serve-cpu:v1.18.0
+          # docling-core v1.18.0 added SSRF protection that rejects presigned S3
+          # URLs pointing to cluster-internal addresses (localstack). Patch the
+          # check so the controller's presigned URLs are accepted in the test env.
+          command: ["sh", "-c"]
+          args:
+            - |
+              sed -i 's/if not _is_safe_url(url_str):/if False:/' \
+                /opt/app-root/lib/python3.12/site-packages/docling_core/utils/file.py
+              exec docling-serve run
           resources:
             requests:
               cpu: "1"
@@ -32,7 +41,6 @@ spec:
               value: 'false'
             - name: DOCLING_SERVE_NUM_WORKERS
               value: '1'
-            # this is where the detection models are downloaded at runtime and stored
             - name: DOCLING_SERVE_ARTIFACTS_PATH
               value: ""
           ports:
