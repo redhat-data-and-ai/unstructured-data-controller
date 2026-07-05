@@ -62,7 +62,8 @@ func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 		}
 
 		for _, stage := range pipeline.Spec.Stages {
-			if stage.QueryConfig != nil && stage.QueryConfig.Snowflake != nil {
+			if stage.Type == operatorv1alpha1.StageTypeVectorEmbeddingsGenerator &&
+				stage.QueryConfig != nil && stage.QueryConfig.Snowflake != nil {
 				info.Database = stage.QueryConfig.Snowflake.Database
 				info.Schema = stage.QueryConfig.Snowflake.Schema
 				info.Table = stage.QueryConfig.Snowflake.Table
