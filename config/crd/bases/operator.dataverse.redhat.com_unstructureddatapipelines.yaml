@@ -283,6 +283,7 @@ spec:
                     vectorEmbeddingsGeneratorConfig:
                       properties:
                         batchSize:
+                          minimum: 1
                           type: integer
                         modelName:
                           type: string

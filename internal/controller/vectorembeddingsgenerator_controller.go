@@ -215,7 +215,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
-	encodingFormat := vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.NomicEmbedTextV15Config.EncodingFormat
+	encodingFormat := vegConfig.NomicEmbedTextV15Config.EncodingFormat
 	allEmbeddings := make([][]float64, 0, len(texts))
 
 	for batchStart := 0; batchStart < len(texts); batchStart += batchSize {
@@ -227,6 +227,10 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 			return false, err
 		}
 		allEmbeddings = append(allEmbeddings, embeddingResult.Embeddings...)
+	}
+
+	if len(allEmbeddings) != len(texts) {
+		return false, fmt.Errorf("embedding count mismatch: expected %d, got %d", len(texts), len(allEmbeddings))
 	}
 
 	logger.Info("successfully generated embeddings", "file", chunksFilePath, "embeddingCount", len(allEmbeddings))
