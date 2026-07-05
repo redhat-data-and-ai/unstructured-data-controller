@@ -343,8 +343,6 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		doclingConfig := &v1alpha1.DoclingConfig{
 			FromFormats:     []string{"pdf", "docx", "pptx", "xlsx"},
 			ImageExportMode: "embedded",
-			DoOCR:           true,
-			ForceOCR:        false,
 			OCRPreset:       "auto",
 			OCRLang:         []string{"en"},
 			PDFBackend:      "docling_parse",
