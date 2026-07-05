@@ -129,10 +129,17 @@ func RandomStringGenerator(length int) string {
 	return string(b)
 }
 
-// WaitForResourceReady waits for a resource to be ready
+// WaitForResourceReady waits for a resource to be ready with a default 10m timeout.
 func WaitForResourceReady(ctx context.Context, condition, crdName, resourceName, namespace string) error {
-	cmd := fmt.Sprintf("kubectl wait --for=condition=%s %s %s -n %s --timeout=10m",
-		condition, crdName, resourceName, namespace)
+	return WaitForResourceReadyWithTimeout(ctx, condition, crdName, resourceName, namespace, "10m")
+}
+
+// WaitForResourceReadyWithTimeout waits for a resource to be ready with a custom timeout.
+func WaitForResourceReadyWithTimeout(
+	ctx context.Context, condition, crdName, resourceName, namespace, timeout string,
+) error {
+	cmd := fmt.Sprintf("kubectl wait --for=condition=%s %s %s -n %s --timeout=%s",
+		condition, crdName, resourceName, namespace, timeout)
 	p := utils.RunCommandContext(ctx, cmd)
 	if p.Err() != nil {
 		return p.Err()

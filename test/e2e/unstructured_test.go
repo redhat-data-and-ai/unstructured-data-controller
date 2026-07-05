@@ -392,7 +392,9 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 		t.Log("pipeline successfully reconciled after docling config change")
 
-		if err := operatorUtils.WaitForResourceReady(ctx, v1alpha1.DocumentProcessorCondition, "documentprocessors.operator.dataverse.redhat.com", dataPipelineCRName+"-convert", testNamespace); err != nil {
+		dpCRD := "documentprocessors.operator.dataverse.redhat.com"
+		if err := operatorUtils.WaitForResourceReadyWithTimeout(ctx, v1alpha1.DocumentProcessorCondition,
+			dpCRD, dataPipelineCRName+"-convert", testNamespace, "20m"); err != nil {
 			t.Error(err)
 		}
 		t.Log("DocumentProcessor successfully reconciled after config change")
