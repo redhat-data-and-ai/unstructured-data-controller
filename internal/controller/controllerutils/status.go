@@ -24,12 +24,23 @@ import (
 )
 
 // StatusPatch snapshots the object, applies mutate, and patches only the status
-// diff via merge-patch. No re-fetch or conflict retry needed.
+// diff via merge-patch. The patch is applied to a copy so that the caller's
+// in-memory object is not overwritten by the API server response (which would
+// reset any spec defaults applied earlier). Only the resource version is copied
+// back so that subsequent API calls don't conflict.
 func StatusPatch(ctx context.Context, c client.Client, obj client.Object, mutate func()) error {
 	base, ok := obj.DeepCopyObject().(client.Object)
 	if !ok {
 		return errors.New("DeepCopyObject did not return a client.Object")
 	}
 	mutate()
-	return c.Status().Patch(ctx, obj, client.MergeFrom(base))
+	patchTarget, ok := obj.DeepCopyObject().(client.Object)
+	if !ok {
+		return errors.New("DeepCopyObject did not return a client.Object")
+	}
+	if err := c.Status().Patch(ctx, patchTarget, client.MergeFrom(base)); err != nil {
+		return err
+	}
+	obj.SetResourceVersion(patchTarget.GetResourceVersion())
+	return nil
 }
