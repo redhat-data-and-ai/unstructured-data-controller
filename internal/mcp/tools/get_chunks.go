@@ -88,6 +88,14 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			}, nil, nil
 		}
 
+		if qc.Database == "" || qc.Schema == "" || qc.Table == "" {
+			log.Error("pipeline query config has empty fields", "database", qc.Database, "schema", qc.Schema, "table", qc.Table)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: pipeline %q has incomplete Snowflake query configuration", args.PipelineName)}},
+				IsError: true,
+			}, nil, nil
+		}
+
 		log.Info("generating embedding for query")
 		result, err := embeddingClient.GenerateEmbeddings(ctx, []string{args.Query}, "float")
 		if err != nil {

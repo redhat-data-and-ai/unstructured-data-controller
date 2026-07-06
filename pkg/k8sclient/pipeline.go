@@ -71,9 +71,10 @@ func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 	}
 
 	result := make([]PipelineInfo, len(pipelineList.Items))
-	for i, pipeline := range pipelineList.Items {
+	for i := range pipelineList.Items {
+		pipeline := &pipelineList.Items[i]
 		var db string
-		if qc := snowflakeQueryConfig(&pipeline); qc != nil {
+		if qc := snowflakeQueryConfig(pipeline); qc != nil {
 			db = qc.Database
 		}
 		result[i] = PipelineInfo{

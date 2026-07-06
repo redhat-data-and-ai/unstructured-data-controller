@@ -96,7 +96,8 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 
 		accessible := []k8sclient.PipelineInfo{}
 		for _, p := range pipelines {
-			if p.Database != "" && userDBs[strings.ToUpper(p.Database)] {
+			dbKey := strings.ToUpper(strings.ReplaceAll(p.Database, "-", "_"))
+			if p.Database != "" && userDBs[dbKey] {
 				accessible = append(accessible, p)
 			}
 		}
