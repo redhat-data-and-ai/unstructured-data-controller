@@ -75,12 +75,12 @@ type DocumentProcessorSpec struct {
 
 // DocumentProcessorStatus defines the observed state of DocumentProcessor
 type DocumentProcessorStatus struct {
-	LastAppliedGeneration   int64                   `json:"lastAppliedGeneration,omitempty"`
-	Conditions              []metav1.Condition      `json:"conditions,omitempty"`
-	Jobs                    []Job                   `json:"jobs,omitempty"`
-	PermanentlyFailingFiles []string                `json:"permanentlyFailingFiles,omitempty"`
-	FilesProcessed          int64                   `json:"filesProcessed,omitempty"`
-	AppliedConfig           DocumentProcessorConfig `json:"appliedConfig,omitempty"`
+	LastAppliedGeneration   int64                    `json:"lastAppliedGeneration,omitempty"`
+	Conditions              []metav1.Condition       `json:"conditions,omitempty"`
+	Jobs                    []Job                    `json:"jobs,omitempty"`
+	PermanentlyFailingFiles []string                 `json:"permanentlyFailingFiles,omitempty"`
+	FilesProcessed          int64                    `json:"filesProcessed,omitempty"`
+	AppliedConfig           *DocumentProcessorConfig `json:"appliedConfig,omitempty"`
 }
 
 type Job struct {

@@ -54,10 +54,10 @@ type VectorEmbeddingsGeneratorSpec struct {
 
 // VectorEmbeddingsGeneratorStatus defines the observed state of VectorEmbeddingsGenerator.
 type VectorEmbeddingsGeneratorStatus struct {
-	LastAppliedGeneration int64                           `json:"lastAppliedGeneration,omitempty"`
-	Conditions            []metav1.Condition              `json:"conditions,omitempty"`
-	FilesProcessed        int64                           `json:"filesProcessed,omitempty"`
-	AppliedConfig         VectorEmbeddingsGeneratorConfig `json:"appliedConfig,omitempty"`
+	LastAppliedGeneration int64                            `json:"lastAppliedGeneration,omitempty"`
+	Conditions            []metav1.Condition               `json:"conditions,omitempty"`
+	FilesProcessed        int64                            `json:"filesProcessed,omitempty"`
+	AppliedConfig         *VectorEmbeddingsGeneratorConfig `json:"appliedConfig,omitempty"`
 }
 
 // +kubebuilder:object:root=true
