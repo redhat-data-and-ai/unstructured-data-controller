@@ -84,7 +84,7 @@ func main() {
 	mcptools.RegisterGetChunksForEmbeddings(mcpServer, embeddingClient)
 
 	oauthStore := auth.NewOAuthStore()
-	oauthMiddleware := auth.NewMiddleware(provider, slog.Default())
+	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection)
 	oauthServer := auth.NewOAuthServer(provider, oauthCfg.CallbackURL, oauthStore, slog.Default())
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(

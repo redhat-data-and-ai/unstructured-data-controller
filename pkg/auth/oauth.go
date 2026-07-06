@@ -24,32 +24,43 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // OAuthConfig holds OAuth configuration loaded from environment variables.
 type OAuthConfig struct {
-	ClientID         string
-	ClientSecret     string
-	AuthorizationURL string
-	TokenURL         string
-	IntrospectionURL string
-	CallbackURL      string
+	ClientID             string
+	ClientSecret         string
+	AuthorizationURL     string
+	TokenURL             string
+	IntrospectionURL     string
+	CallbackURL          string
+	DisableIntrospection bool
 }
 
 // NewOAuthConfigFromEnv creates an OAuthConfig from SSO_* environment variables.
 func NewOAuthConfigFromEnv() (*OAuthConfig, error) {
 	cfg := &OAuthConfig{
-		ClientID:         os.Getenv("SSO_CLIENT_ID"),
-		ClientSecret:     os.Getenv("SSO_CLIENT_SECRET"),
-		AuthorizationURL: os.Getenv("SSO_AUTHORIZATION_URL"),
-		TokenURL:         os.Getenv("SSO_TOKEN_URL"),
-		IntrospectionURL: os.Getenv("SSO_INTROSPECTION_URL"),
-		CallbackURL:      os.Getenv("SSO_CALLBACK_URL"),
+		ClientID:             os.Getenv("SSO_CLIENT_ID"),
+		ClientSecret:         os.Getenv("SSO_CLIENT_SECRET"),
+		AuthorizationURL:     os.Getenv("SSO_AUTHORIZATION_URL"),
+		TokenURL:             os.Getenv("SSO_TOKEN_URL"),
+		IntrospectionURL:     os.Getenv("SSO_INTROSPECTION_URL"),
+		CallbackURL:          os.Getenv("SSO_CALLBACK_URL"),
+		DisableIntrospection: boolFromEnv("SSO_DISABLE_INTROSPECTION"),
 	}
 	return cfg, nil
+}
+
+// boolFromEnv returns true when the environment variable parses as a boolean true value.
+func boolFromEnv(key string) bool {
+	val, _ := strconv.ParseBool(os.Getenv(key))
+	return val
 }
 
 // IntrospectionResponse represents the OAuth 2.0 Token Introspection response per RFC 7662.
@@ -101,23 +112,29 @@ type tokenCacheEntry struct {
 
 // Middleware validates OAuth Bearer tokens using a Provider for introspection.
 type Middleware struct {
-	provider Provider
-	logger   *slog.Logger
-	cache    sync.Map
-	cacheTTL time.Duration
-	done     chan struct{}
+	provider             Provider
+	logger               *slog.Logger
+	cache                sync.Map
+	cacheTTL             time.Duration
+	done                 chan struct{}
+	disableIntrospection bool
 }
 
 // NewMiddleware creates a new OAuth middleware that validates tokens
 // by delegating introspection to the given Provider.
-func NewMiddleware(provider Provider, logger *slog.Logger) *Middleware {
+func NewMiddleware(provider Provider, logger *slog.Logger, disableIntrospection bool) *Middleware {
 	m := &Middleware{
-		provider: provider,
-		logger:   logger,
-		cacheTTL: 5 * time.Minute,
-		done:     make(chan struct{}),
+		provider:             provider,
+		logger:               logger,
+		cacheTTL:             5 * time.Minute,
+		done:                 make(chan struct{}),
+		disableIntrospection: disableIntrospection,
 	}
-	go m.cleanupLoop()
+	if disableIntrospection {
+		logger.Warn("OAuth token introspection is disabled; Bearer tokens are accepted without validation")
+	} else {
+		go m.cleanupLoop()
+	}
 	return m
 }
 
@@ -179,6 +196,10 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 
 // validateToken checks the cache first, then delegates to the Provider.
 func (m *Middleware) validateToken(ctx context.Context, token string) (*IntrospectionResponse, error) {
+	if m.disableIntrospection {
+		return claimsFromJWT(token), nil
+	}
+
 	if entry, ok := m.cache.Load(token); ok {
 		if cached, ok := entry.(*tokenCacheEntry); ok && time.Now().Before(cached.expiresAt) {
 			return cached.response, nil
@@ -205,6 +226,26 @@ func (m *Middleware) validateToken(ctx context.Context, token string) (*Introspe
 	}
 
 	return resp, nil
+}
+
+func claimsFromJWT(token string) *IntrospectionResponse {
+	resp := &IntrospectionResponse{Active: true}
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
+		return resp // not a JWT (opaque token) — fall back to bare Active:true
+	}
+	if sub, ok := claims["sub"].(string); ok {
+		resp.Sub = sub
+	}
+	if username, ok := claims["preferred_username"].(string); ok {
+		resp.Username = username
+	} else if email, ok := claims["email"].(string); ok {
+		resp.Username = email
+	}
+	if exp, ok := claims["exp"].(float64); ok {
+		resp.Exp = int64(exp)
+	}
+	return resp
 }
 
 // ProtectedResourceMetadataHandler serves OAuth Protected Resource Metadata (RFC 9728)

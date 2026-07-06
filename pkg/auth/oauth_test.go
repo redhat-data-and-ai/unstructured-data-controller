@@ -48,6 +48,7 @@ func TestNewOAuthConfigFromEnv(t *testing.T) {
 	for _, key := range []string{
 		"SSO_CLIENT_ID", "SSO_CLIENT_SECRET", "SSO_AUTHORIZATION_URL",
 		"SSO_TOKEN_URL", "SSO_INTROSPECTION_URL", "SSO_CALLBACK_URL",
+		"SSO_DISABLE_INTROSPECTION",
 	} {
 		t.Setenv(key, "")
 	}
@@ -92,6 +93,14 @@ func TestNewGenericProvider_Validation(t *testing.T) {
 				AuthorizationURL: "https://sso/auth", TokenURL: "https://sso/token",
 			},
 			wantErr: "SSO_INTROSPECTION_URL",
+		},
+		{
+			name: "missing introspection allowed when disabled",
+			cfg: &OAuthConfig{
+				ClientID: "id", ClientSecret: "secret",
+				AuthorizationURL: "https://sso/auth", TokenURL: "https://sso/token",
+				DisableIntrospection: true,
+			},
 		},
 	}
 
@@ -152,7 +161,7 @@ func TestMiddleware_Authenticate(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 
 	t.Run("missing authorization header returns 401", func(t *testing.T) {
-		m := NewMiddleware(&mockProvider{}, logger)
+		m := NewMiddleware(&mockProvider{}, logger, false)
 		handler := m.Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			t.Error("handler should not be called")
 		}))
@@ -170,7 +179,7 @@ func TestMiddleware_Authenticate(t *testing.T) {
 		p := &mockProvider{introspectFunc: func(_ context.Context, _ string) (*IntrospectionResponse, error) {
 			return &IntrospectionResponse{Active: false}, nil
 		}}
-		m := NewMiddleware(p, logger)
+		m := NewMiddleware(p, logger, false)
 		handler := m.Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			t.Error("handler should not be called")
 		}))
@@ -189,7 +198,7 @@ func TestMiddleware_Authenticate(t *testing.T) {
 		p := &mockProvider{introspectFunc: func(_ context.Context, _ string) (*IntrospectionResponse, error) {
 			return &IntrospectionResponse{Active: true, Sub: "user-123", Username: "testuser"}, nil
 		}}
-		m := NewMiddleware(p, logger)
+		m := NewMiddleware(p, logger, false)
 
 		var capturedInfo *IntrospectionResponse
 		handler := m.Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -226,7 +235,7 @@ func TestMiddleware_Authenticate(t *testing.T) {
 			callCount++
 			return &IntrospectionResponse{Active: true, Sub: "user-1"}, nil
 		}}
-		m := NewMiddleware(p, logger)
+		m := NewMiddleware(p, logger, false)
 		handler := m.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -250,7 +259,7 @@ func TestMiddleware_Authenticate(t *testing.T) {
 		p := &mockProvider{introspectFunc: func(_ context.Context, _ string) (*IntrospectionResponse, error) {
 			return nil, errors.New("provider unavailable")
 		}}
-		m := NewMiddleware(p, logger)
+		m := NewMiddleware(p, logger, false)
 		handler := m.Authenticate(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			t.Error("handler should not be called")
 		}))
@@ -285,7 +294,7 @@ func TestTokenInfoContext(t *testing.T) {
 }
 
 func TestMetadataHandler(t *testing.T) {
-	m := NewMiddleware(&mockProvider{}, slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	m := NewMiddleware(&mockProvider{}, slog.New(slog.NewJSONHandler(os.Stdout, nil)), false)
 	handler := m.MetadataHandler()
 
 	rr := httptest.NewRecorder()
