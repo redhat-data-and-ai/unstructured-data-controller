@@ -29,58 +29,77 @@ const defaultPipelineNamespace = "unstructured-controller-namespace"
 
 type PipelineInfo struct {
 	Name        string `json:"name"`
-	Namespace   string `json:"namespace"`
 	Description string `json:"description"`
-	Database    string `json:"database,omitempty"`
-	Schema      string `json:"schema,omitempty"`
-	Table       string `json:"table,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Message     string `json:"message,omitempty"`
+	Database    string `json:"-"`
+}
+
+type QueryConfig struct {
+	Database string
+	Schema   string
+	Table    string
+}
+
+func pipelineNamespace() string {
+	if ns := os.Getenv("UNSTRUCTURED_DATA_CONTROLLER_NAMESPACE"); ns != "" {
+		return ns
+	}
+	return defaultPipelineNamespace
+}
+
+func snowflakeQueryConfig(pipeline *operatorv1alpha1.UnstructuredDataPipeline) *QueryConfig {
+	for _, stage := range pipeline.Spec.Stages {
+		if stage.Type == operatorv1alpha1.StageTypeVectorEmbeddingsGenerator &&
+			stage.QueryConfig != nil && stage.QueryConfig.Snowflake != nil {
+			return &QueryConfig{
+				Database: stage.QueryConfig.Snowflake.Database,
+				Schema:   stage.QueryConfig.Snowflake.Schema,
+				Table:    stage.QueryConfig.Snowflake.Table,
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 	pipelineList := &operatorv1alpha1.UnstructuredDataPipelineList{}
 
-	namespace := os.Getenv("UNSTRUCTURED_DATA_CONTROLLER_NAMESPACE")
-	if namespace == "" {
-		namespace = defaultPipelineNamespace
-	}
-
 	err := c.client.List(ctx, pipelineList, &client.ListOptions{
-		Namespace: namespace,
+		Namespace: pipelineNamespace(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pipelines: %w", err)
 	}
 
 	result := make([]PipelineInfo, len(pipelineList.Items))
-	for i, pipeline := range pipelineList.Items {
-		info := PipelineInfo{
+	for i := range pipelineList.Items {
+		pipeline := &pipelineList.Items[i]
+		var db string
+		if qc := snowflakeQueryConfig(pipeline); qc != nil {
+			db = qc.Database
+		}
+		result[i] = PipelineInfo{
 			Name:        pipeline.Name,
-			Namespace:   pipeline.Namespace,
 			Description: pipeline.Spec.Description,
+			Database:    db,
 		}
-
-		for _, stage := range pipeline.Spec.Stages {
-			if stage.Type == operatorv1alpha1.StageTypeVectorEmbeddingsGenerator &&
-				stage.QueryConfig != nil && stage.QueryConfig.Snowflake != nil {
-				info.Database = stage.QueryConfig.Snowflake.Database
-				info.Schema = stage.QueryConfig.Snowflake.Schema
-				info.Table = stage.QueryConfig.Snowflake.Table
-				break
-			}
-		}
-
-		for _, condition := range pipeline.Status.Conditions {
-			if condition.Type == "UnstructuredDataPipelineReady" {
-				info.Status = string(condition.Status)
-				info.Message = condition.Message
-				break
-			}
-		}
-
-		result[i] = info
 	}
 
 	return result, nil
+}
+
+func (c *Client) GetPipelineQueryConfig(ctx context.Context, name string) (*QueryConfig, error) {
+	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
+	err := c.client.Get(ctx, client.ObjectKey{
+		Namespace: pipelineNamespace(),
+		Name:      name,
+	}, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
+	}
+
+	qc := snowflakeQueryConfig(pipeline)
+	if qc == nil {
+		return nil, fmt.Errorf("pipeline %q has no Snowflake query config", name)
+	}
+	return qc, nil
 }

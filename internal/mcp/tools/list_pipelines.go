@@ -33,8 +33,11 @@ import (
 // RegisterListPipelines registers the list_unstructured_data_pipelines_for_user MCP tool
 func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "list_unstructured_data_pipelines_for_user",
-		Description: "List all UnstructuredDataPipeline custom resources and Snowflake databases the authenticated user has access to.",
+		Name: "list_unstructured_data_pipelines_for_user",
+		Description: `List the UnstructuredDataPipelines the authenticated user has access to. Returns an array of {name, description}.
+If EXACTLY ONE pipeline matches the user's question, use it.
+If MORE THAN ONE pipeline could match, STOP and ask the user which one to use. Do NOT pick one yourself.
+If NONE match, tell the user. Do NOT try all pipelines.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		username := ""
 		if tokenInfo, ok := auth.TokenInfoFromContext(ctx); ok {
@@ -74,15 +77,6 @@ func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
 			log.Warn("kubernetes client is nil, skipping pipeline listing")
 		}
 
-		// Build map of pipeline database names to pipeline info
-		pipelinesByDB := make(map[string][]k8sclient.PipelineInfo, len(pipelines))
-		for _, p := range pipelines {
-			if p.Database != "" {
-				dbKey := strings.ToUpper(p.Database)
-				pipelinesByDB[dbKey] = append(pipelinesByDB[dbKey], p)
-			}
-		}
-
 		databases, err := snowflake.ShowDatabases(ctx, oauthToken)
 		if err != nil {
 			log.Error("failed to list databases from snowflake", "error", err)
@@ -95,16 +89,16 @@ func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
 		}
 		log.Info("listed databases from snowflake", "count", len(databases))
 
-		// Intersect: keep only pipelines whose database the user has access to
 		userDBs := make(map[string]bool, len(databases))
 		for _, db := range databases {
 			userDBs[strings.ToUpper(db.Name)] = true
 		}
 
-		var accessible []k8sclient.PipelineInfo
-		for dbName, plist := range pipelinesByDB {
-			if userDBs[dbName] {
-				accessible = append(accessible, plist...)
+		accessible := []k8sclient.PipelineInfo{}
+		for _, p := range pipelines {
+			dbKey := strings.ToUpper(strings.ReplaceAll(p.Database, "-", "_"))
+			if p.Database != "" && userDBs[dbKey] {
+				accessible = append(accessible, p)
 			}
 		}
 
@@ -122,12 +116,7 @@ func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
 		log.Info("completed successfully", "total_pipelines", len(pipelines), "accessible_pipelines", len(accessible))
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("Found %d accessible pipeline(s):\n%s\n\n"+
-					"IMPORTANT: If you are selecting a pipeline for a search query, you MUST follow these rules:\n"+
-					"- If EXACTLY ONE pipeline matches the user's question, use it.\n"+
-					"- If MORE THAN ONE pipeline could match, STOP and ask the user which one to use. Do NOT pick one yourself.\n"+
-					"- If NONE match, tell the user. Do NOT try all pipelines.",
-					len(accessible), string(jsonBytes)),
+				Text: string(jsonBytes),
 			}},
 		}, nil, nil
 	})
