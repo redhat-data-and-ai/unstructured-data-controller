@@ -94,7 +94,7 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 			userDBs[strings.ToUpper(db.Name)] = true
 		}
 
-		var accessible []k8sclient.PipelineInfo
+		accessible := []k8sclient.PipelineInfo{}
 		for _, p := range pipelines {
 			if p.Database != "" && userDBs[strings.ToUpper(p.Database)] {
 				accessible = append(accessible, p)

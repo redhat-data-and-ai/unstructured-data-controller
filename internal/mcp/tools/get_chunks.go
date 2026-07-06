@@ -134,7 +134,7 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 		log.Info("completed successfully", "pipeline", args.PipelineName, "chunks_found", len(chunks))
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("Found %d chunks for query in %s.%s.%s:\n%s", len(chunks), databaseName, schemaName, tableName, string(jsonBytes)),
+				Text: fmt.Sprintf("Found %d chunks for query in pipeline %q:\n%s", len(chunks), args.PipelineName, string(jsonBytes)),
 			}},
 		}, nil, nil
 	})
