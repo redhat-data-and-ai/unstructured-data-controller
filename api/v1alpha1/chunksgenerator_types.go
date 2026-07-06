@@ -56,9 +56,10 @@ type ChunksGeneratorSpec struct {
 
 // ChunksGeneratorStatus defines the observed state of ChunksGenerator
 type ChunksGeneratorStatus struct {
-	LastAppliedGeneration int64              `json:"lastAppliedGeneration,omitempty"`
-	Conditions            []metav1.Condition `json:"conditions,omitempty"`
-	FilesProcessed        int64              `json:"filesProcessed,omitempty"`
+	LastAppliedGeneration int64                 `json:"lastAppliedGeneration,omitempty"`
+	Conditions            []metav1.Condition    `json:"conditions,omitempty"`
+	FilesProcessed        int64                 `json:"filesProcessed,omitempty"`
+	AppliedConfig         ChunksGeneratorConfig `json:"appliedConfig,omitempty"`
 }
 
 // +kubebuilder:object:root=true

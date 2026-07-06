@@ -164,6 +164,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
 		chunksGeneratorCR.Status.FilesProcessed += filesProcessed
+		chunksGeneratorCR.Status.AppliedConfig = chunksGeneratorCR.Spec.ChunksGeneratorConfig
 		chunksGeneratorCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status", "namespace", chunksGeneratorCR.Namespace, "name", chunksGeneratorCR.Name)

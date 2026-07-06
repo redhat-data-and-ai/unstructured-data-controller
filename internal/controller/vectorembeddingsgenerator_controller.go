@@ -141,6 +141,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	successMessage := fmt.Sprintf("successfully reconciled vector embeddings generator: %s", vectorEmbeddingsGeneratorCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, vectorEmbeddingsGeneratorCR, func() {
 		vectorEmbeddingsGeneratorCR.Status.FilesProcessed += filesProcessed
+		vectorEmbeddingsGeneratorCR.Status.AppliedConfig = vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig
 		vectorEmbeddingsGeneratorCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update VectorEmbeddingsGenerator CR status", "namespace", vectorEmbeddingsGeneratorCR.Namespace, "name", vectorEmbeddingsGeneratorCR.Name)
