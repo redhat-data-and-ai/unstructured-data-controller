@@ -30,6 +30,7 @@ const defaultPipelineNamespace = "unstructured-controller-namespace"
 type PipelineInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Database    string `json:"-"`
 }
 
 type QueryConfig struct {
@@ -71,30 +72,18 @@ func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 
 	result := make([]PipelineInfo, len(pipelineList.Items))
 	for i, pipeline := range pipelineList.Items {
+		var db string
+		if qc := snowflakeQueryConfig(&pipeline); qc != nil {
+			db = qc.Database
+		}
 		result[i] = PipelineInfo{
 			Name:        pipeline.Name,
 			Description: pipeline.Spec.Description,
+			Database:    db,
 		}
 	}
 
 	return result, nil
-}
-
-func (c *Client) GetPipelineDatabase(ctx context.Context, name string) (string, error) {
-	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
-	err := c.client.Get(ctx, client.ObjectKey{
-		Namespace: pipelineNamespace(),
-		Name:      name,
-	}, pipeline)
-	if err != nil {
-		return "", fmt.Errorf("failed to get pipeline %q: %w", name, err)
-	}
-
-	qc := snowflakeQueryConfig(pipeline)
-	if qc == nil {
-		return "", fmt.Errorf("pipeline %q has no Snowflake query config", name)
-	}
-	return qc.Database, nil
 }
 
 func (c *Client) GetPipelineQueryConfig(ctx context.Context, name string) (*QueryConfig, error) {

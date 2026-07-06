@@ -71,6 +71,14 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			}, nil, nil
 		}
 
+		if k8sClient == nil {
+			log.Error("kubernetes client is nil")
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "Error: kubernetes client is not initialized"}},
+				IsError: true,
+			}, nil, nil
+		}
+
 		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName)
 		if err != nil {
 			log.Error("failed to get pipeline query config", "error", err)
