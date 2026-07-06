@@ -39,16 +39,23 @@ type GenericProvider struct {
 }
 
 // NewGenericProvider creates a provider from an OAuthConfig.
-// Requires: ClientID, ClientSecret, AuthorizationURL, TokenURL, IntrospectionURL.
+// Requires: ClientID, ClientSecret, AuthorizationURL, TokenURL.
+// IntrospectionURL is required unless DisableIntrospection is set.
 func NewGenericProvider(cfg *OAuthConfig) (*GenericProvider, error) {
-	var missing []string
-	for _, check := range []struct{ name, val string }{
+	required := []struct{ name, val string }{
 		{"SSO_CLIENT_ID", cfg.ClientID},
 		{"SSO_CLIENT_SECRET", cfg.ClientSecret},
 		{"SSO_AUTHORIZATION_URL", cfg.AuthorizationURL},
 		{"SSO_TOKEN_URL", cfg.TokenURL},
-		{"SSO_INTROSPECTION_URL", cfg.IntrospectionURL},
-	} {
+	}
+	if !cfg.DisableIntrospection {
+		required = append(required, struct{ name, val string }{
+			"SSO_INTROSPECTION_URL", cfg.IntrospectionURL,
+		})
+	}
+
+	var missing []string
+	for _, check := range required {
 		if check.val == "" {
 			missing = append(missing, check.name)
 		}
