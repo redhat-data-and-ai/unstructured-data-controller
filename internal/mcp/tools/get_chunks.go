@@ -27,23 +27,22 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
 type getChunksArgs struct {
-	UDPDatabase string `json:"udp_database" jsonschema:"Name of the data product database. If not known, call list_unstructured_data_pipelines_for_user first and pick the matching pipeline based on its description."`
-	Schema      string `json:"schema" jsonschema:"Snowflake schema name. If not known, call list_unstructured_data_pipelines_for_user first."`
-	Table       string `json:"table" jsonschema:"Snowflake table name. If not known, call list_unstructured_data_pipelines_for_user first."`
-	Query       string `json:"query" jsonschema:"The search query to find relevant chunks"`
+	PipelineName string `json:"pipeline_name" jsonschema:"Name of the UnstructuredDataPipeline. If not known, call list_unstructured_data_pipelines_for_user first and pick the matching pipeline based on its description."`
+	Query        string `json:"query" jsonschema:"The search query to find relevant chunks"`
 }
 
-func RegisterGetChunksForEmbeddings(s *mcp.Server, embeddingClient *embedding.HTTPClient) {
+func RegisterGetChunksForEmbeddings(s *mcp.Server, k8sClient *k8sclient.Client, embeddingClient *embedding.HTTPClient) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_chunks_for_embeddings",
-		Description: `Search for relevant text chunks in a data product using vector cosine similarity. Returns top 5 matching chunks for the given query.
-If udp_database, schema, or table are not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
-On error: report the exact error to the user and STOP. Do NOT retry with other pipelines or databases.
+		Description: `Search for relevant text chunks in a pipeline's data product using vector cosine similarity. Returns top 5 matching chunks for the given query.
+If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
+On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.
 On follow-up: if the user is not satisfied, ask them which pipeline to search. Do NOT automatically try other pipelines.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getChunksArgs) (*mcp.CallToolResult, any, error) {
 		username := ""
@@ -53,12 +52,12 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 		ctx = logger.NewContext(ctx, uuid.NewString(), "get_chunks_for_embeddings", username)
 		log := logger.FromContext(ctx)
 
-		log.Info("tool invoked", "udp_database", args.UDPDatabase, "schema", args.Schema, "table", args.Table)
+		log.Info("tool invoked", "pipeline_name", args.PipelineName)
 
-		if args.UDPDatabase == "" || args.Schema == "" || args.Table == "" || args.Query == "" {
-			log.Error("missing required parameters", "udp_database", args.UDPDatabase, "schema", args.Schema, "table", args.Table, "query_empty", args.Query == "")
+		if args.PipelineName == "" || args.Query == "" {
+			log.Error("missing required parameters", "pipeline_name", args.PipelineName, "query_empty", args.Query == "")
 			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: "Error: udp_database, schema, table, and query are required. Call list_unstructured_data_pipelines_for_user first to get the database, schema, and table values."}},
+				Content: []mcp.Content{&mcp.TextContent{Text: "Error: pipeline_name and query are required. Call list_unstructured_data_pipelines_for_user first to get the pipeline name."}},
 				IsError: true,
 			}, nil, nil
 		}
@@ -68,6 +67,15 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			log.Error("oauth token not found in context")
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: "Error: oauth token not found in context"}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName)
+		if err != nil {
+			log.Error("failed to get pipeline query config", "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error resolving pipeline %q: %v", args.PipelineName, err)}},
 				IsError: true,
 			}, nil, nil
 		}
@@ -92,9 +100,9 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 		log.Info("embedding generated", "vector_dimensions", len(result.Embeddings[0]))
 
 		vectorLiteral := formatVectorLiteral(result.Embeddings[0])
-		databaseName := strings.ToUpper(strings.ReplaceAll(args.UDPDatabase, "-", "_"))
-		schemaName := strings.ToUpper(args.Schema)
-		tableName := strings.ToUpper(args.Table)
+		databaseName := strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_"))
+		schemaName := strings.ToUpper(qc.Schema)
+		tableName := strings.ToUpper(qc.Table)
 
 		log.Info("searching snowflake", "database", databaseName, "schema", schemaName, "table", tableName)
 		chunks, err := snowflake.SearchChunks(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral)
@@ -115,7 +123,7 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			}, nil, nil
 		}
 
-		log.Info("completed successfully", "database", databaseName, "chunks_found", len(chunks))
+		log.Info("completed successfully", "pipeline", args.PipelineName, "chunks_found", len(chunks))
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
 				Text: fmt.Sprintf("Found %d chunks for query in %s.%s.%s:\n%s", len(chunks), databaseName, schemaName, tableName, string(jsonBytes)),

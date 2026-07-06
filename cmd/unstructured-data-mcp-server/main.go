@@ -81,7 +81,7 @@ func main() {
 	})
 
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
-	mcptools.RegisterGetChunksForEmbeddings(mcpServer, embeddingClient)
+	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient)
 
 	oauthStore := auth.NewOAuthStore()
 	oauthMiddleware := auth.NewMiddleware(provider, slog.Default())
