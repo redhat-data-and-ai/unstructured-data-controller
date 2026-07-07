@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
@@ -42,6 +43,7 @@ func RegisterGetChunksForEmbeddings(s *mcp.Server, k8sClient *k8sclient.Client, 
 		Name: "get_chunks_for_embeddings",
 		Description: `Search for relevant text chunks in a pipeline's data product using vector cosine similarity. Returns top 5 matching chunks for the given query.
 If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
+After a successful search, call get_processed_document with the same pipeline_name and the file_id from the top matching chunk to retrieve the full processed document.
 On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.
 On follow-up: if the user is not satisfied, ask them which pipeline to search. Do NOT automatically try other pipelines.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getChunksArgs) (*mcp.CallToolResult, any, error) {
@@ -66,7 +68,7 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 		if !ok {
 			log.Error("oauth token not found in context")
 			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: "Error: oauth token not found in context"}},
+				Content: []mcp.Content{&mcp.TextContent{Text: errOAuthTokenNotFound}},
 				IsError: true,
 			}, nil, nil
 		}
@@ -79,7 +81,7 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			}, nil, nil
 		}
 
-		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName)
+		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName, operatorv1alpha1.StageTypeVectorEmbeddingsGenerator)
 		if err != nil {
 			log.Error("failed to get pipeline query config", "error", err)
 			return &mcp.CallToolResult{
@@ -140,9 +142,21 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 		}
 
 		log.Info("completed successfully", "pipeline", args.PipelineName, "chunks_found", len(chunks))
+
+		nextStep := fmt.Sprintf(
+			"NEXT STEP: Call get_processed_document with pipeline_name=%q and file_id from the highest-scoring chunk above. Use the full markdown_content to answer the user's question.",
+			args.PipelineName,
+		)
+		if len(chunks) > 0 && chunks[0].FileID != "" {
+			nextStep = fmt.Sprintf(
+				"NEXT STEP: Call get_processed_document with pipeline_name=%q and file_id=%q. Use the full markdown_content to answer the user's question.",
+				args.PipelineName, chunks[0].FileID,
+			)
+		}
+
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("Found %d chunks for query in pipeline %q:\n%s", len(chunks), args.PipelineName, string(jsonBytes)),
+				Text: fmt.Sprintf("Found %d chunks for query in pipeline %q:\n%s\n\n%s", len(chunks), args.PipelineName, string(jsonBytes), nextStep),
 			}},
 		}, nil, nil
 	})
