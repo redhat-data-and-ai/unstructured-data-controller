@@ -46,9 +46,11 @@ func pipelineNamespace() string {
 	return defaultPipelineNamespace
 }
 
-func snowflakeQueryConfig(pipeline *operatorv1alpha1.UnstructuredDataPipeline) *QueryConfig {
+func snowflakeQueryConfig(
+	pipeline *operatorv1alpha1.UnstructuredDataPipeline, stageType operatorv1alpha1.StageType,
+) *QueryConfig {
 	for _, stage := range pipeline.Spec.Stages {
-		if stage.Type == operatorv1alpha1.StageTypeVectorEmbeddingsGenerator &&
+		if stage.Type == stageType &&
 			stage.QueryConfig != nil && stage.QueryConfig.Snowflake != nil {
 			return &QueryConfig{
 				Database: stage.QueryConfig.Snowflake.Database,
@@ -74,7 +76,7 @@ func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 	for i := range pipelineList.Items {
 		pipeline := &pipelineList.Items[i]
 		var db string
-		if qc := snowflakeQueryConfig(pipeline); qc != nil {
+		if qc := snowflakeQueryConfig(pipeline, operatorv1alpha1.StageTypeVectorEmbeddingsGenerator); qc != nil {
 			db = qc.Database
 		}
 		result[i] = PipelineInfo{
@@ -87,7 +89,9 @@ func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 	return result, nil
 }
 
-func (c *Client) GetPipelineQueryConfig(ctx context.Context, name string) (*QueryConfig, error) {
+func (c *Client) GetPipelineQueryConfig(
+	ctx context.Context, name string, stageType operatorv1alpha1.StageType,
+) (*QueryConfig, error) {
 	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
 	err := c.client.Get(ctx, client.ObjectKey{
 		Namespace: pipelineNamespace(),
@@ -97,9 +101,9 @@ func (c *Client) GetPipelineQueryConfig(ctx context.Context, name string) (*Quer
 		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
 	}
 
-	qc := snowflakeQueryConfig(pipeline)
+	qc := snowflakeQueryConfig(pipeline, stageType)
 	if qc == nil {
-		return nil, fmt.Errorf("pipeline %q has no Snowflake query config", name)
+		return nil, fmt.Errorf("pipeline %q has no Snowflake query config for stage type %q", name, stageType)
 	}
 	return qc, nil
 }
