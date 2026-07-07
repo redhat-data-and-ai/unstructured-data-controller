@@ -20,14 +20,32 @@ env:
   MCP_IMAGE_NAME: ${{ github.repository }}-mcp-server
 
 jobs:
+  check-author:
+    name: Check Author Permissions
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.check.outputs.environment }}
+    steps:
+      - name: Determine approval requirement
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          AUTHOR="${{ github.event.pull_request.user.login }}"
+          PERM=$(gh api "repos/${{ github.repository }}/collaborators/$AUTHOR/permission" --jq '.permission' 2>/dev/null || echo "none")
+          echo "author=$AUTHOR permission=$PERM"
+          case "$PERM" in
+            admin|write|maintain) echo "environment=" >> $GITHUB_OUTPUT ;;
+            *) echo "environment=e2e-tests" >> $GITHUB_OUTPUT ;;
+          esac
+
   authorize:
     name: CI Approval Gate
+    needs: check-author
+    if: always()
     runs-on: ubuntu-latest
-    environment: >-
-      ${{ github.event_name == 'pull_request_target'
-          && !contains(fromJSON('["MEMBER","COLLABORATOR","OWNER"]'),
-                       github.event.pull_request.author_association)
-          && 'e2e-tests' || '' }}
+    environment: ${{ needs.check-author.outputs.environment }}
     steps:
       - run: echo "Authorized"
 
