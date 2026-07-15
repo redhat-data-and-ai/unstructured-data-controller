@@ -248,6 +248,10 @@ func (p *GoogleProvider) IntrospectToken(ctx context.Context, token string) (*In
 
 No changes needed to the middleware, OAuth server endpoints, or MCP layer.
 
+## Skills
+
+A pre-built skill file is available at [`skills/unstructured-data-mcp-skill.md`](../skills/unstructured-data-mcp-skill.md) for use with LLM coding assistants (Claude Code, Cursor, etc.). It describes how to connect to and use the MCP server tools.
+
 ## SSO Provider Setup
 
 When registering the MCP server as a client in your SSO provider, configure:
