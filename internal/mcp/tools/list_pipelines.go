@@ -53,7 +53,7 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 			log.Error("oauth token not found in context")
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{
-					Text: "Error: oauth token not found in context",
+					Text: errOAuthTokenNotFound,
 				}},
 				IsError: true,
 			}, nil, nil
