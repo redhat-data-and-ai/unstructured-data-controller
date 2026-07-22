@@ -29,7 +29,7 @@ type ChunkResult struct {
 }
 
 func SearchChunks(
-	ctx context.Context, oauthToken, database, schema, table, vectorLiteral string,
+	ctx context.Context, oauthToken, database, schema, table, vectorLiteral string, limit int,
 ) ([]ChunkResult, error) {
 	db, err := openConnection(oauthToken)
 	if err != nil {
@@ -39,8 +39,8 @@ func SearchChunks(
 
 	query := fmt.Sprintf(
 		`SELECT FILE_ID, CHUNK_INDEX, CHUNK_TEXT, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
-			`FROM %s.%s.%s ORDER BY score DESC LIMIT 5`,
-		vectorLiteral, database, schema, table,
+			`FROM %s.%s.%s ORDER BY score DESC LIMIT %d`,
+		vectorLiteral, database, schema, table, limit,
 	)
 
 	rows, err := db.QueryContext(ctx, query)
