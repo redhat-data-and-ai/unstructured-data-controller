@@ -53,6 +53,7 @@ jobs:
     name: Build Container Image
     runs-on: ubuntu-latest
     needs: authorize
+    if: ${{ !cancelled() && needs.authorize.result == 'success' }}
     permissions:
       contents: read
       packages: write
@@ -149,6 +150,7 @@ jobs:
     name: Run E2E Tests
     runs-on: ubuntu-latest
     needs: [authorize, build-and-push]
+    if: ${{ !cancelled() && needs.authorize.result == 'success' && needs.build-and-push.result == 'success' }}
     permissions:
       contents: read
       packages: read
