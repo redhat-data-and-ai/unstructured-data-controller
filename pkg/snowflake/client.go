@@ -31,11 +31,17 @@ func openConnection(oauthToken string) (*sql.DB, error) {
 		return nil, errors.New("SNOWFLAKE_ACCOUNT environment variable not set")
 	}
 
+	warehouse := os.Getenv("SNOWFLAKE_WAREHOUSE")
+	if warehouse == "" {
+		warehouse = "DEFAULT"
+	}
+
 	cfg := &gosnowflake.Config{
 		Account:       account,
 		Authenticator: gosnowflake.AuthTypeOAuth,
 		Token:         oauthToken,
 		Role:          "PUBLIC",
+		Warehouse:     warehouse,
 		OCSPFailOpen:  gosnowflake.OCSPFailOpenTrue,
 	}
 

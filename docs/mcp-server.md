@@ -189,7 +189,7 @@ Lists all UnstructuredDataPipeline custom resources and Snowflake databases the 
 
 ### `get_chunks_for_embeddings`
 
-Searches for relevant text chunks in a data product using vector cosine similarity. Returns the top 5 matching chunks for the given query.
+Searches for relevant text chunks in a data product using vector cosine similarity. Returns the top matching chunks for the given query (default 10, configurable via `limit` parameter).
 
 **Parameters:**
 
@@ -199,6 +199,7 @@ Searches for relevant text chunks in a data product using vector cosine similari
 | `schema`       | Yes      | Snowflake schema name. If not known, call `list_unstructured_data_pipelines_for_user` first.                                                  |
 | `table`        | Yes      | Snowflake table name. If not known, call `list_unstructured_data_pipelines_for_user` first.                                                   |
 | `query`        | Yes      | The search query to find relevant chunks.                                                                                                     |
+| `limit`        | No       | Number of chunks to return. Defaults to 10.                                                                                                   |
 
 **Typical agent flow:**
 
@@ -246,6 +247,10 @@ func (p *GoogleProvider) IntrospectToken(ctx context.Context, token string) (*In
 3. Select the provider in `main.go` based on an environment variable (e.g., `OAUTH_PROVIDER=google`)
 
 No changes needed to the middleware, OAuth server endpoints, or MCP layer.
+
+## Skills
+
+A pre-built skill file is available at [`skills/unstructured-data-mcp-skill.md`](../skills/unstructured-data-mcp-skill.md) for use with LLM coding assistants (Claude Code, Cursor, etc.). It describes how to connect to and use the MCP server tools.
 
 ## SSO Provider Setup
 
