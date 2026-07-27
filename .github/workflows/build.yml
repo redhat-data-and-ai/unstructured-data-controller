@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         name: checkout the code
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         name: setup go
         with:
           go-version-file: "go.mod"
