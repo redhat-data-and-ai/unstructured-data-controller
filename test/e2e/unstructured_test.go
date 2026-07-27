@@ -57,8 +57,12 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 	queueURL := "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/" + unstructuredQueueName
 	unstructuredFilesDirectory := "test/resources/unstructured/unstructured-files"
+	destinationPrefix := dataPipelineCRName + "/processed-data"
 
 	var kubeClient klient.Client
+	var sourceS3Client *s3.Client
+	var destS3Client *s3.Client
+	var sqsClient *sqs.Client
 
 	feature.Setup(
 		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -70,34 +74,40 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// create AWS clients
-			err = awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+			e2eAWS := &awsclienthandler.AWSConfig{
 				Region:          "us-east-1",
 				AccessKeyID:     "test",
 				SecretAccessKey: "test",
 				Endpoint:        localstackURL,
-			})
+			}
+
+			err = awsclienthandler.NewSourceS3ClientFromConfig(ctx, e2eAWS)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			// create SQS client
-			_, err = awsclienthandler.NewSQSClientFromConfig(ctx, &awsclienthandler.AWSConfig{
-				Region:          "us-east-1",
-				AccessKeyID:     "test",
-				SecretAccessKey: "test",
-				Endpoint:        localstackURL,
-			})
+			err = awsclienthandler.NewDestinationS3ClientFromConfig(ctx, e2eAWS)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			s3Client, err := awsclienthandler.GetSourceS3Client()
+			sqsClient, err = awsclienthandler.NewSQSClientFromConfig(ctx, e2eAWS)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			sourceS3Client, err = awsclienthandler.GetSourceS3Client()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			destS3Client, err = awsclienthandler.GetDestinationS3Client()
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			// create source bucket
-			_, err = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+			_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 				Bucket: aws.String(unstructuredBucketName),
 			})
 			if err != nil {
@@ -105,7 +115,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// create data storage bucket
-			_, err = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+			_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 				Bucket: aws.String(unstructuredDataStorageBucketName),
 			})
 			if err != nil {
@@ -113,7 +123,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// create output bucket
-			_, err = s3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+			_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
 				Bucket: aws.String(outputBucketName),
 			})
 			if err != nil {
@@ -121,10 +131,6 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// create SQS queue
-			sqsClient, err := awsclienthandler.GetSQSClient()
-			if err != nil {
-				t.Fatal(err)
-			}
 			_, err = sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{
 				QueueName: aws.String(unstructuredQueueName),
 			})
@@ -133,7 +139,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// create S3 --> SQS notification integration
-			_, err = s3Client.PutBucketNotificationConfiguration(ctx, &s3.PutBucketNotificationConfigurationInput{
+			_, err = sourceS3Client.PutBucketNotificationConfiguration(ctx, &s3.PutBucketNotificationConfigurationInput{
 				Bucket: aws.String(unstructuredBucketName),
 				NotificationConfiguration: &types.NotificationConfiguration{
 					QueueConfigurations: []types.QueueConfiguration{
@@ -171,17 +177,6 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	)
 
 	feature.Assess("Will upload files and verify they are processed through the pipeline", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-		// create AWS clients for file operations
-		err := awsclienthandler.NewSourceS3ClientFromConfig(ctx, &awsclienthandler.AWSConfig{
-			Region:          "us-east-1",
-			AccessKeyID:     "test",
-			SecretAccessKey: "test",
-			Endpoint:        localstackURL,
-		})
-		if err != nil {
-			t.Error(err)
-		}
-
 		// get all files in the directory
 		files, err := os.ReadDir(unstructuredFilesDirectory)
 		if err != nil {
@@ -190,11 +185,6 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 		if len(files) == 0 {
 			t.Error("no files found in the directory")
-		}
-
-		s3Client, err := awsclienthandler.GetSourceS3Client()
-		if err != nil {
-			t.Error(err)
 		}
 
 		// upload files to unstructured S3 bucket
@@ -209,7 +199,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			key := fmt.Sprintf("%s/%s", dataPipelineCRName, file.Name())
-			_, err = s3Client.PutObject(ctx, &s3.PutObjectInput{
+			_, err = sourceS3Client.PutObject(ctx, &s3.PutObjectInput{
 				Bucket: aws.String(unstructuredBucketName),
 				Key:    aws.String(key),
 				Body:   bytes.NewReader(fileContent),
@@ -230,7 +220,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			false,
 			func(ctx context.Context) (done bool, err error) {
 				// check intermediate progress in data-storage bucket
-				storageOutput, _ := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+				storageOutput, _ := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 					Bucket: aws.String(unstructuredDataStorageBucketName),
 					Prefix: aws.String("pipelines/" + dataPipelineCRName + "/"),
 				})
@@ -239,7 +229,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 					storageCount = len(storageOutput.Contents)
 				}
 
-				output, listErr := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+				output, listErr := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 					Bucket: aws.String(outputBucketName),
 				})
 				if listErr != nil {
@@ -283,14 +273,9 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	})
 
 	feature.Assess("Will delete a file from source and verify it is removed", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-		s3Client, err := awsclienthandler.GetSourceS3Client()
-		if err != nil {
-			t.Error(err)
-		}
-
 		// list all the files in the source bucket
 		t.Log("Listing objects from unstructured bucket ...")
-		output, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		output, err := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket: aws.String(unstructuredBucketName),
 			Prefix: aws.String(dataPipelineCRName + "/"),
 		})
@@ -311,7 +296,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		fileToDelete := filesInBucket[0]
 
 		// delete file from the bucket
-		_, err = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		_, err = sourceS3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(unstructuredBucketName),
 			Key:    aws.String(fileToDelete),
 		})
@@ -336,7 +321,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			5*time.Minute,
 			false,
 			func(ctx context.Context) (done bool, err error) {
-				storageOutput, listErr := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+				storageOutput, listErr := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 					Bucket: aws.String(unstructuredDataStorageBucketName),
 					Prefix: aws.String("pipelines/" + dataPipelineCRName + "/stages/crawl/"),
 				})
@@ -458,6 +443,195 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		return ctx
 	})
 
+	feature.Assess("patch pipeline destination to S3 and verify embeddings in result bucket", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		embedOutput, err := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(unstructuredDataStorageBucketName),
+			Prefix: aws.String("pipelines/" + dataPipelineCRName + "/stages/embed/"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedCount := 0
+		for _, obj := range embedOutput.Contents {
+			key := aws.ToString(obj.Key)
+			if strings.HasSuffix(key, ".json") {
+				expectedCount++
+			}
+		}
+		if expectedCount == 0 {
+			t.Fatal("no embed stage files found in data-storage bucket")
+		}
+		t.Logf("Found %d embed stage files to sync", expectedCount)
+
+		unstructuredDataPipelineCR := &v1alpha1.UnstructuredDataPipeline{}
+		if err := kubeClient.Resources(testNamespace).Get(ctx, dataPipelineCRName, testNamespace, unstructuredDataPipelineCR); err != nil {
+			t.Fatal(err)
+		}
+		for i, stage := range unstructuredDataPipelineCR.Spec.Stages {
+			if stage.Type == v1alpha1.StageTypeDestinationSyncer {
+				unstructuredDataPipelineCR.Spec.Stages[i].DestinationSyncerConfig = &v1alpha1.DestinationSyncerConfig{
+					Type: v1alpha1.TypeS3,
+					S3DestinationConfig: v1alpha1.S3Config{
+						Bucket: unstructuredBucketName,
+						Prefix: destinationPrefix,
+					},
+				}
+				break
+			}
+		}
+		if err := kubeClient.Resources(testNamespace).Update(ctx, unstructuredDataPipelineCR); err != nil {
+			t.Fatal(err)
+		}
+		t.Log("Patched UnstructuredDataPipeline destination to S3")
+
+		if err := operatorUtils.WaitForResourceReady(
+			ctx,
+			v1alpha1.UnstructuredDataPipelineCondition,
+			"unstructureddatapipelines.operator.dataverse.redhat.com",
+			dataPipelineCRName,
+			testNamespace,
+		); err != nil {
+			t.Fatal(err)
+		}
+		t.Log("UnstructuredDataPipeline is ready after S3 destination patch")
+
+		destOutput, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(unstructuredBucketName),
+			Prefix: aws.String(destinationPrefix),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundCount := 0
+		for _, obj := range destOutput.Contents {
+			if obj.Key != nil && strings.HasSuffix(*obj.Key, ".json") {
+				t.Logf("Found embeddings file: %s", *obj.Key)
+				foundCount++
+			}
+		}
+		if foundCount != expectedCount {
+			t.Fatalf("expected %d embeddings files in destination bucket, got %d", expectedCount, foundCount)
+		}
+		t.Logf("Found %d embeddings files in destination bucket", foundCount)
+
+		t.Log("Successfully verified embeddings in S3 destination after pipeline patch")
+		return ctx
+	})
+
+	feature.Assess("S3 hash: upload file2 and verify file1 was not re-uploaded", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		file2Content, err := os.ReadFile(filepath.Join(unstructuredFilesDirectory, "pdflatex-outline.pdf"))
+		if err != nil {
+			t.Fatalf("read file2 test PDF: %v", err)
+		}
+
+		file1 := "pdflatex-4-pages.pdf"
+		hashTestFile2Key := fmt.Sprintf("%s/pdflatex-outline.pdf", dataPipelineCRName)
+
+		t.Log("find existing file1 in destination and record hash/timestamp")
+		file1DestKey, err := operatorUtils.FindDestinationKey(ctx, destS3Client, unstructuredBucketName, destinationPrefix, file1)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		headBefore, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, unstructuredBucketName, file1DestKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("file1 dest key: %s hash: %s time: %v", headBefore.Key, headBefore.ChecksumSHA256, headBefore.LastModified)
+
+		t.Log("upload file2 to source bucket")
+		_, err = sourceS3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(unstructuredBucketName),
+			Key:    aws.String(hashTestFile2Key),
+			Body:   bytes.NewReader(file2Content),
+		})
+		if err != nil {
+			t.Fatalf("upload file2: %v", err)
+		}
+		if err := operatorUtils.WaitForResourceReady(
+			ctx,
+			v1alpha1.UnstructuredDataPipelineCondition,
+			"unstructureddatapipelines.operator.dataverse.redhat.com",
+			dataPipelineCRName,
+			testNamespace,
+		); err != nil {
+			t.Fatalf("pipeline not ready after file2: %v", err)
+		}
+
+		t.Log("verify file1 was not re-uploaded")
+		headAfter, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, unstructuredBucketName, file1DestKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if headAfter.ChecksumSHA256 != headBefore.ChecksumSHA256 {
+			t.Errorf("file1 re-uploaded when file2 added: hash %s -> %s", headBefore.ChecksumSHA256, headAfter.ChecksumSHA256)
+		}
+		if !headAfter.LastModified.Equal(headBefore.LastModified) {
+			t.Errorf("file1 re-uploaded when file2 added: time %v -> %v", headBefore.LastModified, headAfter.LastModified)
+		}
+		t.Log("Verified file1 was not re-uploaded after file2 upload")
+
+		return ctx
+	})
+
+	feature.Assess("S3 hash: modify file1 and verify re-upload", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		file1ModifiedContent, err := os.ReadFile(filepath.Join(unstructuredFilesDirectory, "pdflatex-outline.pdf"))
+		if err != nil {
+			t.Fatalf("read modified file1 PDF: %v", err)
+		}
+
+		file1 := "pdflatex-4-pages.pdf"
+		sourceKey := fmt.Sprintf("%s/%s", dataPipelineCRName, file1)
+
+		t.Log("find existing file1 in destination and record hash/timestamp")
+		destKey, err := operatorUtils.FindDestinationKey(ctx, destS3Client, unstructuredBucketName, destinationPrefix, file1)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		headBefore, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, unstructuredBucketName, destKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("file1 hash: %s time: %v", headBefore.ChecksumSHA256, headBefore.LastModified)
+
+		t.Log("overwrite source file with modified content")
+		_, err = sourceS3Client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(unstructuredBucketName),
+			Key:    aws.String(sourceKey),
+			Body:   bytes.NewReader(file1ModifiedContent),
+		})
+		if err != nil {
+			t.Fatalf("upload modified file1: %v", err)
+		}
+
+		if err := operatorUtils.WaitForResourceReady(
+			ctx,
+			v1alpha1.UnstructuredDataPipelineCondition,
+			"unstructureddatapipelines.operator.dataverse.redhat.com",
+			dataPipelineCRName,
+			testNamespace,
+		); err != nil {
+			t.Fatalf("pipeline not ready after modified file1: %v", err)
+		}
+		t.Log("UnstructuredDataPipeline successfully reconciled after modify")
+
+		t.Log("verify file1 was re-uploaded")
+		headAfter, err := operatorUtils.WaitForS3ObjectHashChange(ctx, destS3Client, unstructuredBucketName, destKey, headBefore.ChecksumSHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !headAfter.LastModified.After(headBefore.LastModified) {
+			t.Errorf("file1 not re-uploaded: time %v -> %v", headBefore.LastModified, headAfter.LastModified)
+		}
+		t.Logf("file1 hash changed: %s -> %s", headBefore.ChecksumSHA256, headAfter.ChecksumSHA256)
+		t.Log("Verified file1 was re-uploaded after content change")
+
+		return ctx
+	})
+
 	feature.Teardown(
 		func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			// delete unstructured data pipeline CR
@@ -470,6 +644,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			if err := kubeClient.Resources(testNamespace).Delete(ctx, unstructuredDataPipeline); err != nil {
 				t.Fatal(err)
 			}
+
 			return ctx
 		},
 	)
