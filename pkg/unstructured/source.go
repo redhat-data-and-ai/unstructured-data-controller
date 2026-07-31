@@ -43,10 +43,11 @@ type DataSource interface {
 }
 
 type S3BucketSource struct {
-	S3Client  *s3.Client
-	Bucket    string
-	Prefix    string
-	OutputDir string
+	S3Client           *s3.Client
+	Bucket             string
+	Prefix             string
+	OutputDir          string
+	SkippedUnsupported []string
 }
 
 func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error) {
@@ -57,6 +58,7 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 		return nil, err
 	}
 
+	s.SkippedUnsupported = nil
 	storedFiles := []RawFileMetadata{}
 	errorList := map[string]error{}
 	sourceFileMap := map[string]bool{}
@@ -72,6 +74,16 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 				"key", *object.Key, "sizeMB", *object.Size/(1<<20))
 			continue
 		}
+
+		if !IsSupportedFileType(*object.Key) {
+			logger.Info("skipping unsupported file type",
+				"file", *object.Key,
+				"extension", FileExtension(*object.Key),
+			)
+			s.SkippedUnsupported = append(s.SkippedUnsupported, *object.Key)
+			continue
+		}
+
 		file := RawFileMetadata{
 			FilePath: s.filestorePath(*object.Key),
 			UID:      *object.ETag,
@@ -251,6 +263,7 @@ type GDriveSource struct {
 	ConcurrentDownloads int
 	OutputDir           string
 	FailedRootFolders   []FailedRootFolder
+	SkippedUnsupported  []string
 }
 
 // Close releases resources held by the underlying clients.
@@ -327,6 +340,7 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 	)
 
 	// Phase 2: Download files, fetch permissions, store to filestore
+	g.SkippedUnsupported = nil
 	var mu sync.Mutex
 	var storedFiles []RawFileMetadata
 	errorList := map[string]error{}
@@ -341,6 +355,18 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 		if strings.HasPrefix(record.MimeType, "application/vnd.google-apps.") {
 			ext = ".pdf"
 		}
+
+		if !SupportedFileExtensions[strings.ToLower(ext)] {
+			logger.Info("skipping unsupported file type",
+				"fileID", record.FileID,
+				"fileName", record.FileName,
+				"extension", FileExtension(record.FileName),
+				"mimeType", record.MimeType,
+			)
+			g.SkippedUnsupported = append(g.SkippedUnsupported, record.FileName)
+			continue
+		}
+
 		currentFiles[record.FileID] = ext
 		dlGroup.Go(func() error {
 			filestorePath := path.Join(g.OutputDir, record.FileID+ext)

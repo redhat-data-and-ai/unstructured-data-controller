@@ -156,6 +156,10 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	logger.Info("successfully stored files to filestore", "count", len(storedFiles))
 
 	successMessage := fmt.Sprintf("successfully reconciled source crawler: %s", sourceCrawlerCR.Name)
+	if skipped := skippedUnsupportedFromSource(source); len(skipped) > 0 {
+		successMessage += fmt.Sprintf("; skipped %d unsupported file(s): %s",
+			len(skipped), formatSkippedFiles(skipped, 10))
+	}
 	if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
 		sourceCrawlerCR.Status.FilesProcessed += int64(len(storedFiles))
 		sourceCrawlerCR.Status.GDriveStatus = gdriveStatus
@@ -337,6 +341,24 @@ func (r *SourceCrawlerReconciler) handleError(ctx context.Context, sourceCrawler
 		return updateErr
 	}
 	return reconcileErr
+}
+
+func skippedUnsupportedFromSource(source unstructured.DataSource) []string {
+	switch s := source.(type) {
+	case *unstructured.S3BucketSource:
+		return s.SkippedUnsupported
+	case *unstructured.GDriveSource:
+		return s.SkippedUnsupported
+	default:
+		return nil
+	}
+}
+
+func formatSkippedFiles(files []string, limit int) string {
+	if len(files) <= limit {
+		return strings.Join(files, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(files[:limit], ", "), len(files)-limit)
 }
 
 // findDependents maps a changed pipeline stage back to the SourceCrawlers that depend on it.
