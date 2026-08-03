@@ -106,6 +106,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	outputDir := unstructured.StagePath(parentPipeline, sourceCrawlerCR.Spec.StageName)
 
 	var source unstructured.DataSource
+	unsupportedFiles := &unstructured.UnsupportedFiles{}
 	switch sourceCrawlerConfig.Type {
 	case operatorv1alpha1.TypeS3:
 		sourceAWSConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace, "SOURCE_S3_")
@@ -117,14 +118,15 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to create source S3 client: %w", err))
 		}
 		source = &unstructured.S3BucketSource{
-			S3Client:  sourceS3Client,
-			Bucket:    sourceCrawlerConfig.S3Config.Bucket,
-			Prefix:    sourceCrawlerConfig.S3Config.Prefix,
-			OutputDir: outputDir,
+			S3Client:         sourceS3Client,
+			Bucket:           sourceCrawlerConfig.S3Config.Bucket,
+			Prefix:           sourceCrawlerConfig.S3Config.Prefix,
+			OutputDir:        outputDir,
+			UnsupportedFiles: unsupportedFiles,
 		}
 
 	case operatorv1alpha1.TypeGoogleDrive:
-		gdriveSource, err := r.buildGDriveSource(ctx, sourceCrawlerCR, sourceCrawlerConfig.GoogleDriveConfig, outputDir)
+		gdriveSource, err := r.buildGDriveSource(ctx, sourceCrawlerCR, sourceCrawlerConfig.GoogleDriveConfig, outputDir, unsupportedFiles)
 		if err != nil {
 			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
 		}
@@ -156,9 +158,10 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	logger.Info("successfully stored files to filestore", "count", len(storedFiles))
 
 	successMessage := fmt.Sprintf("successfully reconciled source crawler: %s", sourceCrawlerCR.Name)
-	if skipped := skippedUnsupportedFromSource(source); len(skipped) > 0 {
-		successMessage += fmt.Sprintf("; skipped %d unsupported file(s): %s",
+	if skipped := unsupportedFiles.List(); len(skipped) > 0 {
+		skippedMessage := fmt.Sprintf("; skipped %d unsupported file(s): %s",
 			len(skipped), formatSkippedFiles(skipped, 10))
+		successMessage += skippedMessage
 	}
 	if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
 		sourceCrawlerCR.Status.FilesProcessed += int64(len(storedFiles))
@@ -216,6 +219,7 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 	sourceCrawlerCR *operatorv1alpha1.SourceCrawler,
 	gdriveConfig *operatorv1alpha1.GoogleDriveConfig,
 	outputDir string,
+	unsupportedFiles *unstructured.UnsupportedFiles,
 ) (*unstructured.GDriveSource, error) {
 	if gdriveConfig == nil {
 		return nil, errors.New("gdriveConfig is required when source type is gdrive")
@@ -287,6 +291,7 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 		ConcurrentFolders:   concurrentFolders,
 		ConcurrentDownloads: concurrentDownloads,
 		OutputDir:           outputDir,
+		UnsupportedFiles:    unsupportedFiles,
 	}, nil
 }
 
@@ -341,17 +346,6 @@ func (r *SourceCrawlerReconciler) handleError(ctx context.Context, sourceCrawler
 		return updateErr
 	}
 	return reconcileErr
-}
-
-func skippedUnsupportedFromSource(source unstructured.DataSource) []string {
-	switch s := source.(type) {
-	case *unstructured.S3BucketSource:
-		return s.SkippedUnsupported
-	case *unstructured.GDriveSource:
-		return s.SkippedUnsupported
-	default:
-		return nil
-	}
 }
 
 func formatSkippedFiles(files []string, limit int) string {

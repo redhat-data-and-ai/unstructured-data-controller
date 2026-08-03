@@ -47,7 +47,7 @@ func IsSupportedFileType(fileName string) bool {
 func FileExtension(fileName string) string {
 	ext := strings.ToLower(path.Ext(fileName))
 	if ext == "" {
-		return "(none)"
+		return extensionNone
 	}
 	return ext
 }

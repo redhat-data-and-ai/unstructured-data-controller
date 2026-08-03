@@ -37,17 +37,43 @@ import (
 
 const maxFileSize int64 = 128 << 20 // 128 MB — Snowflake external stage limit
 
+var errFileExceedsMaxSize = errors.New("file exceeds max size limit (128 MB)")
+
 type DataSource interface {
 	// SyncFilesToFilestore will store all files from the source to the filestore and return the list of file paths
 	SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error)
 }
 
+// UnsupportedFiles tracks files skipped during a crawl because their type is
+// unsupported. It is owned by the SourceCrawler controller and handed down
+// into whichever DataSource is in use, since "which files were skipped" is a
+// property of the crawl itself, not of a specific source implementation like
+// S3 or Google Drive.
+type UnsupportedFiles struct {
+	files []string
+}
+
+// Add records a file as skipped due to an unsupported type.
+func (u *UnsupportedFiles) Add(fileName string) {
+	u.files = append(u.files, fileName)
+}
+
+// Reset clears previously recorded files, e.g. at the start of a new sync.
+func (u *UnsupportedFiles) Reset() {
+	u.files = nil
+}
+
+// List returns the file names recorded since the last Reset.
+func (u *UnsupportedFiles) List() []string {
+	return u.files
+}
+
 type S3BucketSource struct {
-	S3Client           *s3.Client
-	Bucket             string
-	Prefix             string
-	OutputDir          string
-	SkippedUnsupported []string
+	S3Client         *s3.Client
+	Bucket           string
+	Prefix           string
+	OutputDir        string
+	UnsupportedFiles *UnsupportedFiles
 }
 
 func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error) {
@@ -58,10 +84,13 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 		return nil, err
 	}
 
-	s.SkippedUnsupported = nil
+	s.UnsupportedFiles.Reset()
 	storedFiles := []RawFileMetadata{}
 	errorList := map[string]error{}
 	sourceFileMap := map[string]bool{}
+	catalogIDs := map[string]bool{}
+	outputPrefix := s.outputPrefix()
+	catalogPrefix := path.Join(outputPrefix, CrawlMetadataDir) + "/"
 
 	for _, object := range objects {
 		// skip S3 folder marker objects (keys ending with "/") — storing these
@@ -69,9 +98,23 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 		if strings.HasSuffix(*object.Key, "/") {
 			continue
 		}
+
+		rel := strings.TrimPrefix(*object.Key, s.Prefix)
+		fileID := strings.ReplaceAll(rel, "/", "__")
+		catalogIDs[fileID] = true
+		baseName := path.Base(*object.Key)
+		sourcePath := fmt.Sprintf("s3://%s/%s", s.Bucket, *object.Key)
+
 		if object.Size != nil && *object.Size > maxFileSize {
 			logger.Info("WARNING: skipping file exceeding max file size limit",
 				"key", *object.Key, "sizeMB", *object.Size/(1<<20))
+			if err := storeCrawlResult(ctx, fs, outputPrefix, CrawlResult{
+				FileID: fileID, FileName: baseName, SourcePath: sourcePath,
+				Status: CrawlStatusSkipped, Reason: "file exceeds max size limit (128 MB)",
+				SourceType: "s3",
+			}); err != nil {
+				logger.Error(err, "failed to store crawl catalog result", "fileID", fileID)
+			}
 			continue
 		}
 
@@ -80,7 +123,15 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 				"file", *object.Key,
 				"extension", FileExtension(*object.Key),
 			)
-			s.SkippedUnsupported = append(s.SkippedUnsupported, *object.Key)
+			s.UnsupportedFiles.Add(*object.Key)
+			if err := storeCrawlResult(ctx, fs, outputPrefix, CrawlResult{
+				FileID: fileID, FileName: baseName, SourcePath: sourcePath,
+				Status:     CrawlStatusSkipped,
+				Reason:     fmt.Sprintf("unsupported file type %q", FileExtension(*object.Key)),
+				SourceType: "s3",
+			}); err != nil {
+				logger.Error(err, "failed to store crawl catalog result", "fileID", fileID)
+			}
 			continue
 		}
 
@@ -92,18 +143,24 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 		sourceFileMap[file.FilePath] = true
 
 		stored, err := s.storeFile(ctx, fs, &file)
+		status, reason := CrawlStatusSuccessful, ""
 		if err != nil {
 			logger.Error(err, "failed to store file", "file", file.FilePath)
 			errorList[file.FilePath] = err
-			continue
-		}
-		if stored {
+			status, reason = CrawlStatusError, err.Error()
+		} else if stored {
 			logger.Info("successfully stored file", "file", file.FilePath)
 			storedFiles = append(storedFiles, file)
 		}
+		if err := storeCrawlResult(ctx, fs, outputPrefix, CrawlResult{
+			FileID: fileID, FileName: baseName, SourcePath: sourcePath,
+			Status: status, Reason: reason, SourceType: "s3",
+		}); err != nil {
+			logger.Error(err, "failed to store crawl catalog result", "fileID", fileID)
+		}
 	}
 	// Listing all the file in the local s3 filestore
-	localFiles, err := fs.ListFilesInPath(ctx, s.outputPrefix())
+	localFiles, err := fs.ListFilesInPath(ctx, outputPrefix)
 	if err != nil {
 		logger.Error(err, "failed to list files in filestore", "prefix", s.Prefix)
 		return nil, err
@@ -111,6 +168,19 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 
 	// logic to delete files and its respective files if the file is removed from upstream bucket
 	for _, localFilePath := range localFiles {
+		// catalog/<id>.json — GC separately from raw files / sidecars
+		if baseName, ok := strings.CutPrefix(localFilePath, catalogPrefix); ok {
+			catalogID := strings.TrimSuffix(baseName, ".json")
+			if _, exists := catalogIDs[catalogID]; !exists {
+				logger.Info("catalog entry no longer in source, deleting", "file", localFilePath)
+				if err := fs.Delete(ctx, localFilePath); err != nil {
+					logger.Error(err, "failed to delete catalog file from filestore", "file", localFilePath)
+					errorList[localFilePath] = err
+				}
+			}
+			continue
+		}
+
 		rawFilePath := localFilePath
 		if trimmed, ok := strings.CutSuffix(localFilePath, ".json"); ok {
 			rawFilePath = trimmed
@@ -263,12 +333,111 @@ type GDriveSource struct {
 	ConcurrentDownloads int
 	OutputDir           string
 	FailedRootFolders   []FailedRootFolder
-	SkippedUnsupported  []string
+	UnsupportedFiles    *UnsupportedFiles
 }
 
 // Close releases resources held by the underlying clients.
 func (g *GDriveSource) Close() {
 	g.GDriveClient.Close()
+}
+
+type folderResult struct {
+	result *gdrive.CrawlResult
+	err    error
+}
+
+func (g *GDriveSource) filterCrawlRecords(
+	ctx context.Context, fs *filestore.FileStore,
+	results []folderResult,
+) ([]gdrive.CrawlRecord, map[string]bool) {
+	logger := log.FromContext(ctx)
+	var fileRecords []gdrive.CrawlRecord
+	seen := make(map[string]bool)
+	catalogIDs := map[string]bool{}
+
+	for i, r := range results {
+		if r.err != nil {
+			logger.Error(r.err, "folder crawl failed", "folderID", g.FolderIDs[i])
+			continue
+		}
+		for _, record := range r.result.Records {
+			if record.Status != "successful" {
+				continue
+			}
+			if record.MimeType == "application/vnd.google-apps.folder" {
+				continue
+			}
+			catalogIDs[record.FileID] = true
+			if record.FileSize > 0 && record.FileSize > maxFileSize {
+				logger.Info("WARNING: skipping file exceeding max file size limit",
+					"fileID", record.FileID, "fileName", record.FileName,
+					"sizeMB", record.FileSize/(1<<20))
+				if err := storeCrawlResult(ctx, fs, g.OutputDir, CrawlResult{
+					FileID: record.FileID, FileName: record.FileName,
+					FileURL:   GDriveFileURL(record.FileID),
+					MediaType: record.MimeType, Status: CrawlStatusSkipped,
+					Reason: errFileExceedsMaxSize.Error(), SourceType: "googleDrive",
+				}); err != nil {
+					logger.Error(err, "failed to store crawl catalog result", "fileID", record.FileID)
+				}
+				continue
+			}
+			if !seen[record.FileID] {
+				seen[record.FileID] = true
+				fileRecords = append(fileRecords, record)
+			}
+		}
+	}
+	return fileRecords, catalogIDs
+}
+
+func (g *GDriveSource) garbageCollect(
+	ctx context.Context, fs *filestore.FileStore,
+	currentFiles map[string]string, catalogIDs map[string]bool,
+) {
+	logger := log.FromContext(ctx)
+	localFiles, err := fs.ListFilesInPath(ctx, g.OutputDir)
+	if err != nil {
+		logger.Error(err, "failed to list files in filestore for gc", "outputDir", g.OutputDir)
+		return
+	}
+
+	permissionsPrefix := path.Join(g.OutputDir, "permissions") + "/"
+	catalogPrefix := path.Join(g.OutputDir, CrawlMetadataDir) + "/"
+	for _, localFilePath := range localFiles {
+		if baseName, ok := strings.CutPrefix(localFilePath, permissionsPrefix); ok {
+			permFileID := strings.TrimSuffix(baseName, ".json")
+			if _, exists := currentFiles[permFileID]; !exists {
+				logger.Info("permissions file no longer in source, deleting", "file", localFilePath)
+				if err := fs.Delete(ctx, localFilePath); err != nil {
+					logger.Error(err, "failed to delete permissions file", "file", localFilePath)
+				}
+			}
+			continue
+		}
+
+		if baseName, ok := strings.CutPrefix(localFilePath, catalogPrefix); ok {
+			catalogID := strings.TrimSuffix(baseName, ".json")
+			if _, exists := catalogIDs[catalogID]; !exists {
+				logger.Info("catalog entry no longer in source, deleting", "file", localFilePath)
+				if err := fs.Delete(ctx, localFilePath); err != nil {
+					logger.Error(err, "failed to delete catalog file", "file", localFilePath)
+				}
+			}
+			continue
+		}
+
+		fileID := g.extractFileID(localFilePath)
+		if fileID == "" {
+			continue
+		}
+		if _, exists := currentFiles[fileID]; !exists {
+			logger.Info("file no longer in source, deleting from filestore", "file", localFilePath)
+			if err := fs.Delete(ctx, localFilePath); err != nil {
+				logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
+			}
+		}
+	}
 }
 
 func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error) {
@@ -280,10 +449,6 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 		"concurrentFolders", g.ConcurrentFolders,
 	)
 
-	type folderResult struct {
-		result *gdrive.CrawlResult
-		err    error
-	}
 	results := make([]folderResult, len(g.FolderIDs))
 	crawlGroup, _ := errgroup.WithContext(ctx)
 	crawlGroup.SetLimit(g.ConcurrentFolders)
@@ -298,37 +463,7 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 	}
 	_ = crawlGroup.Wait()
 
-	// Merge and filter crawl records to only successful non-folder files
-	var fileRecords []gdrive.CrawlRecord
-	seen := make(map[string]bool)
-	for i, r := range results {
-		if r.err != nil {
-			logger.Error(r.err, "folder crawl failed", "folderID", g.FolderIDs[i])
-			g.FailedRootFolders = append(g.FailedRootFolders, FailedRootFolder{
-				FolderID: g.FolderIDs[i],
-				Error:    r.err.Error(),
-			})
-			continue
-		}
-		for _, record := range r.result.Records {
-			if record.Status != "successful" {
-				continue
-			}
-			if record.MimeType == "application/vnd.google-apps.folder" {
-				continue
-			}
-			if record.FileSize > 0 && record.FileSize > maxFileSize {
-				logger.Info("WARNING: skipping file exceeding max file size limit",
-					"fileID", record.FileID, "fileName", record.FileName,
-					"sizeMB", record.FileSize/(1<<20))
-				continue
-			}
-			if !seen[record.FileID] {
-				seen[record.FileID] = true
-				fileRecords = append(fileRecords, record)
-			}
-		}
-	}
+	fileRecords, catalogIDs := g.filterCrawlRecords(ctx, fs, results)
 
 	if len(g.FailedRootFolders) == len(g.FolderIDs) {
 		return nil, errors.New("all configured root folders are inaccessible (service account may lack access)")
@@ -340,11 +475,11 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 	)
 
 	// Phase 2: Download files, fetch permissions, store to filestore
-	g.SkippedUnsupported = nil
+	g.UnsupportedFiles.Reset()
 	var mu sync.Mutex
 	var storedFiles []RawFileMetadata
 	errorList := map[string]error{}
-	// Maps fileID → expected fileName for GC rename detection
+	// Maps fileID → expected extension for GC rename detection
 	currentFiles := make(map[string]string, len(fileRecords))
 
 	dlGroup, _ := errgroup.WithContext(ctx)
@@ -363,7 +498,17 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 				"extension", FileExtension(record.FileName),
 				"mimeType", record.MimeType,
 			)
-			g.SkippedUnsupported = append(g.SkippedUnsupported, record.FileName)
+			g.UnsupportedFiles.Add(record.FileName)
+			if err := storeCrawlResult(ctx, fs, g.OutputDir, CrawlResult{
+				FileID: record.FileID, FileName: record.FileName,
+				FileURL:   GDriveFileURL(record.FileID),
+				MediaType: record.MimeType, Extension: strings.ToLower(ext),
+				Status:     CrawlStatusSkipped,
+				Reason:     fmt.Sprintf("unsupported file type %q", FileExtension(record.FileName)),
+				SourceType: "googleDrive",
+			}); err != nil {
+				logger.Error(err, "failed to store crawl catalog result", "fileID", record.FileID)
+			}
 			continue
 		}
 
@@ -377,15 +522,21 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 			}
 
 			stored, err := g.storeFile(ctx, fs, &file, record.FileID)
+			status, reason := CrawlStatusSuccessful, ""
 			if err != nil {
-				logger.Error(err, "failed to store gdrive file",
-					"fileID", record.FileID, "fileName", record.FileName)
-				mu.Lock()
-				errorList[record.FileID] = err
-				mu.Unlock()
-				return nil
-			}
-			if stored {
+				if errors.Is(err, errFileExceedsMaxSize) {
+					logger.Info("WARNING: skipping file exceeding max file size limit",
+						"fileID", record.FileID, "fileName", record.FileName)
+					status, reason = CrawlStatusSkipped, err.Error()
+				} else {
+					logger.Error(err, "failed to store gdrive file",
+						"fileID", record.FileID, "fileName", record.FileName)
+					mu.Lock()
+					errorList[record.FileID] = err
+					mu.Unlock()
+					status, reason = CrawlStatusError, err.Error()
+				}
+			} else if stored {
 				logger.Info("stored gdrive file",
 					"fileID", record.FileID, "fileName", record.FileName)
 			}
@@ -395,42 +546,21 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 			storedFiles = append(storedFiles, file)
 			mu.Unlock()
 
+			if storeErr := storeCrawlResult(ctx, fs, g.OutputDir, CrawlResult{
+				FileID: record.FileID, FileName: record.FileName,
+				FileURL:   GDriveFileURL(record.FileID),
+				MediaType: record.MimeType, Extension: strings.ToLower(ext),
+				Status: status, Reason: reason, SourceType: "googleDrive",
+			}); storeErr != nil {
+				logger.Error(storeErr, "failed to store crawl catalog result", "fileID", record.FileID)
+			}
 			return nil
 		})
 	}
 	_ = dlGroup.Wait()
 
-	// Phase 3: Garbage collection — delete files and permissions no longer in source
-	localFiles, err := fs.ListFilesInPath(ctx, g.OutputDir)
-	if err != nil {
-		logger.Error(err, "failed to list files in filestore for gc", "outputDir", g.OutputDir)
-	} else {
-		permissionsPrefix := path.Join(g.OutputDir, "permissions") + "/"
-		for _, localFilePath := range localFiles {
-			// Handle permissions directory: delete orphaned <fileID>.json files
-			if baseName, ok := strings.CutPrefix(localFilePath, permissionsPrefix); ok {
-				permFileID := strings.TrimSuffix(baseName, ".json")
-				if _, exists := currentFiles[permFileID]; !exists {
-					logger.Info("permissions file no longer in source, deleting", "file", localFilePath)
-					if err := fs.Delete(ctx, localFilePath); err != nil {
-						logger.Error(err, "failed to delete permissions file", "file", localFilePath)
-					}
-				}
-				continue
-			}
-
-			fileID := g.extractFileID(localFilePath)
-			if fileID == "" {
-				continue
-			}
-			if _, exists := currentFiles[fileID]; !exists {
-				logger.Info("file no longer in source, deleting from filestore", "file", localFilePath)
-				if err := fs.Delete(ctx, localFilePath); err != nil {
-					logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
-				}
-			}
-		}
-	}
+	// Phase 3: Garbage collection
+	g.garbageCollect(ctx, fs, currentFiles, catalogIDs)
 
 	errorMessage := ""
 	for fileID, err := range errorList {
@@ -497,7 +627,7 @@ func (g *GDriveSource) storeFile(
 		if int64(len(data)) > maxFileSize {
 			logger.Info("WARNING: skipping file exceeding max file size limit",
 				"fileID", fileID, "sizeMB", len(data)/(1<<20))
-			return false, nil
+			return false, errFileExceedsMaxSize
 		}
 
 		if err := fs.Store(ctx, filePath, data); err != nil {

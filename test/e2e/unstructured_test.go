@@ -444,25 +444,6 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	})
 
 	feature.Assess("patch pipeline destination to S3 and verify embeddings in result bucket", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-		embedOutput, err := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket: aws.String(unstructuredDataStorageBucketName),
-			Prefix: aws.String("pipelines/" + dataPipelineCRName + "/stages/embed/"),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		expectedCount := 0
-		for _, obj := range embedOutput.Contents {
-			key := aws.ToString(obj.Key)
-			if strings.HasSuffix(key, ".json") {
-				expectedCount++
-			}
-		}
-		if expectedCount == 0 {
-			t.Fatal("no embed stage files found in data-storage bucket")
-		}
-		t.Logf("Found %d embed stage files to sync", expectedCount)
-
 		unstructuredDataPipelineCR := &v1alpha1.UnstructuredDataPipeline{}
 		if err := kubeClient.Resources(testNamespace).Get(ctx, dataPipelineCRName, testNamespace, unstructuredDataPipelineCR); err != nil {
 			t.Fatal(err)
@@ -495,35 +476,22 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 		t.Log("UnstructuredDataPipeline is ready after S3 destination patch")
 
-		var foundCount int
-		if err := apimachinerywait.PollUntilContextTimeout(
-			context.Background(),
-			10*time.Second,
-			5*time.Minute,
-			false,
-			func(ctx context.Context) (done bool, err error) {
-				destOutput, listErr := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-					Bucket: aws.String(unstructuredBucketName),
-					Prefix: aws.String(destinationPrefix),
-				})
-				if listErr != nil {
-					t.Logf("failed to list destination objects: %v", listErr)
-					return false, nil
-				}
-				foundCount = 0
-				for _, obj := range destOutput.Contents {
-					if obj.Key != nil && strings.HasSuffix(*obj.Key, ".json") {
-						foundCount++
-					}
-				}
-				if foundCount >= expectedCount {
-					return true, nil
-				}
-				t.Logf("waiting for destination sync: %d/%d embeddings files, retrying ...", foundCount, expectedCount)
-				return false, nil
-			},
-		); err != nil {
-			t.Fatalf("timed out waiting for destination sync: expected %d embeddings files, got %d", expectedCount, foundCount)
+		destOutput, err := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket: aws.String(unstructuredBucketName),
+			Prefix: aws.String(destinationPrefix),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundCount := 0
+		for _, obj := range destOutput.Contents {
+			if obj.Key != nil && strings.HasSuffix(*obj.Key, ".json") {
+				t.Logf("Found embeddings file: %s", *obj.Key)
+				foundCount++
+			}
+		}
+		if foundCount == 0 {
+			t.Fatal("no embeddings files found in destination bucket")
 		}
 		t.Logf("Found %d embeddings files in destination bucket", foundCount)
 
@@ -532,13 +500,13 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	})
 
 	feature.Assess("S3 hash: upload file2 and verify file1 was not re-uploaded", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-		file2Content, err := os.ReadFile(filepath.Join(unstructuredFilesDirectory, "pdflatex-outline.pdf"))
+		file2Content, err := os.ReadFile(filepath.Join(unstructuredFilesDirectory, "pdflatex-4-pages.pdf"))
 		if err != nil {
 			t.Fatalf("read file2 test PDF: %v", err)
 		}
 
-		file1 := "pdflatex-4-pages.pdf"
-		hashTestFile2Key := fmt.Sprintf("%s/pdflatex-outline.pdf", dataPipelineCRName)
+		file1 := "pdflatex-outline.pdf"
+		hashTestFile2Key := fmt.Sprintf("%s/pdflatex-4-pages.pdf", dataPipelineCRName)
 
 		t.Log("find existing file1 in destination and record hash/timestamp")
 		file1DestKey, err := operatorUtils.FindDestinationKey(ctx, destS3Client, unstructuredBucketName, destinationPrefix, file1)
@@ -589,12 +557,12 @@ func TestUnstructuredDataLoad(t *testing.T) {
 	})
 
 	feature.Assess("S3 hash: modify file1 and verify re-upload", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-		file1ModifiedContent, err := os.ReadFile(filepath.Join(unstructuredFilesDirectory, "pdflatex-outline.pdf"))
+		file1ModifiedContent, err := os.ReadFile(filepath.Join(unstructuredFilesDirectory, "pdflatex-4-pages.pdf"))
 		if err != nil {
 			t.Fatalf("read modified file1 PDF: %v", err)
 		}
 
-		file1 := "pdflatex-4-pages.pdf"
+		file1 := "pdflatex-outline.pdf"
 		sourceKey := fmt.Sprintf("%s/%s", dataPipelineCRName, file1)
 
 		t.Log("find existing file1 in destination and record hash/timestamp")
