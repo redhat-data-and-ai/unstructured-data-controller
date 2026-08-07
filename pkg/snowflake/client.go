@@ -105,22 +105,23 @@ func queryRows[T any](ctx context.Context, oauthToken, query string, args ...any
 	for attempt := range maxQueryRetries {
 		// each attempt opens a fresh connection, which gets new pre-signed S3 URLs
 		results, err := executeQuery[T](ctx, oauthToken, query, args...)
-		if err == nil {
-			return results, nil
-		}
-		lastErr = err
-		// non-network errors (e.g. syntax, auth) won't benefit from retry
-		if !isRetryableError(err) {
-			return nil, err
-		}
-		// backoff before next attempt: 3s, 6s
-		if attempt < maxQueryRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(time.Duration(attempt+1) * 3 * time.Second):
+		if err != nil {
+			lastErr = err
+			// non-network errors (e.g. syntax, auth) won't benefit from retry
+			if !isRetryableError(err) {
+				return nil, err
 			}
+			// backoff before next attempt: 3s, 6s
+			if attempt < maxQueryRetries-1 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(attempt+1) * 3 * time.Second):
+				}
+			}
+			continue
 		}
+		return results, nil
 	}
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxQueryRetries, lastErr)
 }
