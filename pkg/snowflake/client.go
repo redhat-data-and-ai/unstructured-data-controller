@@ -71,11 +71,24 @@ func isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	msg := strings.ToLower(err.Error())
 	return errors.Is(err, io.EOF) ||
-		strings.Contains(msg, "EOF") ||
+		// wrapped EOF from gosnowflake chunk downloader error chains (also covers "unexpected EOF")
+		strings.Contains(msg, "eof") ||
+		// TCP RST from server or intermediate proxy
 		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "broken pipe")
+		// write to a connection closed by the remote side
+		strings.Contains(msg, "broken pipe") ||
+		// stale connection from the pool reused after server closed it
+		strings.Contains(msg, "use of closed network connection") ||
+		// TCP/TLS dial or read deadline exceeded
+		strings.Contains(msg, "i/o timeout") ||
+		// transient DNS or TCP connect failure
+		strings.Contains(msg, "connection refused") ||
+		// HTTP/2 GOAWAY from server or proxy during download
+		strings.Contains(msg, "server closed connection") ||
+		// gosnowflake retryHTTP exhausted its own retries on 5xx or timeout
+		strings.Contains(msg, "hanging?")
 }
 
 // queryRows executes a Snowflake query and scans the results into a slice of T.
@@ -90,14 +103,17 @@ func isRetryableError(err error) bool {
 func queryRows[T any](ctx context.Context, oauthToken, query string, args ...any) ([]T, error) {
 	var lastErr error
 	for attempt := range maxQueryRetries {
+		// each attempt opens a fresh connection, which gets new pre-signed S3 URLs
 		results, err := executeQuery[T](ctx, oauthToken, query, args...)
 		if err == nil {
 			return results, nil
 		}
 		lastErr = err
+		// non-network errors (e.g. syntax, auth) won't benefit from retry
 		if !isRetryableError(err) {
 			return nil, err
 		}
+		// backoff before next attempt: 3s, 6s
 		if attempt < maxQueryRetries-1 {
 			select {
 			case <-ctx.Done():
@@ -109,6 +125,7 @@ func queryRows[T any](ctx context.Context, oauthToken, query string, args ...any
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxQueryRetries, lastErr)
 }
 
+// executeQuery runs a single query attempt: open connection, query, scan, close.
 func executeQuery[T any](ctx context.Context, oauthToken, query string, args ...any) ([]T, error) {
 	db, err := openConnection(oauthToken)
 	if err != nil {
