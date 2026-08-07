@@ -19,6 +19,8 @@ package snowflake
 import (
 	"context"
 	"fmt"
+
+	"github.com/snowflakedb/gosnowflake"
 )
 
 type ProcessedDocumentResult struct {
@@ -40,7 +42,14 @@ func GetProcessedDocument(
 		database, schema, table,
 	)
 
-	rows, err := db.QueryContext(ctx, query, fileID)
+	// Use the stream-based chunk downloader instead of the default bulk downloader.
+	// Large MARKDOWN_CONTENT values cause Snowflake to split results into multiple S3
+	// chunks. The default downloader fetches all chunks concurrently (up to 10 goroutines),
+	// which causes EOF errors in containerized environments due to bandwidth/memory pressure.
+	// The stream downloader fetches one chunk at a time sequentially, eliminating the issue.
+	streamCtx := gosnowflake.WithStreamDownloader(ctx)
+
+	rows, err := db.QueryContext(streamCtx, query, fileID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query processed document: %w", err)
 	}
