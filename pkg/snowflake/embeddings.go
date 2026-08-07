@@ -31,23 +31,11 @@ type ChunkResult struct {
 func SearchChunks(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral string, limit int,
 ) ([]ChunkResult, error) {
-	db, err := openConnection(oauthToken)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = db.Close() }()
-
 	query := fmt.Sprintf(
 		`SELECT FILE_ID, CHUNK_INDEX, CHUNK_TEXT, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
 			`FROM %s.%s.%s ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)
 
-	rows, err := db.QueryContext(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute vector search: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	return scanRows[ChunkResult](rows)
+	return queryRows[ChunkResult](ctx, oauthToken, query)
 }

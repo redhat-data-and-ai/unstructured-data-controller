@@ -18,7 +18,6 @@ package snowflake
 
 import (
 	"context"
-	"fmt"
 )
 
 type DatabaseInfo struct {
@@ -27,17 +26,5 @@ type DatabaseInfo struct {
 }
 
 func ShowDatabases(ctx context.Context, oauthToken string) ([]DatabaseInfo, error) {
-	db, err := openConnection(oauthToken)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = db.Close() }()
-
-	rows, err := db.QueryContext(ctx, "SHOW DATABASES;")
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute SHOW DATABASES: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	return scanRows[DatabaseInfo](rows)
+	return queryRows[DatabaseInfo](ctx, oauthToken, "SHOW DATABASES;")
 }

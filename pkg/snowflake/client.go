@@ -17,13 +17,19 @@ limitations under the License.
 package snowflake
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/snowflakedb/gosnowflake"
 )
+
+const maxQueryRetries = 3
 
 func openConnection(oauthToken string) (*sql.DB, error) {
 	account := os.Getenv("SNOWFLAKE_ACCOUNT")
@@ -56,4 +62,65 @@ func openConnection(oauthToken string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+// isRetryableError returns true for network-level errors that indicate a
+// Snowflake S3 chunk download connection was dropped (e.g. by an intermediate
+// proxy), as opposed to query-level errors that would fail again on retry.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return errors.Is(err, io.EOF) ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe")
+}
+
+// queryRows executes a Snowflake query and scans the results into a slice of T.
+//
+// When query results are large, Snowflake stores them as chunks in S3 and returns
+// pre-signed URLs to download them. If those URLs consistently fail (e.g. the
+// network path to that S3 node is blocked by a proxy), the gosnowflake driver's
+// internal chunk-level retries (up to 5) won't help because they reuse the same
+// pre-signed URLs. This function retries the entire query with a fresh Snowflake
+// connection, which obtains new pre-signed S3 URLs that may route through a
+// different network path.
+func queryRows[T any](ctx context.Context, oauthToken, query string, args ...any) ([]T, error) {
+	var lastErr error
+	for attempt := range maxQueryRetries {
+		results, err := executeQuery[T](ctx, oauthToken, query, args...)
+		if err == nil {
+			return results, nil
+		}
+		lastErr = err
+		if !isRetryableError(err) {
+			return nil, err
+		}
+		if attempt < maxQueryRetries-1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt+1) * 3 * time.Second):
+			}
+		}
+	}
+	return nil, fmt.Errorf("failed after %d attempts: %w", maxQueryRetries, lastErr)
+}
+
+func executeQuery[T any](ctx context.Context, oauthToken, query string, args ...any) ([]T, error) {
+	db, err := openConnection(oauthToken)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanRows[T](rows)
 }
