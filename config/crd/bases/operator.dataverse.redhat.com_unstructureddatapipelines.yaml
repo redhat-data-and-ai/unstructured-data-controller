@@ -258,6 +258,40 @@ spec:
                       description: SourceCrawlerConfig configures where to read unstructured
                         data from.
                       properties:
+                        gitConfig:
+                          description: GitConfig configures a Git repository as a
+                            data source.
+                          properties:
+                            branch:
+                              description: Branch to track. Defaults to "main".
+                              type: string
+                            filePatterns:
+                              description: |-
+                                FilePatterns restricts which files to crawl (e.g. ["*.md"]).
+                                If empty, all files are crawled.
+                              items:
+                                type: string
+                              type: array
+                            ignoreFolders:
+                              description: |-
+                                IgnoreFolders is a list of folder names to skip during crawling
+                                (e.g. ["vendor", "node_modules", ".git"]).
+                              items:
+                                type: string
+                              type: array
+                            paths:
+                              description: |-
+                                Paths restricts crawling to specific directories (e.g. ["docs/"]).
+                                If empty, the entire repo is crawled.
+                              items:
+                                type: string
+                              type: array
+                            url:
+                              description: URL is the git repository URL (HTTPS).
+                              type: string
+                          required:
+                          - url
+                          type: object
                         googleDriveConfig:
                           description: |-
                             GDriveConfig configures Google Drive folder crawling at the pipeline level.

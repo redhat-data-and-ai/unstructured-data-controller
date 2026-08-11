@@ -1,0 +1,48 @@
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: UnstructuredDataPipeline
+metadata:
+  name: git-docs-pipeline
+spec:
+  description: "Pipeline for crawling markdown files from a Git repository"
+  secretRef: pipeline-secret
+  stages:
+    - name: crawl
+      type: SourceCrawler
+      sourceCrawlerConfig:
+        type: git
+        gitConfig:
+          url: https://github.com/your-org/your-docs-repo
+          branch: main
+          filePatterns: ["*.md"]
+          paths: ["docs/"]
+          ignoreFolders: ["vendor", "node_modules"]
+    - name: convert
+      type: DocumentProcessor
+      dependsOn:
+        - name: crawl
+      documentProcessorConfig:
+        type: docling
+        doclingConfig:
+          from_formats: [md]
+          pipeline: standard
+    - name: chunk
+      type: ChunksGenerator
+      dependsOn:
+        - name: convert
+      chunksGeneratorConfig:
+        strategy: markdownTextSplitter
+    - name: embed
+      type: VectorEmbeddingsGenerator
+      dependsOn:
+        - name: chunk
+      vectorEmbeddingsGeneratorConfig:
+        modelName: nomic-ai/nomic-embed-text-v1.5
+    - name: sync
+      type: DestinationSyncer
+      dependsOn:
+        - name: embed
+      destinationSyncerConfig:
+        type: s3
+        s3DestinationConfig:
+          bucket: output-bucket
+          prefix: git-docs/

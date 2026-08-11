@@ -1,0 +1,89 @@
+# All-in-one manifest for testing the Git source locally with LocalStack.
+#
+# Prerequisites:
+#   1. LocalStack running:  docker run -d -p 4566:4566 localstack/localstack
+#   2. S3 buckets created:
+#        aws --endpoint-url=http://localhost:4566 s3 mb s3://data-storage-bucket
+#        aws --endpoint-url=http://localhost:4566 s3 mb s3://output-bucket
+#   3. CRDs installed:      make install
+#   4. Namespace created:   kubectl create namespace unstructured-controller-namespace
+#
+# Apply:   kubectl apply -f hack/local-git-test.yaml
+# Run:     go run ./cmd/main.go --watch-namespace=unstructured-controller-namespace
+# Watch:   kubectl get sourcecrawlers -n unstructured-controller-namespace -w
+
+---
+# Operator-level secret (filestore S3 pointing to LocalStack)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: operator-secret
+  namespace: unstructured-controller-namespace
+type: Opaque
+stringData:
+  DOCLING_USER_KEY: ""
+  FILE_STORE_AWS_REGION: us-east-1
+  FILE_STORE_AWS_ACCESS_KEY_ID: test
+  FILE_STORE_AWS_SECRET_ACCESS_KEY: test
+  FILE_STORE_AWS_ENDPOINT: http://localhost:4566
+  NOMIC_API_KEY: ""
+  NOMIC_ENDPOINT: ""
+  GEMINI_API_KEY: ""
+  GEMINI_ENDPOINT: ""
+
+---
+# ControllerConfig (operator singleton)
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: ControllerConfig
+metadata:
+  name: controllerconfig
+  namespace: unstructured-controller-namespace
+spec:
+  secretRef: operator-secret
+  doclingServeURL: "http://localhost:5001"
+  dataStorageBucket: "data-storage-bucket"
+  cacheDirectory: "tmp/cache/"
+  maxConcurrentDoclingTasks: 5
+  maxConcurrentLangchainTasks: 10
+
+---
+# Pipeline-level secret (no GIT_TOKEN needed for public repos)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: git-pipeline-secret
+  namespace: unstructured-controller-namespace
+type: Opaque
+stringData:
+  # No token needed for public repos — leave empty
+  GIT_TOKEN: ""
+  # Destination S3 (LocalStack)
+  DESTINATION_S3_REGION: us-east-1
+  DESTINATION_S3_ACCESS_KEY_ID: test
+  DESTINATION_S3_SECRET_ACCESS_KEY: test
+  DESTINATION_S3_ENDPOINT: http://localhost:4566
+
+---
+# Pipeline: crawl .md files from a public GitHub repo
+#
+# This uses the kubernetes/website repo's docs as an example.
+# Change the url/branch/paths to any public repo you want.
+apiVersion: operator.dataverse.redhat.com/v1alpha1
+kind: UnstructuredDataPipeline
+metadata:
+  name: git-docs-pipeline
+  namespace: unstructured-controller-namespace
+spec:
+  description: "Local test — crawl markdown from a public git repo"
+  secretRef: git-pipeline-secret
+  stages:
+    - name: crawl
+      type: SourceCrawler
+      sourceCrawlerConfig:
+        type: git
+        gitConfig:
+          # Any public repo works — no token needed
+          url: https://github.com/redhat-data-and-ai/unstructured-data-controller
+          branch: main
+          filePatterns: ["*.md"]
+          ignoreFolders: ["vendor", "node_modules", "test", "bin", "config"]

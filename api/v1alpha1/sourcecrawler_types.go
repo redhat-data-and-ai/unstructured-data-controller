@@ -71,6 +71,7 @@ type SourceCrawlerStatus struct {
 	Conditions            []metav1.Condition   `json:"conditions,omitempty"`
 	FilesProcessed        int64                `json:"filesProcessed,omitempty"`
 	GDriveStatus          []GDriveFolderStatus `json:"gdriveStatus,omitempty"`
+	GitHeadHash           string               `json:"gitHeadHash,omitempty"`
 }
 
 // +kubebuilder:object:root=true

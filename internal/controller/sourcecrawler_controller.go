@@ -41,6 +41,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gitclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
@@ -134,6 +135,16 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		defer gdriveSource.Close()
 		source = gdriveSource
 
+	case operatorv1alpha1.TypeGit:
+		gitSource, skipClone, result, err := r.buildGitSource(ctx, sourceCrawlerCR, sourceCrawlerConfig.GitConfig, outputDir)
+		if err != nil {
+			return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
+		}
+		if skipClone {
+			return result, nil
+		}
+		source = gitSource
+
 	default:
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("unsupported source type: %s", sourceCrawlerConfig.Type))
 	}
@@ -159,6 +170,9 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
 		sourceCrawlerCR.Status.FilesProcessed += int64(len(storedFiles))
 		sourceCrawlerCR.Status.GDriveStatus = gdriveStatus
+		if gs, ok := source.(*unstructured.GitSource); ok {
+			sourceCrawlerCR.Status.GitHeadHash = gs.HeadHash
+		}
 		sourceCrawlerCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update SourceCrawler CR status")
@@ -324,6 +338,59 @@ func buildGDriveStatus(gds *unstructured.GDriveSource, gdriveConfig *operatorv1a
 		result = append(result, status)
 	}
 	return result
+}
+
+func (r *SourceCrawlerReconciler) buildGitSource(
+	ctx context.Context,
+	sourceCrawlerCR *operatorv1alpha1.SourceCrawler,
+	gitConfig *operatorv1alpha1.GitConfig,
+	outputDir string,
+) (*unstructured.GitSource, bool, ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if gitConfig == nil {
+		return nil, false, ctrl.Result{}, errors.New("gitConfig is required when source type is git")
+	}
+
+	token, err := controllerutils.GitTokenFromSecret(
+		ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace)
+	if err != nil {
+		return nil, false, ctrl.Result{}, fmt.Errorf("failed to get git credentials: %w", err)
+	}
+
+	branch := gitConfig.Branch
+	if branch == "" {
+		branch = "main"
+	}
+
+	gitClient := gitclient.NewClient(gitConfig.URL, branch, token)
+
+	currentHash, err := gitClient.HeadHash(ctx)
+	if err != nil {
+		return nil, false, ctrl.Result{}, fmt.Errorf("failed to check git HEAD: %w", err)
+	}
+
+	if currentHash == sourceCrawlerCR.Status.GitHeadHash {
+		files, err := r.fileStore.ListFilesInPath(ctx, outputDir)
+		if err == nil && len(files) > 0 {
+			logger.Info("git HEAD unchanged and filestore has files, skipping clone", "hash", currentHash)
+			return nil, true, ctrl.Result{RequeueAfter: defaultCrawlerResyncInterval}, nil
+		}
+		logger.Info("git HEAD unchanged but filestore is empty, will re-sync", "hash", currentHash)
+	}
+
+	logger.Info("git HEAD changed, will clone and sync",
+		"previousHash", sourceCrawlerCR.Status.GitHeadHash,
+		"currentHash", currentHash)
+
+	return &unstructured.GitSource{
+		GitClient:     gitClient,
+		FilePatterns:  gitConfig.FilePatterns,
+		Paths:         gitConfig.Paths,
+		IgnoreFolders: gitConfig.IgnoreFolders,
+		OutputDir:     outputDir,
+		HeadHash:      currentHash,
+	}, false, ctrl.Result{}, nil
 }
 
 func (r *SourceCrawlerReconciler) handleError(ctx context.Context, sourceCrawlerCR *operatorv1alpha1.SourceCrawler, err error) error {

@@ -83,6 +83,7 @@ type (
 const (
 	TypeS3                             UnstructuredDataType = "s3"
 	TypeGoogleDrive                    UnstructuredDataType = "googleDrive"
+	TypeGit                            UnstructuredDataType = "git"
 	ChunkingStrategyRecursiveCharacter ChunkingStrategy     = "recursiveCharacterTextSplitter"
 	ChunkingStrategyMarkdown           ChunkingStrategy     = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy     = "tokenTextSplitter"
@@ -153,6 +154,30 @@ type SourceCrawlerConfig struct {
 	Type              UnstructuredDataType `json:"type,omitempty"`
 	S3Config          S3Config             `json:"s3Config,omitempty"`
 	GoogleDriveConfig *GoogleDriveConfig   `json:"googleDriveConfig,omitempty"`
+	// +optional
+	GitConfig *GitConfig `json:"gitConfig,omitempty"`
+}
+
+// GitConfig configures a Git repository as a data source.
+type GitConfig struct {
+	// URL is the git repository URL (HTTPS).
+	// +kubebuilder:validation:Required
+	URL string `json:"url"`
+	// Branch to track. Defaults to "main".
+	// +optional
+	Branch string `json:"branch,omitempty"`
+	// FilePatterns restricts which files to crawl (e.g. ["*.md"]).
+	// If empty, all files are crawled.
+	// +optional
+	FilePatterns []string `json:"filePatterns,omitempty"`
+	// Paths restricts crawling to specific directories (e.g. ["docs/"]).
+	// If empty, the entire repo is crawled.
+	// +optional
+	Paths []string `json:"paths,omitempty"`
+	// IgnoreFolders is a list of folder names to skip during crawling
+	// (e.g. ["vendor", "node_modules", ".git"]).
+	// +optional
+	IgnoreFolders []string `json:"ignoreFolders,omitempty"`
 }
 
 // GDriveConfig configures Google Drive folder crawling at the pipeline level.

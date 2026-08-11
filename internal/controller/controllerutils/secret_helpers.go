@@ -59,6 +59,18 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 	}, nil
 }
 
+// GitTokenFromSecret reads the Git access token from a K8s Secret.
+func GitTokenFromSecret(ctx context.Context, c client.Client, secretName, namespace string) (string, error) {
+	if secretName == "" {
+		return "", nil
+	}
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return "", fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
+	}
+	return string(secret.Data["GIT_TOKEN"]), nil
+}
+
 // GDriveCredentialsFromSecret reads the Google service account JSON
 // from a K8s Secret. The secret must contain a key named
 // "SOURCE_GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON".
