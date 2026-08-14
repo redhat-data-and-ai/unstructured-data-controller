@@ -74,7 +74,13 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 			}
 			log.Info("listed pipelines from kubernetes", "count", len(pipelines))
 		} else {
-			log.Warn("kubernetes client is nil, skipping pipeline listing")
+			log.Error("kubernetes client is not initialized")
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{
+					Text: "Error: unable to connect to the cluster. Please contact your administrator.",
+				}},
+				IsError: true,
+			}, nil, nil
 		}
 
 		databases, err := snowflake.ShowDatabases(ctx, oauthToken)
