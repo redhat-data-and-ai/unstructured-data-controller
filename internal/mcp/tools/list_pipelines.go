@@ -102,6 +102,16 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 			}
 		}
 
+		if len(accessible) == 0 {
+			log.Info("no accessible pipelines found", "total_pipelines", len(pipelines))
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{
+					Text: "Error: no pipelines found that you have access to. Please verify your access permissions or check that pipelines are configured correctly.",
+				}},
+				IsError: true,
+			}, nil, nil
+		}
+
 		jsonBytes, err := json.Marshal(accessible)
 		if err != nil {
 			log.Error("failed to marshal result", "error", err)
