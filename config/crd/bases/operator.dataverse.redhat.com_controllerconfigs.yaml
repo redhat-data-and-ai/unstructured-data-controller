@@ -81,6 +81,11 @@ spec:
                   baseUserDN:
                     description: BaseUserDN is the base DN for user searches.
                     type: string
+                  bindUserName:
+                    description: BindUserName is the username for the LDAP server.
+                      Password is fetched from the secret specified in the SecretRef
+                      field.
+                    type: string
                   emailAttribute:
                     description: EmailAttribute is the LDAP attribute containing user
                       email addresses (e.g., "mail").

@@ -36,6 +36,7 @@ import (
 //	    userSearchFilter: "(objectClass=person)"
 //	    emailAttribute: "mail"
 //	    attributes: ["uid", "mail"]
+//	    bindUserName: "foobar"
 //	  googleDriveConfig:                     # optional, required for googleDrive source type
 //	    maxRetries: 3
 //	    concurrentFolders: 5
@@ -133,6 +134,9 @@ type LDAPConfig struct {
 	// Attributes is the list of LDAP attributes to retrieve.
 	// +optional
 	Attributes []string `json:"attributes,omitempty"`
+	// BindUserName is the username for the LDAP server. Password is fetched from the secret specified in the SecretRef field.
+	// +optional
+	BindUserName string `json:"bindUserName,omitempty"`
 }
 
 // ControllerConfigStatus defines the observed state of ControllerConfig.

@@ -362,10 +362,13 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 			if stored {
 				logger.Info("stored gdrive file",
 					"fileID", record.FileID, "fileName", record.FileName)
-				mu.Lock()
-				storedFiles = append(storedFiles, file)
-				mu.Unlock()
 			}
+
+			// still append the file to the storedFiles list,
+			mu.Lock()
+			storedFiles = append(storedFiles, file)
+			mu.Unlock()
+
 			return nil
 		})
 	}
