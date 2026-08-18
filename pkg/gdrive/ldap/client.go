@@ -42,6 +42,9 @@ type Config struct {
 	EmailAttribute string `yaml:"emailAttribute" json:"emailAttribute"`
 	// Attributes is the list of LDAP attributes to retrieve.
 	Attributes []string `yaml:"attributes" json:"attributes"`
+
+	BindUserName string `yaml:"bindUserName" json:"bindUserName"`
+	BindPassword string `yaml:"bindPassword" json:"bindPassword"`
 }
 
 // DefaultConfig returns a Config with generic LDAP defaults.
@@ -57,6 +60,7 @@ func DefaultConfig() Config {
 type LDAPConnClient interface {
 	IsClosing() bool
 	Search(*ldap.SearchRequest) (*ldap.SearchResult, error)
+	Bind(username, password string) error
 	UnauthenticatedBind(username string) error
 }
 
@@ -71,6 +75,8 @@ type LDAPConn struct {
 	userSearchFilter string
 	emailAttribute   string
 	attributes       []string
+	bindUserName     string
+	bindPassword     string
 }
 
 // Client defines the interface for LDAP operations used by the gdrive package.
@@ -87,11 +93,19 @@ func InitLDAP(config Config) (Client, error) {
 		return nil, fmt.Errorf("failed to connect to LDAP server %s: %w", config.Server, err)
 	}
 
-	// Perform anonymous bind
-	err = ldapConn.UnauthenticatedBind("")
-	if err != nil {
-		_ = ldapConn.Close()
-		return nil, fmt.Errorf("failed to bind LDAP connection: %w", err)
+	if config.BindUserName != "" && config.BindPassword != "" {
+		err = ldapConn.Bind(config.BindUserName, config.BindPassword)
+		if err != nil {
+			_ = ldapConn.Close()
+			return nil, fmt.Errorf("failed to bind LDAP connection: %w", err)
+		}
+	} else {
+		// Perform anonymous bind
+		err = ldapConn.UnauthenticatedBind("")
+		if err != nil {
+			_ = ldapConn.Close()
+			return nil, fmt.Errorf("failed to bind LDAP connection: %w", err)
+		}
 	}
 
 	emailAttr := config.EmailAttribute
@@ -108,6 +122,8 @@ func InitLDAP(config Config) (Client, error) {
 		userSearchFilter: config.UserSearchFilter,
 		emailAttribute:   emailAttr,
 		attributes:       config.Attributes,
+		bindUserName:     config.BindUserName,
+		bindPassword:     config.BindPassword,
 	}, nil
 }
 
@@ -120,10 +136,19 @@ func (l *LDAPConn) getConn() LDAPConnClient {
 		if err != nil {
 			return nil
 		}
-		err = newConn.UnauthenticatedBind("")
-		if err != nil {
-			_ = newConn.Close()
-			return nil
+
+		if l.bindUserName != "" && l.bindPassword != "" {
+			err = newConn.Bind(l.bindUserName, l.bindPassword)
+			if err != nil {
+				_ = newConn.Close()
+				return nil
+			}
+		} else {
+			err = newConn.UnauthenticatedBind("")
+			if err != nil {
+				_ = newConn.Close()
+				return nil
+			}
 		}
 		l.conn = newConn
 	}
