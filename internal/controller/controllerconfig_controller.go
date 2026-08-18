@@ -142,6 +142,10 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// initialize LDAP client and cache if configured
 	if config.Spec.LDAPConfig != nil && config.Spec.LDAPConfig.Server != "" {
 		ldapCfg := *config.Spec.LDAPConfig
+
+		// fetch LDAP password from secret if provided
+		ldapPassword := string(secret.Data["LDAP_PASSWORD"])
+
 		lc, err := ldap.InitLDAP(ldap.Config{
 			Server:           ldapCfg.Server,
 			GroupDN:          ldapCfg.GroupDN,
@@ -150,6 +154,8 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			UserSearchFilter: ldapCfg.UserSearchFilter,
 			EmailAttribute:   ldapCfg.EmailAttribute,
 			Attributes:       ldapCfg.Attributes,
+			BindUserName:     ldapCfg.BindUserName,
+			BindPassword:     ldapPassword,
 		})
 		if err != nil {
 			logger.Error(err, "failed to initialize LDAP client, will retry")

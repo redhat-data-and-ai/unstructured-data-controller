@@ -21,6 +21,7 @@ spec:
   #   userSearchFilter: "(objectClass=person)"
   #   emailAttribute: "mail"
   #   attributes: ["uid", "mail"]
+  #   bindUserName: "foobar"
   # Optional: Google Drive controller-level settings (required when using googleDrive source type)
   # googleDriveConfig:
   #   maxRetries: 3
