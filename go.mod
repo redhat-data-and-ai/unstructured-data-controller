@@ -16,7 +16,7 @@ require (
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/snowflakedb/gosnowflake v1.19.1
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.22.0
 	google.golang.org/api v0.283.0
 	k8s.io/api v0.35.5
 	k8s.io/apimachinery v0.35.5
