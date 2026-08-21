@@ -59,21 +59,7 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 			}, nil, nil
 		}
 
-		pipelines := []k8sclient.PipelineInfo{}
-		if k8sClient != nil {
-			var err error
-			pipelines, err = k8sClient.ListPipelines(ctx)
-			if err != nil {
-				log.Error("failed to list pipelines from kubernetes", "error", err)
-				return &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{
-						Text: fmt.Sprintf("Error listing pipelines: %v", err),
-					}},
-					IsError: true,
-				}, nil, nil
-			}
-			log.Info("listed pipelines from kubernetes", "count", len(pipelines))
-		} else {
+		if k8sClient == nil {
 			log.Error("kubernetes client is not initialized")
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{
@@ -82,6 +68,18 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 				IsError: true,
 			}, nil, nil
 		}
+
+		pipelines, err := k8sClient.ListPipelines(ctx)
+		if err != nil {
+			log.Error("failed to list pipelines from kubernetes", "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{
+					Text: fmt.Sprintf("Error listing pipelines: %v", err),
+				}},
+				IsError: true,
+			}, nil, nil
+		}
+		log.Info("listed pipelines from kubernetes", "count", len(pipelines))
 
 		databases, err := snowflake.ShowDatabases(ctx, oauthToken)
 		if err != nil {
@@ -108,24 +106,23 @@ If NONE match, tell the user. Do NOT try all pipelines.`,
 			}
 		}
 
-  if len(accessible) == 0 {
-      if len(pipelines) == 0 {
-          log.Info("no pipelines found in cluster")
-          return &mcp.CallToolResult{
-              Content: []mcp.Content{&mcp.TextContent{
-                  Text: "No pipelines are configured in this cluster.",
-              }},
-          }, nil, nil
-      }
-      log.Info("no accessible pipelines found", "total_pipelines", len(pipelines))
-      return &mcp.CallToolResult{
-          Content: []mcp.Content{&mcp.TextContent{
-              Text: fmt.Sprintf("Found %d pipeline(s) but you do not have access to any of them. Please verify your access permissions.", len(pipelines)),
-          }},
-          IsError: true,
-      }, nil, nil
-  }
-
+		if len(accessible) == 0 {
+			if len(pipelines) == 0 {
+				log.Info("no pipelines found in cluster")
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{
+						Text: "No pipelines are configured in this cluster.",
+					}},
+				}, nil, nil
+			}
+			log.Info("no accessible pipelines found", "total_pipelines", len(pipelines))
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{
+					Text: fmt.Sprintf("Found %d pipeline(s) but you do not have access to any of them. Please verify your access permissions.", len(pipelines)),
+				}},
+				IsError: true,
+			}, nil, nil
+		}
 
 		jsonBytes, err := json.Marshal(accessible)
 		if err != nil {
