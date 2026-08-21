@@ -351,9 +351,9 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 
 		// fall back to old single-object format
 		currentEmbeddedFile := &unstructured.EmbeddingsFile{}
-		if err := json.Unmarshal(embeddingsFileRaw, currentEmbeddedFile); err != nil { //nolint:nilerr // unparseable file means re-embedding is needed
+		if err := json.Unmarshal(embeddingsFileRaw, currentEmbeddedFile); err != nil {
 			logger.Info("embeddings file exists but cannot be parsed, will re-embed", "file", chunksFilePath, "error", err)
-			return true, nil
+			return true, nil //nolint:nilerr // unparseable file means re-embedding is needed
 		}
 		if currentEmbeddedFile.EmbeddingDocument == nil || currentEmbeddedFile.EmbeddingDocument.Metadata == nil {
 			logger.Info("embeddings file exists but has invalid structure, will re-embed", "file", chunksFilePath)

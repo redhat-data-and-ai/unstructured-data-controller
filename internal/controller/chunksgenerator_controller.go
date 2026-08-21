@@ -254,9 +254,9 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 
 	// fall back to old single-object format
 	chunksFile := unstructured.ChunksFile{}
-	if parseErr := json.Unmarshal(chunksFileRaw, &chunksFile); parseErr != nil { //nolint:nilerr // unparseable file means re-chunking is needed
+	if parseErr := json.Unmarshal(chunksFileRaw, &chunksFile); parseErr != nil {
 		logger.Info("chunks file exists but cannot be parsed, re-chunking needed", "file", convertedFilePath)
-		return true, nil
+		return true, nil //nolint:nilerr // unparseable file means re-chunking is needed
 	}
 	if chunksFile.ChunksDocument == nil || chunksFile.ChunksDocument.Metadata == nil {
 		return true, nil
