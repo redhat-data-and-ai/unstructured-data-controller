@@ -30,6 +30,7 @@ const defaultPipelineNamespace = "unstructured-controller-namespace"
 type PipelineInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Guidance    string `json:"guidance,omitempty"`
 	Database    string `json:"-"`
 }
 
@@ -82,6 +83,7 @@ func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 		result[i] = PipelineInfo{
 			Name:        pipeline.Name,
 			Description: pipeline.Spec.Description,
+			Guidance:    pipeline.Spec.Guidance,
 			Database:    db,
 		}
 	}

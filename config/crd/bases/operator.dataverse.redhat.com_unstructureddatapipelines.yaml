@@ -53,6 +53,10 @@ spec:
                   does.
                 minLength: 1
                 type: string
+              guidance:
+                description: Guidance is instructions for the AI agent on how to use
+                  this pipeline's data.
+                type: string
               secretRef:
                 type: string
               stages:

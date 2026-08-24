@@ -5,6 +5,7 @@ metadata:
 spec:
   secretRef: pipeline-secret
   description: "Pipeline for crawling Google Drive folders"
+  guidance: "This pipeline indexes shared Google Drive folders. Ask the user which folder they want to search before querying."
   stages:
     - name: crawl
       type: SourceCrawler

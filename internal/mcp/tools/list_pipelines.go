@@ -34,10 +34,11 @@ import (
 func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_unstructured_data_pipelines_for_user",
-		Description: `List the UnstructuredDataPipelines the authenticated user has access to. Returns an array of {name, description}.
+		Description: `List the UnstructuredDataPipelines the authenticated user has access to. Returns an array of {name, description, guidance}.
 If EXACTLY ONE pipeline matches the user's question, use it.
 If MORE THAN ONE pipeline could match, STOP and ask the user which one to use. Do NOT pick one yourself.
-If NONE match, tell the user. Do NOT try all pipelines.`,
+If NONE match, tell the user. Do NOT try all pipelines.
+If the pipeline has a "guidance" field, follow those instructions when working with this pipeline's data.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		username := ""
 		if tokenInfo, ok := auth.TokenInfoFromContext(ctx); ok {
