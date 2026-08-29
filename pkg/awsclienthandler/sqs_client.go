@@ -19,25 +19,93 @@ package awsclienthandler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-var (
-	SQSClient *sqs.Client
-)
+type SQSClientCache struct {
+	mu      sync.Mutex
+	clients map[string]*sqsEntry
+}
+
+type sqsEntry struct {
+	client    *sqs.Client
+	awsConfig AWSConfig
+	lastUsed  time.Time
+}
+
+var sqsClientCache = &SQSClientCache{
+	clients: make(map[string]*sqsEntry),
+}
+
+func InitSQSCache(ctx context.Context, ttl time.Duration) {
+	sqsClientCache.startCleanup(ctx, ttl)
+}
+
+func (c *SQSClientCache) getClient(pipelineName string) (*sqsEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.clients[pipelineName]
+	if ok {
+		entry.lastUsed = time.Now()
+	}
+	return entry, ok
+}
+
+func (c *SQSClientCache) setClient(pipelineName string, entry *sqsEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.clients == nil {
+		c.clients = make(map[string]*sqsEntry)
+	}
+	c.clients[pipelineName] = entry
+}
+
+func (c *SQSClientCache) startCleanup(ctx context.Context, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	ticker := time.NewTicker(ttl / 2)
+	go func() {
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.evictStale(ttl)
+			}
+		}
+	}()
+}
+
+func (c *SQSClientCache) evictStale(ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	for key, entry := range c.clients {
+		if now.Sub(entry.lastUsed) > ttl {
+			delete(c.clients, key)
+		}
+	}
+}
 
 // NewSQSClientFromConfig creates and returns an Amazon SQS client using the provided context and AWS configuration.
-func NewSQSClientFromConfig(ctx context.Context, awsConfig *AWSConfig) (*sqs.Client, error) {
+func NewSQSClientFromConfig(ctx context.Context, awsConfig *AWSConfig, pipelineName string) (*sqs.Client, error) {
 	logger := log.FromContext(ctx)
-	if SQSClient != nil {
-		return SQSClient, nil
+
+	entry, ok := sqsClientCache.getClient(pipelineName)
+	if ok && awsConfig != nil && entry.awsConfig == *awsConfig {
+		logger.Info("Using existing SQS client for the pipeline", "pipelineName", pipelineName)
+		return entry.client, nil
 	}
 
+	logger.Info("Creating new SQS client for the pipeline", "pipelineName", pipelineName)
 	cfg, err := getAWSConfig(ctx, awsConfig)
 	if err != nil {
 		return nil, err
@@ -48,17 +116,32 @@ func NewSQSClientFromConfig(ctx context.Context, awsConfig *AWSConfig) (*sqs.Cli
 			o.BaseEndpoint = aws.String(awsConfig.Endpoint)
 		}
 	}
-	SQSClient = sqs.NewFromConfig(cfg, sqsOptions)
-	logger.Info("SQS client initialized ...")
-	return SQSClient, nil
+
+	sqsClient := sqs.NewFromConfig(cfg, sqsOptions)
+
+	var cfgVal AWSConfig
+	if awsConfig != nil {
+		cfgVal = *awsConfig
+	}
+	newEntry := &sqsEntry{client: sqsClient, awsConfig: cfgVal, lastUsed: time.Now()}
+	sqsClientCache.setClient(pipelineName, newEntry)
+
+	return sqsClient, nil
+}
+
+func DeleteSQSClient(pipelineName string) {
+	sqsClientCache.mu.Lock()
+	defer sqsClientCache.mu.Unlock()
+	delete(sqsClientCache.clients, pipelineName)
 }
 
 // GetSQSClient returns the initialized Amazon SQS client instance.
-func GetSQSClient() (*sqs.Client, error) {
-	if SQSClient == nil {
-		return nil, errors.New("SQS client not initialized yet")
+func GetSQSClient(pipelineName string) (*sqs.Client, bool) {
+	entry, ok := sqsClientCache.getClient(pipelineName)
+	if !ok {
+		return nil, false
 	}
-	return SQSClient, nil
+	return entry.client, true
 }
 
 const sqsLongPollSeconds = 20

@@ -87,6 +87,13 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			err = awsclienthandler.NewDestinationS3ClientFromConfig(ctx, e2eAWS)
+			// create SQS client
+			_, err = awsclienthandler.NewSQSClientFromConfig(ctx, &awsclienthandler.AWSConfig{
+				Region:          "us-east-1",
+				AccessKeyID:     "test",
+				SecretAccessKey: "test",
+				Endpoint:        localstackURL,
+			}, "e2e-test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -131,6 +138,10 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			}
 
 			// create SQS queue
+			sqsClient, ok := awsclienthandler.GetSQSClient("e2e-test")
+			if !ok {
+				t.Fatal("SQS client not found for e2e-test")
+			}
 			_, err = sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{
 				QueueName: aws.String(unstructuredQueueName),
 			})

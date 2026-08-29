@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -77,6 +78,10 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	sourceCrawlerCR := &operatorv1alpha1.SourceCrawler{}
 	if err := r.Get(ctx, req.NamespacedName, sourceCrawlerCR); err != nil {
+		if apierrors.IsNotFound(err) {
+			awsclienthandler.DeleteSQSClient(req.String())
+			return ctrl.Result{}, nil
+		}
 		logger.Error(err, "failed to get SourceCrawler CR")
 		return ctrl.Result{}, err
 	}
@@ -173,24 +178,24 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			if err != nil {
 				return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to get source credentials for SQS: %w", err))
 			}
-			if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, sourceAWSConfig); err != nil {
+			namespacedName := types.NamespacedName{Namespace: sourceCrawlerCR.Namespace, Name: sourceCrawlerCR.Name}.String()
+			if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, sourceAWSConfig, namespacedName); err != nil {
 				return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to create SQS client: %w", err))
 			}
-			return handleSQSWakeUp(ctx, sqsQueueURL, sourceCrawlerConfig.S3Config.Bucket, sourceCrawlerConfig.S3Config.Prefix), nil
+			return handleSQSWakeUp(ctx, sqsQueueURL, sourceCrawlerConfig.S3Config.Bucket, sourceCrawlerConfig.S3Config.Prefix, namespacedName), nil
 		}
 	}
 	return ctrl.Result{RequeueAfter: defaultCrawlerResyncInterval}, nil
 }
 
-func handleSQSWakeUp(ctx context.Context, queueURL, bucket, prefix string) ctrl.Result {
+func handleSQSWakeUp(ctx context.Context, queueURL, bucket, prefix string, pipelineName string) ctrl.Result {
 	logger := log.FromContext(ctx)
 
-	sqsClient, err := awsclienthandler.GetSQSClient()
-	if err != nil {
-		logger.Error(err, "failed to initialize SQS client")
+	sqsClient, ok := awsclienthandler.GetSQSClient(pipelineName)
+	if !ok {
+		logger.Info("SQS client not found for the pipeline, will try again in a bit ...")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}
 	}
-
 	// DrainSQSQueue long-polls (up to 20s), so it blocks until messages
 	// arrive or the timeout expires — no separate poll interval needed.
 	hasMessages, err := awsclienthandler.DrainSQSQueue(ctx, sqsClient, queueURL, bucket, prefix)
