@@ -62,6 +62,7 @@ var (
 	doclingClient                          *docling.Client
 	langchainClient                        *langchain.Client
 	embeddingModelCredentials              = map[Model]ModelCredentials{}
+	vlmAPIKey                              string
 	UnstructuredDataPipelineResyncInterval *int
 	LDAPClient                             ldap.Client
 	CacheClient                            pkgcache.Cache
@@ -138,6 +139,9 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			APIKey:   string(secret.Data[secretKeys.APIKey]),
 		}
 	}
+
+	// VLM API key for picture description
+	vlmAPIKey = string(secret.Data["VLM_API_KEY"])
 
 	// initialize LDAP client and cache if configured
 	if config.Spec.LDAPConfig != nil && config.Spec.LDAPConfig.Server != "" {

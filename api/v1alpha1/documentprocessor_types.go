@@ -209,6 +209,20 @@ type DocumentProcessorConfig struct {
 	DoclingConfig DoclingConfig `json:"doclingConfig,omitempty"`
 }
 
+type PictureDescriptionAPIParams struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
+type PictureDescriptionAPI struct {
+	URL         string                      `json:"url"`
+	Params      PictureDescriptionAPIParams `json:"params"`
+	Prompt      string                      `json:"prompt,omitempty"`
+	Timeout     string                      `json:"timeout,omitempty"`
+	Concurrency int                         `json:"concurrency,omitempty"`
+	Headers     map[string]string           `json:"headers,omitempty"`
+}
+
 type DoclingConfig struct {
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
@@ -243,6 +257,8 @@ type DoclingConfig struct {
 	DoPictureDescription bool `json:"do_picture_description,omitempty"`
 	// +optional
 	DoChartExtraction bool `json:"do_chart_extraction,omitempty"`
+	// +optional
+	PictureDescriptionAPI *PictureDescriptionAPI `json:"picture_description_api,omitempty"`
 	// +optional
 	PictureDescriptionAreaThreshold string `json:"picture_description_area_threshold,omitempty"`
 	// +optional

@@ -25,11 +25,30 @@ spec:
         type: docling
         doclingConfig:
           from_formats: [docx, pptx, html, image, pdf, asciidoc, md, csv, xlsx]
+          to_formats: [md]
           do_ocr: true
+          image_export_mode: placeholder
+          include_images: true
           ocr_preset: auto
-          pdf_backend: docling_parse
+          do_picture_description: true
+          do_picture_classification: true
           pipeline: standard
           table_mode: accurate
+          picture_description_api:
+            url: "https://xyz/v1beta/openai/chat/completions"
+            params:
+              model: "gemini-2.5-pro"
+              max_tokens: 4096
+            prompt: >-
+              Extract all visible content from this image: text
+              (exact wording, spelling, numbers, dates, percentages),
+              table data (preserve rows, columns, headers, values),
+              chart/graph data (axis labels, data points, legends, trends),
+              diagrams (labels, connections, flow direction),
+              and any logos or watermarks.
+              Reproduce numbers and figures exactly as shown.
+            timeout: "60.0"
+            concurrency: 5
     - name: chunk
       type: ChunksGenerator
       dependsOn:

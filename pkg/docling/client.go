@@ -46,33 +46,47 @@ const (
 
 type TaskStatus string
 
-// +kubebuilder:object:generate=true
+type PictureDescriptionAPIParams struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
+type PictureDescriptionAPI struct {
+	URL         string                      `json:"url"`
+	Params      PictureDescriptionAPIParams `json:"params"`
+	Prompt      string                      `json:"prompt,omitempty"`
+	Timeout     float64                     `json:"timeout,omitempty"`
+	Concurrency int                         `json:"concurrency,omitempty"`
+	Headers     map[string]string           `json:"headers,omitempty"`
+}
+
 type DoclingConfig struct {
-	FromFormats                     []string `json:"from_formats"`
-	ToFormats                       []string `json:"to_formats"`
-	ImageExportMode                 string   `json:"image_export_mode"`
-	DoOCR                           bool     `json:"do_ocr"`
-	ForceOCR                        bool     `json:"force_ocr"`
-	OCREngine                       string   `json:"ocr_engine,omitempty"`
-	OCRLang                         []string `json:"ocr_lang"`
-	OCRPreset                       string   `json:"ocr_preset,omitempty"`
-	PDFBackend                      string   `json:"pdf_backend"`
-	Pipeline                        string   `json:"pipeline,omitempty"`
-	TableMode                       string   `json:"table_mode"`
-	TableCellMatching               *bool    `json:"table_cell_matching,omitempty"`
-	DoTableStructure                *bool    `json:"do_table_structure,omitempty"`
-	IncludeImages                   *bool    `json:"include_images,omitempty"`
-	ImagesScale                     *float64 `json:"images_scale,omitempty"`
-	DoCodeEnrichment                bool     `json:"do_code_enrichment,omitempty"`
-	DoFormulaEnrichment             bool     `json:"do_formula_enrichment,omitempty"`
-	DoPictureClassification         bool     `json:"do_picture_classification,omitempty"`
-	DoPictureDescription            bool     `json:"do_picture_description,omitempty"`
-	DoChartExtraction               bool     `json:"do_chart_extraction,omitempty"`
-	PictureDescriptionAreaThreshold *float64 `json:"picture_description_area_threshold,omitempty"`
-	DocumentTimeout                 *float64 `json:"document_timeout,omitempty"`
-	PageRange                       []int    `json:"page_range,omitempty"`
-	MdPageBreakPlaceholder          string   `json:"md_page_break_placeholder,omitempty"`
-	AbortOnError                    bool     `json:"abort_on_error"`
+	FromFormats                     []string               `json:"from_formats"`
+	ToFormats                       []string               `json:"to_formats"`
+	ImageExportMode                 string                 `json:"image_export_mode"`
+	DoOCR                           bool                   `json:"do_ocr"`
+	ForceOCR                        bool                   `json:"force_ocr"`
+	OCREngine                       string                 `json:"ocr_engine,omitempty"`
+	OCRLang                         []string               `json:"ocr_lang"`
+	OCRPreset                       string                 `json:"ocr_preset,omitempty"`
+	PDFBackend                      string                 `json:"pdf_backend"`
+	Pipeline                        string                 `json:"pipeline,omitempty"`
+	TableMode                       string                 `json:"table_mode"`
+	TableCellMatching               *bool                  `json:"table_cell_matching,omitempty"`
+	DoTableStructure                *bool                  `json:"do_table_structure,omitempty"`
+	IncludeImages                   *bool                  `json:"include_images,omitempty"`
+	ImagesScale                     *float64               `json:"images_scale,omitempty"`
+	DoCodeEnrichment                bool                   `json:"do_code_enrichment,omitempty"`
+	DoFormulaEnrichment             bool                   `json:"do_formula_enrichment,omitempty"`
+	DoPictureClassification         bool                   `json:"do_picture_classification,omitempty"`
+	DoPictureDescription            bool                   `json:"do_picture_description,omitempty"`
+	DoChartExtraction               bool                   `json:"do_chart_extraction,omitempty"`
+	PictureDescriptionAPI           *PictureDescriptionAPI `json:"picture_description_api,omitempty"`
+	PictureDescriptionAreaThreshold *float64               `json:"picture_description_area_threshold,omitempty"`
+	DocumentTimeout                 *float64               `json:"document_timeout,omitempty"`
+	PageRange                       []int                  `json:"page_range,omitempty"`
+	MdPageBreakPlaceholder          string                 `json:"md_page_break_placeholder,omitempty"`
+	AbortOnError                    bool                   `json:"abort_on_error"`
 }
 
 type ClientConfig struct {
@@ -172,7 +186,7 @@ func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint stri
 	io.ReadCloser, error) {
 	logger := log.FromContext(ctx)
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 
 	req, err := c.createHTTPRequest(ctx, method, endpoint, payload, "Bearer %s")
