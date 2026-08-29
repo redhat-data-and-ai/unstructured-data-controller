@@ -39,6 +39,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/commonhttp"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
@@ -219,6 +220,9 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 
 	doclingTaskStatus, doclingResponse, err := doclingClient.GetConvertedFile(ctx, job.TaskID)
 	if err != nil {
+		if commonhttp.IsStatusUnprocessableEntity(err) {
+			logger.Error(err, "docling validation error (422)", "taskID", job.TaskID, "filePath", job.FilePath)
+		}
 		return err
 	}
 
@@ -318,11 +322,15 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	}
 	response, err := doclingClient.ConvertFile(ctx, fileURL, *doclingCfg)
 	if err != nil {
-		logger.Error(err, "failed to convert file")
 		if strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
-			logger.Error(err, "failed to convert file, semaphore acquire error, will try again later")
+			logger.Info("semaphore acquire error, will try again later", "filePath", rawFilePath)
 			return nil // no error, just skip the conversion this time
 		}
+		if commonhttp.IsStatusUnprocessableEntity(err) {
+			logger.Error(err, "docling validation error (422), check docling config", "filePath", rawFilePath)
+			return err
+		}
+		logger.Error(err, "failed to convert file", "filePath", rawFilePath)
 		return err
 	}
 
