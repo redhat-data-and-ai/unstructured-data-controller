@@ -139,7 +139,23 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	// initialize LDAP client and cache if configured
+	// initialize cache client (used for LDAP and group membership caching)
+	if CacheClient == nil {
+		cc, err := pkgcache.New(&pkgcache.Config{
+			Driver: pkgcache.DriverMemory,
+			InMemory: &inmemory.Config{
+				DefaultExpiration: -1,
+				CleanupInterval:   -1,
+			},
+		})
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create cache client: %w", err)
+		}
+		CacheClient = cc
+		logger.Info("Cache client initialized")
+	}
+
+	// initialize LDAP client if configured
 	if config.Spec.LDAPConfig != nil && config.Spec.LDAPConfig.Server != "" {
 		ldapCfg := *config.Spec.LDAPConfig
 
@@ -162,19 +178,7 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 		LDAPClient = lc
-
-		cc, err := pkgcache.New(&pkgcache.Config{
-			Driver: pkgcache.DriverMemory,
-			InMemory: &inmemory.Config{
-				DefaultExpiration: -1,
-				CleanupInterval:   -1,
-			},
-		})
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create cache client: %w", err)
-		}
-		CacheClient = cc
-		logger.Info("LDAP client and cache initialized")
+		logger.Info("LDAP client initialized")
 	}
 
 	GoogleDriveControllerCfg = config.Spec.GoogleDriveConfig
