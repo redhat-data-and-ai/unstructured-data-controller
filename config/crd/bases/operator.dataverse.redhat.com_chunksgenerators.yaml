@@ -122,6 +122,60 @@ spec:
           status:
             description: ChunksGeneratorStatus defines the observed state of ChunksGenerator
             properties:
+              appliedConfig:
+                properties:
+                  markdownSplitterConfig:
+                    properties:
+                      chunkOverlap:
+                        type: integer
+                      chunkSize:
+                        type: integer
+                      codeBlocks:
+                        type: boolean
+                      headingHierarchy:
+                        type: boolean
+                      joinTableRows:
+                        type: boolean
+                      referenceLinks:
+                        type: boolean
+                    type: object
+                  recursiveCharacterSplitterConfig:
+                    properties:
+                      chunkOverlap:
+                        type: integer
+                      chunkSize:
+                        type: integer
+                      keepSeparator:
+                        type: boolean
+                      separators:
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  strategy:
+                    type: string
+                  tokenSplitterConfig:
+                    properties:
+                      allowedSpecial:
+                        items:
+                          type: string
+                        type: array
+                      chunkOverlap:
+                        type: integer
+                      chunkSize:
+                        type: integer
+                      disallowedSpecial:
+                        items:
+                          type: string
+                        type: array
+                      encodingName:
+                        type: string
+                      modelName:
+                        type: string
+                    type: object
+                required:
+                - strategy
+                type: object
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

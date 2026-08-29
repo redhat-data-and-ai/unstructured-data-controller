@@ -182,6 +182,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	successMessage := fmt.Sprintf("successfully reconciled document processor: %s", documentProcessorCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+		documentProcessorCR.Status.AppliedConfig = documentProcessorCR.Spec.DocumentProcessorConfig.DeepCopy()
 		documentProcessorCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update DocumentProcessor CR status", "namespace", documentProcessorCR.Namespace, "name", documentProcessorCR.Name)
