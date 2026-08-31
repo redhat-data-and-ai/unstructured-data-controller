@@ -338,6 +338,9 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		// if the attempts > max attempts, remove the job from the status
 		if job.Attempts >= maxDoclingConversionAttempts {
 			logger.Error(fmt.Errorf("failed to convert file, max attempts reached for file: %s", job.FilePath), "failed to convert file, max attempts reached")
+			r.writeFailedConversionResult(ctx, job.FilePath, job.FileIdentifier,
+				fmt.Sprintf("max conversion attempts (%d) reached", maxDoclingConversionAttempts),
+				documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath)
 			if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 				documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
 				documentProcessorCR.DeleteJobByFilePath(job.FilePath)
@@ -393,8 +396,10 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		logger.Error(err, "failed to convert file")
 		if strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
 			logger.Error(err, "failed to convert file, semaphore acquire error, will try again later")
-			return nil // no error, just skip the conversion this time
+			return nil
 		}
+		r.writeFailedConversionResult(ctx, rawFilePath, fileUID, err.Error(),
+			documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath)
 		return err
 	}
 
@@ -485,6 +490,11 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 			FileIdentifier:    fileUID,
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
+		}
+
+		if convertedFile.ConvertedDocument.Content == nil {
+			logger.Info("converted file exists but has no content (previous failure), re-converting", "filePath", rawFilePath)
+			return true, nil
 		}
 
 		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
@@ -602,6 +612,27 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&operatorv1alpha1.DestinationSyncer{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Named("documentprocessor").
 		Complete(r)
+}
+
+func (r *DocumentProcessorReconciler) writeFailedConversionResult(ctx context.Context, rawFilePath, fileIdentifier, errMsg string, doclingConfig operatorv1alpha1.DoclingConfig, inputPath, outputPath string) {
+	logger := log.FromContext(ctx)
+	failedFile := unstructured.ConvertedFile{
+		ConvertedDocument: &unstructured.ConvertedDocument{
+			Metadata: &unstructured.ConvertedFileMetadata{
+				RawFilePath:       rawFilePath,
+				FileIdentifier:    fileIdentifier,
+				DocumentConverter: unstructured.DocumentConverterDocling,
+				DoclingConfig:     doclingConfig,
+				Error:             errMsg,
+			},
+		},
+	}
+	if failedBytes, marshalErr := json.Marshal(failedFile); marshalErr == nil {
+		failedPath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+		if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+			logger.Error(storeErr, "failed to store failed conversion result", "filePath", rawFilePath)
+		}
+	}
 }
 
 func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, err error) (ctrl.Result, error) {

@@ -17,6 +17,7 @@ type EmbeddingFileMetadata struct {
 	ModelName               string                           `json:"modelName"`
 	NomicEmbedTextV15Config v1alpha1.NomicEmbedTextV15Config `json:"nomicEmbedTextV15Config,omitempty"`
 	GeminiEmbedding2Config  v1alpha1.GeminiEmbedding2Config  `json:"geminiEmbedding2Config,omitempty"`
+	Error                   string                           `json:"error,omitempty"`
 }
 
 // Embeddings is one vector and what it was made from. Retrieval reads this
