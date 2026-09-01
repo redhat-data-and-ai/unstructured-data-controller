@@ -32,6 +32,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	mcproutes "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/routes"
 	mcptools "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/tools"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
@@ -116,6 +117,8 @@ func main() {
 	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
 	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
+	mcptools.RegisterGetPipelineProcessingStatus(mcpServer, k8sClient)
+	mcptools.RegisterListFilesInPipeline(mcpServer, k8sClient)
 
 	if driveSearchOpts, reason := driveSearchOptions(oauthCfg, oauthMiddleware); driveSearchOpts != nil {
 		mcptools.RegisterSearchGoogleDrive(mcpServer, k8sClient, *driveSearchOpts)
@@ -145,6 +148,10 @@ func main() {
 	mux.HandleFunc("/auth/callback/oidc", oauthServer.HandleCallback)
 	mux.HandleFunc("/auth/complete/{token}", oauthServer.HandleComplete)
 	mux.HandleFunc("/auth/token", oauthServer.HandleToken)
+
+	// REST API endpoints (OAuth-protected)
+	fileStatusHandler := mcproutes.NewFileStatusHandler(k8sClient)
+	mux.Handle("GET /api/v1/pipelines/{pipeline_name}/files", oauthMiddleware.Authenticate(fileStatusHandler))
 
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.HandleFunc("/readyz", healthHandler)

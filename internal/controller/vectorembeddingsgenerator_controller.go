@@ -129,8 +129,8 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 				var cf unstructured.ChunksFile
 				if json.Unmarshal(raw, &cf) == nil && cf.ChunksDocument != nil {
 					chunkFileMetadata = cf.ChunksDocument.Metadata
-					if cf.ConvertedDocument != nil {
-						convertedFileMetadata = cf.ConvertedDocument.Metadata
+					if chunkFileMetadata != nil {
+						convertedFileMetadata = chunkFileMetadata.ConvertedFileMetadata
 					}
 				}
 			}
