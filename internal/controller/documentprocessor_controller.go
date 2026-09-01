@@ -283,30 +283,15 @@ func storePageImages(ctx context.Context,
 	return stored, nil
 }
 
-func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string, fs *filestore.FileStore) (err error) {
+func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string, fs *filestore.FileStore) error {
 	logger := log.FromContext(ctx)
-	// recover from panic semaphore panic
-	defer func() {
-		if panicErr := recover(); panicErr != nil {
-			logger.Info("recovered from panic in processJob, likely stale job from previous session", "panic", panicErr, "taskID", job.TaskID, "filePath", job.FilePath)
-			if panicMessage, ok := panicErr.(string); ok && strings.Contains(panicMessage, docling.SemaphorePanicError) {
-				logger.Info("semaphore panic detected, removing stale job", "taskID", job.TaskID)
-				if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
-					documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-				}); updateErr != nil {
-					logger.Error(updateErr, "failed to delete stale job after panic", "filePath", job.FilePath)
-					err = updateErr
-					return
-				}
 
-				logger.Info("successfully removed stale job after semaphore panic", "filePath", job.FilePath)
-				err = fmt.Errorf("reconcileJob() function exited with panic: %v", panicErr)
-				return
-			}
-			// we don't want to recover from other types of panic
-			panic(panicErr)
-		}
-	}()
+	if !doclingClient.IsAcquiredTask(job.TaskID) {
+		logger.Info("stale job detected, removing", "taskID", job.TaskID, "filePath", job.FilePath)
+		return controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
+		})
+	}
 
 	doclingTaskStatus, doclingResponse, err := doclingClient.GetConvertedFile(ctx, job.TaskID)
 	if err != nil {
@@ -442,11 +427,11 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	}
 	response, err := doclingClient.ConvertFile(ctx, fileURL, *doclingCfg)
 	if err != nil {
-		logger.Error(err, "failed to convert file")
 		if strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
-			logger.Error(err, "failed to convert file, semaphore acquire error, will try again later")
+			logger.Info("semaphore full, will try again later", "filePath", rawFilePath)
 			return nil
 		}
+		logger.Error(err, "failed to convert file")
 		r.writeFailedConversionResult(ctx, rawFilePath, fileUID, err.Error(),
 			documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath, fs)
 		return err
@@ -511,6 +496,12 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	if err != nil {
 		logger.Error(err, "Failed to get file UID")
 		return false, err
+	}
+
+	// let's check if the file exists in the permanently failing files list
+	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
+		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
+		return false, nil
 	}
 
 	// does the converted file exist in the output directory?

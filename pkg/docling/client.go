@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
@@ -42,7 +43,6 @@ const (
 	TaskStatusSkipped        TaskStatus = "skipped"         // this is only returned by /v1/result endpoint
 
 	SemaphoreAcquireError = "failed to acquire docling semaphore"
-	SemaphorePanicError   = "semaphore: released more than held"
 )
 
 // ErrTaskNotFound reports that docling has no record of a task ID, typically
@@ -204,6 +204,7 @@ type Client struct {
 	retryHTTPClient *http.Client  // reused across requests for connection pooling
 	pollHTTPClient  *http.Client  // short retry budget, for status polls
 	plainHTTPClient *http.Client  // no retry, for non-idempotent requests like task creation
+	acquiredTasks   sync.Map
 }
 
 type DoclingResponse struct {
@@ -282,6 +283,20 @@ func (c *Client) safeRelease() {
 		_ = recover()
 	}()
 	c.ClientConfig.sem.Release(1)
+}
+
+// releaseTask releases the semaphore slot for a taskID, but only if this
+// process actually acquired it. Stale jobs from before a restart are skipped.
+func (c *Client) releaseTask(taskID string) {
+	if _, loaded := c.acquiredTasks.LoadAndDelete(taskID); loaded {
+		c.ClientConfig.sem.Release(1)
+	}
+}
+
+// IsAcquiredTask returns true if the taskID was acquired by this process.
+func (c *Client) IsAcquiredTask(taskID string) bool {
+	_, ok := c.acquiredTasks.Load(taskID)
+	return ok
 }
 
 func (c *Client) convertSourceAsyncEndpoint() (string, error) {
@@ -434,6 +449,7 @@ func (c *Client) ConvertFile(
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	c.acquiredTasks.Store(asyncResponse.TaskID, true)
 	success = true
 	return &asyncResponse, nil
 }
@@ -474,34 +490,29 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatus, *DoclingResponse, error) {
 	logger := log.FromContext(ctx)
 
-	// get the task status
 	isValidStatus, taskStatus, err := c.getTaskStatus(ctx, taskID)
 	if err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to get task status: %w", err)
 	}
 
 	if !isValidStatus {
-		// for some reason invalid task status received, we will return the error and release the semaphore
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("invalid task status received for task id: %s", taskID)
 	}
 
 	if taskStatus.TaskStatus == TaskStatusFailure {
-		// task failed, release the semaphore
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("task failed: task id: %s", taskID)
 	}
 
-	// if it is started or pending, we will return it as it is
 	if taskStatus.TaskStatus == TaskStatusStarted || taskStatus.TaskStatus == TaskStatusPending {
 		return taskStatus.TaskStatus, nil, nil
 	}
 
-	// let's fetch the result from the task now
 	taskResultURL, err := c.getTaskResultEndpoint(taskID)
 	if err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to get task result endpoint: %w", err)
 	}
 
@@ -509,31 +520,27 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 	var doclingResponse DoclingResponse
 	bodyResponse, err := c.doDoclingRequest(ctx, c.retryHTTPClient, http.MethodGet, taskResultURL, nil)
 	if err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to get response body: %w", err)
 	}
 	defer func() { _ = bodyResponse.Close() }()
 
 	if err := json.NewDecoder(bodyResponse).Decode(&doclingResponse); err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// now let's free up the semaphore based on task status
 	switch doclingResponse.Status {
 	case TaskStatusPending, TaskStatusStarted:
-		// this is not likely to happen because we have already handled these above, but just in case
 		logger.Info("task is still pending or started, will try again later", "task id", taskID)
 	case TaskStatusFailure, TaskStatusSkipped:
-		// free up the semaphore because the processing in docling is completed
 		logger.Error(fmt.Errorf("task failed: task id: %s", taskID), "task failed")
-		c.safeRelease()
+		c.releaseTask(taskID)
 	case TaskStatusPartialSuccess, TaskStatusSuccess:
-		// free up the semaphore because the processing in docling is completed
 		logger.Info("task completed successfully", "task id", taskID)
-		c.safeRelease()
+		c.releaseTask(taskID)
 	default:
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("invalid task status received for task id: %s", taskID)
 	}
 
