@@ -512,9 +512,10 @@ github.com/minio/c2goasm
 ## explicit; go 1.13
 github.com/moby/spdystream
 github.com/moby/spdystream/spdy
-# github.com/modelcontextprotocol/go-sdk v1.6.1
+# github.com/modelcontextprotocol/go-sdk v1.7.0
 ## explicit; go 1.25.0
 github.com/modelcontextprotocol/go-sdk/auth
+github.com/modelcontextprotocol/go-sdk/internal/authutil
 github.com/modelcontextprotocol/go-sdk/internal/json
 github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2
 github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug
