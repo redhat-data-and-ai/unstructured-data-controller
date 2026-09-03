@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/semaphore"
@@ -41,38 +42,51 @@ const (
 	TaskStatusSkipped        TaskStatus = "skipped"         // this is only returned by /v1/result endpoint
 
 	SemaphoreAcquireError = "failed to acquire docling semaphore"
-	SemaphorePanicError   = "semaphore: released more than held"
 )
 
 type TaskStatus string
 
-// +kubebuilder:object:generate=true
+type PictureDescriptionAPIParams struct {
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
+type PictureDescriptionAPI struct {
+	URL         string                      `json:"url"`
+	Params      PictureDescriptionAPIParams `json:"params"`
+	Prompt      string                      `json:"prompt,omitempty"`
+	Timeout     float64                     `json:"timeout,omitempty"`
+	Concurrency int                         `json:"concurrency,omitempty"`
+	Headers     map[string]string           `json:"headers,omitempty"`
+}
+
 type DoclingConfig struct {
-	FromFormats                     []string `json:"from_formats"`
-	ToFormats                       []string `json:"to_formats"`
-	ImageExportMode                 string   `json:"image_export_mode"`
-	DoOCR                           bool     `json:"do_ocr"`
-	ForceOCR                        bool     `json:"force_ocr"`
-	OCREngine                       string   `json:"ocr_engine,omitempty"`
-	OCRLang                         []string `json:"ocr_lang"`
-	OCRPreset                       string   `json:"ocr_preset,omitempty"`
-	PDFBackend                      string   `json:"pdf_backend"`
-	Pipeline                        string   `json:"pipeline,omitempty"`
-	TableMode                       string   `json:"table_mode"`
-	TableCellMatching               *bool    `json:"table_cell_matching,omitempty"`
-	DoTableStructure                *bool    `json:"do_table_structure,omitempty"`
-	IncludeImages                   *bool    `json:"include_images,omitempty"`
-	ImagesScale                     *float64 `json:"images_scale,omitempty"`
-	DoCodeEnrichment                bool     `json:"do_code_enrichment,omitempty"`
-	DoFormulaEnrichment             bool     `json:"do_formula_enrichment,omitempty"`
-	DoPictureClassification         bool     `json:"do_picture_classification,omitempty"`
-	DoPictureDescription            bool     `json:"do_picture_description,omitempty"`
-	DoChartExtraction               bool     `json:"do_chart_extraction,omitempty"`
-	PictureDescriptionAreaThreshold *float64 `json:"picture_description_area_threshold,omitempty"`
-	DocumentTimeout                 *float64 `json:"document_timeout,omitempty"`
-	PageRange                       []int    `json:"page_range,omitempty"`
-	MdPageBreakPlaceholder          string   `json:"md_page_break_placeholder,omitempty"`
-	AbortOnError                    bool     `json:"abort_on_error"`
+	FromFormats                     []string               `json:"from_formats"`
+	ToFormats                       []string               `json:"to_formats"`
+	ImageExportMode                 string                 `json:"image_export_mode"`
+	DoOCR                           bool                   `json:"do_ocr"`
+	ForceOCR                        bool                   `json:"force_ocr"`
+	OCREngine                       string                 `json:"ocr_engine,omitempty"`
+	OCRLang                         []string               `json:"ocr_lang"`
+	OCRPreset                       string                 `json:"ocr_preset,omitempty"`
+	PDFBackend                      string                 `json:"pdf_backend"`
+	Pipeline                        string                 `json:"pipeline,omitempty"`
+	TableMode                       string                 `json:"table_mode"`
+	TableCellMatching               *bool                  `json:"table_cell_matching,omitempty"`
+	DoTableStructure                *bool                  `json:"do_table_structure,omitempty"`
+	IncludeImages                   *bool                  `json:"include_images,omitempty"`
+	ImagesScale                     *float64               `json:"images_scale,omitempty"`
+	DoCodeEnrichment                bool                   `json:"do_code_enrichment,omitempty"`
+	DoFormulaEnrichment             bool                   `json:"do_formula_enrichment,omitempty"`
+	DoPictureClassification         bool                   `json:"do_picture_classification,omitempty"`
+	DoPictureDescription            bool                   `json:"do_picture_description,omitempty"`
+	DoChartExtraction               bool                   `json:"do_chart_extraction,omitempty"`
+	PictureDescriptionAPI           *PictureDescriptionAPI `json:"picture_description_api,omitempty"`
+	PictureDescriptionAreaThreshold *float64               `json:"picture_description_area_threshold,omitempty"`
+	DocumentTimeout                 *float64               `json:"document_timeout,omitempty"`
+	PageRange                       []int                  `json:"page_range,omitempty"`
+	MdPageBreakPlaceholder          string                 `json:"md_page_break_placeholder,omitempty"`
+	AbortOnError                    bool                   `json:"abort_on_error"`
 }
 
 type ClientConfig struct {
@@ -95,7 +109,8 @@ type DoclingRequestPayload struct {
 }
 
 type Client struct {
-	ClientConfig *ClientConfig `json:"client_config"`
+	ClientConfig  *ClientConfig `json:"client_config"`
+	acquiredTasks sync.Map
 }
 
 type DoclingResponse struct {
@@ -133,13 +148,18 @@ func NewClientFromURL(clientConfig *ClientConfig) *Client {
 	}
 }
 
-// safeRelease releases a semaphore slot without panicking if the semaphore
-// has no outstanding acquisitions (e.g. after a controller restart with stale jobs).
-func (c *Client) safeRelease() {
-	defer func() {
-		_ = recover()
-	}()
-	c.ClientConfig.sem.Release(1)
+// releaseTask releases the semaphore slot for a taskID, but only if this
+// process actually acquired it. Stale jobs from before a restart are skipped.
+func (c *Client) releaseTask(taskID string) {
+	if _, loaded := c.acquiredTasks.LoadAndDelete(taskID); loaded {
+		c.ClientConfig.sem.Release(1)
+	}
+}
+
+// IsAcquiredTask returns true if the taskID was acquired by this process.
+func (c *Client) IsAcquiredTask(taskID string) bool {
+	_, ok := c.acquiredTasks.Load(taskID)
+	return ok
 }
 
 func (c *Client) convertSourceAsyncEndpoint() (string, error) {
@@ -172,7 +192,7 @@ func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint stri
 	io.ReadCloser, error) {
 	logger := log.FromContext(ctx)
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 60 * time.Second,
 	}
 
 	req, err := c.createHTTPRequest(ctx, method, endpoint, payload, "Bearer %s")
@@ -213,21 +233,13 @@ func (c *Client) ConvertFile(
 ) (*AsyncDoclingResponse, error) {
 	logger := log.FromContext(ctx)
 
-	// we are using TryAcquire to avoid blocking the main thread
-	acquired := c.ClientConfig.sem.TryAcquire(1)
-	if !acquired {
+	if !c.ClientConfig.sem.TryAcquire(1) {
 		return nil, errors.New(SemaphoreAcquireError)
 	}
-	// release the semaphore if the request fails before docling accepts the task
-	success := false
-	defer func() {
-		if !success {
-			c.ClientConfig.sem.Release(1)
-		}
-	}()
 
 	convertSourceAsyncEndpoint, err := c.convertSourceAsyncEndpoint()
 	if err != nil {
+		c.ClientConfig.sem.Release(1)
 		return nil, fmt.Errorf("failed to get convert source async endpoint: %w", err)
 	}
 
@@ -241,34 +253,38 @@ func (c *Client) ConvertFile(
 		},
 	})
 	if err != nil {
+		c.ClientConfig.sem.Release(1)
 		return nil, fmt.Errorf("failed to marshal config to docling payload: %w", err)
 	}
 
 	baseURL, err := getBaseURL(fileURL)
 	if err != nil {
+		c.ClientConfig.sem.Release(1)
 		return nil, fmt.Errorf("failed to parse presigned url: %w", err)
 	}
 
 	logger.Info("sending request to convert file", "urlToSendRequest",
 		convertSourceAsyncEndpoint, "sourceFileURL", baseURL)
-	// convert response to AsyncDoclingResponse
 	var asyncResponse AsyncDoclingResponse
 	responseBody, err := c.createDoclingRequest(ctx, http.MethodPost, convertSourceAsyncEndpoint, payload)
 	if err != nil {
+		c.ClientConfig.sem.Release(1)
 		return nil, fmt.Errorf("failed to get response body: %w", err)
 	}
 	defer func() { _ = responseBody.Close() }()
 
 	body, err := io.ReadAll(responseBody)
 	if err != nil {
+		c.ClientConfig.sem.Release(1)
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	if err = json.Unmarshal(body, &asyncResponse); err != nil {
+		c.ClientConfig.sem.Release(1)
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	success = true
+	c.acquiredTasks.Store(asyncResponse.TaskID, true)
 	return &asyncResponse, nil
 }
 
@@ -303,34 +319,29 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatus, *DoclingResponse, error) {
 	logger := log.FromContext(ctx)
 
-	// get the task status
 	isValidStatus, taskStatus, err := c.getTaskStatus(ctx, taskID)
 	if err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to get task status: %w", err)
 	}
 
 	if !isValidStatus {
-		// for some reason invalid task status received, we will return the error and release the semaphore
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("invalid task status received for task id: %s", taskID)
 	}
 
 	if taskStatus.TaskStatus == TaskStatusFailure {
-		// task failed, release the semaphore
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("task failed: task id: %s", taskID)
 	}
 
-	// if it is started or pending, we will return it as it is
 	if taskStatus.TaskStatus == TaskStatusStarted || taskStatus.TaskStatus == TaskStatusPending {
 		return taskStatus.TaskStatus, nil, nil
 	}
 
-	// let's fetch the result from the task now
 	taskResultURL, err := c.getTaskResultEndpoint(taskID)
 	if err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to get task result endpoint: %w", err)
 	}
 
@@ -338,31 +349,27 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 	var doclingResponse DoclingResponse
 	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
 	if err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to get response body: %w", err)
 	}
 	defer func() { _ = bodyResponse.Close() }()
 
 	if err := json.NewDecoder(bodyResponse).Decode(&doclingResponse); err != nil {
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// now let's free up the semaphore based on task status
 	switch doclingResponse.Status {
 	case TaskStatusPending, TaskStatusStarted:
-		// this is not likely to happen because we have already handled these above, but just in case
 		logger.Info("task is still pending or started, will try again later", "task id", taskID)
 	case TaskStatusFailure, TaskStatusSkipped:
-		// free up the semaphore because the processing in docling is completed
 		logger.Error(fmt.Errorf("task failed: task id: %s", taskID), "task failed")
-		c.safeRelease()
+		c.releaseTask(taskID)
 	case TaskStatusPartialSuccess, TaskStatusSuccess:
-		// free up the semaphore because the processing in docling is completed
 		logger.Info("task completed successfully", "task id", taskID)
-		c.safeRelease()
+		c.releaseTask(taskID)
 	default:
-		c.safeRelease()
+		c.releaseTask(taskID)
 		return "", nil, fmt.Errorf("invalid task status received for task id: %s", taskID)
 	}
 

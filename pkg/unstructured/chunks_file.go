@@ -19,6 +19,7 @@ type ChunksFileMetadata struct {
 	ConvertedFileMetadata *ConvertedFileMetadata         `json:"convertedFileMetadata"`
 	ChunkingTool          ChunkingTool                   `json:"chunkingTool"`
 	ChunksGeneratorConfig v1alpha1.ChunksGeneratorConfig `json:"chunksGeneratorConfig"`
+	Error                 string                         `json:"error,omitempty"`
 }
 
 type ChunksDocument struct {

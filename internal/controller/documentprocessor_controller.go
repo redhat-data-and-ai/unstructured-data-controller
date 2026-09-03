@@ -116,10 +116,18 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		DoPictureClassification:         cfg.DoPictureClassification,
 		DoPictureDescription:            cfg.DoPictureDescription,
 		DoChartExtraction:               cfg.DoChartExtraction,
+		PictureDescriptionAPI:           convertPictureDescriptionAPI(cfg.PictureDescriptionAPI),
 		PictureDescriptionAreaThreshold: parseFloat64Ptr(cfg.PictureDescriptionAreaThreshold),
 		DocumentTimeout:                 parseFloat64Ptr(cfg.DocumentTimeout),
 		PageRange:                       cfg.PageRange,
 		MdPageBreakPlaceholder:          cfg.MdPageBreakPlaceholder,
+	}
+
+	if doclingCfg.PictureDescriptionAPI != nil && vlmAPIKey != "" {
+		if doclingCfg.PictureDescriptionAPI.Headers == nil {
+			doclingCfg.PictureDescriptionAPI.Headers = map[string]string{}
+		}
+		doclingCfg.PictureDescriptionAPI.Headers["Authorization"] = "Bearer " + strings.TrimSpace(vlmAPIKey)
 	}
 
 	fs, err := filestore.New(ctx, cacheDirectory, dataStorageBucket)
@@ -192,30 +200,15 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (err error) {
+func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) error {
 	logger := log.FromContext(ctx)
-	// recover from panic semaphore panic
-	defer func() {
-		if panicErr := recover(); panicErr != nil {
-			logger.Info("recovered from panic in processJob, likely stale job from previous session", "panic", panicErr, "taskID", job.TaskID, "filePath", job.FilePath)
-			if panicMessage, ok := panicErr.(string); ok && strings.Contains(panicMessage, docling.SemaphorePanicError) {
-				logger.Info("semaphore panic detected, removing stale job", "taskID", job.TaskID)
-				if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
-					documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-				}); updateErr != nil {
-					logger.Error(updateErr, "failed to delete stale job after panic", "filePath", job.FilePath)
-					err = updateErr
-					return
-				}
 
-				logger.Info("successfully removed stale job after semaphore panic", "filePath", job.FilePath)
-				err = fmt.Errorf("reconcileJob() function exited with panic: %v", panicErr)
-				return
-			}
-			// we don't want to recover from other types of panic
-			panic(panicErr)
-		}
-	}()
+	if !doclingClient.IsAcquiredTask(job.TaskID) {
+		logger.Info("stale job detected, removing", "taskID", job.TaskID, "filePath", job.FilePath)
+		return controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
+		})
+	}
 
 	doclingTaskStatus, doclingResponse, err := doclingClient.GetConvertedFile(ctx, job.TaskID)
 	if err != nil {
@@ -266,6 +259,9 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		// if the attempts > max attempts, remove the job from the status
 		if job.Attempts >= maxDoclingConversionAttempts {
 			logger.Error(fmt.Errorf("failed to convert file, max attempts reached for file: %s", job.FilePath), "failed to convert file, max attempts reached")
+			r.writeFailedConversionResult(ctx, job.FilePath, job.FileIdentifier,
+				fmt.Sprintf("max conversion attempts (%d) reached", maxDoclingConversionAttempts),
+				documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath)
 			if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 				documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
 				documentProcessorCR.DeleteJobByFilePath(job.FilePath)
@@ -318,11 +314,13 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	}
 	response, err := doclingClient.ConvertFile(ctx, fileURL, *doclingCfg)
 	if err != nil {
-		logger.Error(err, "failed to convert file")
 		if strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
-			logger.Error(err, "failed to convert file, semaphore acquire error, will try again later")
-			return nil // no error, just skip the conversion this time
+			logger.Info("semaphore full, will try again later", "filePath", rawFilePath)
+			return nil
 		}
+		logger.Error(err, "failed to convert file")
+		r.writeFailedConversionResult(ctx, rawFilePath, fileUID, err.Error(),
+			documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath)
 		return err
 	}
 
@@ -387,6 +385,12 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		return false, err
 	}
 
+	// let's check if the file exists in the permanently failing files list
+	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
+		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
+		return false, nil
+	}
+
 	// does the converted file exist in the output directory?
 	convertedFilePath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
 	convertedFileExists, err := r.fileStore.Exists(ctx, convertedFilePath)
@@ -414,16 +418,15 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
 
+		if convertedFile.ConvertedDocument.Content == nil {
+			logger.Info("converted file exists but has no content (previous failure), re-converting", "filePath", rawFilePath)
+			return true, nil
+		}
+
 		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
 			logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
 			return false, nil
 		}
-	}
-
-	// let's check if the file exists in the permanently failing files list
-	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
-		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
-		return false, nil
 	}
 
 	// now let's check if the job exists in status for this file
@@ -531,6 +534,27 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+func (r *DocumentProcessorReconciler) writeFailedConversionResult(ctx context.Context, rawFilePath, fileIdentifier, errMsg string, doclingConfig operatorv1alpha1.DoclingConfig, inputPath, outputPath string) {
+	logger := log.FromContext(ctx)
+	failedFile := unstructured.ConvertedFile{
+		ConvertedDocument: &unstructured.ConvertedDocument{
+			Metadata: &unstructured.ConvertedFileMetadata{
+				RawFilePath:       rawFilePath,
+				FileIdentifier:    fileIdentifier,
+				DocumentConverter: unstructured.DocumentConverterDocling,
+				DoclingConfig:     doclingConfig,
+				Error:             errMsg,
+			},
+		},
+	}
+	if failedBytes, marshalErr := json.Marshal(failedFile); marshalErr == nil {
+		failedPath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+		if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+			logger.Error(storeErr, "failed to store failed conversion result", "filePath", rawFilePath)
+		}
+	}
+}
+
 func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")
@@ -542,6 +566,29 @@ func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentP
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, reconcileErr
+}
+
+func convertPictureDescriptionAPI(api *operatorv1alpha1.PictureDescriptionAPI) *docling.PictureDescriptionAPI {
+	if api == nil {
+		return nil
+	}
+	var timeout float64
+	if api.Timeout != "" {
+		if v, err := strconv.ParseFloat(api.Timeout, 64); err == nil {
+			timeout = v
+		}
+	}
+	return &docling.PictureDescriptionAPI{
+		URL: api.URL,
+		Params: docling.PictureDescriptionAPIParams{
+			Model:     api.Params.Model,
+			MaxTokens: api.Params.MaxTokens,
+		},
+		Prompt:      api.Prompt,
+		Timeout:     timeout,
+		Concurrency: api.Concurrency,
+		Headers:     api.Headers,
+	}
 }
 
 func parseFloat64Ptr(s string) *float64 {

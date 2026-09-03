@@ -37,8 +37,12 @@ func RemapToOutputDir(filePath, inputDir, outputDir string) string {
 }
 
 type RawFileMetadata struct {
-	FilePath string `json:"filePath,omitempty"`
-	UID      string `json:"uid,omitempty"`
+	FilePath   string `json:"filePath,omitempty"`
+	UID        string `json:"uid,omitempty"`
+	FileName   string `json:"fileName,omitempty"`
+	FileURL    string `json:"fileURL,omitempty"`
+	SourceType string `json:"sourceType,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func MetadataPath(rawFilePath string) string {

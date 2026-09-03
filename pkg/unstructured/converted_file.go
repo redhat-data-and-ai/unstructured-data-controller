@@ -36,6 +36,7 @@ type ConvertedFileMetadata struct {
 	FileIdentifier    string                 `json:"fileIdentifier"`
 	DocumentConverter DocumentConverter      `json:"documentConverter"`
 	DoclingConfig     v1alpha1.DoclingConfig `json:"doclingConfig"`
+	Error             string                 `json:"error,omitempty"`
 }
 
 type ConvertedDocument struct {
