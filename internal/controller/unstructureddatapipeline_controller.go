@@ -40,6 +40,7 @@ import (
 const (
 	UnstructuredDataPipelineControllerName = "UnstructuredDataPipeline"
 	PipelineLabel                          = "operator.dataverse.redhat.com/unstructured-data-pipeline"
+	UDPFinalizer                           = "operator.dataverse.redhat.com/udp-finalizer"
 )
 
 var (
@@ -69,6 +70,20 @@ type UnstructuredDataPipelineReconciler struct {
 
 func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Fetch the CR before the health check so that deletion is never blocked
+	// by an unhealthy ControllerConfig.
+	unstructuredDataPipelineCR := &operatorv1alpha1.UnstructuredDataPipeline{}
+	if err := r.Get(ctx, req.NamespacedName, unstructuredDataPipelineCR); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	// DeepCopy to avoid mutating the shared informer cache
+	unstructuredDataPipelineCR = unstructuredDataPipelineCR.DeepCopy()
+
+	if !unstructuredDataPipelineCR.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, unstructuredDataPipelineCR)
+	}
+
 	logger.Info("reconciling", "controller", UnstructuredDataPipelineControllerName)
 
 	isHealthy, err := IsConfigCRHealthy(ctx, r.Client, req.Namespace)
@@ -81,13 +96,15 @@ func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	unstructuredDataPipelineCR := &operatorv1alpha1.UnstructuredDataPipeline{}
-	if err := r.Get(ctx, req.NamespacedName, unstructuredDataPipelineCR); err != nil {
-		logger.Error(err, "failed to get UnstructuredDataPipeline CR")
-		return ctrl.Result{}, err
+	// Ensure the finalizer is registered before any other work.
+	if !controllerutil.ContainsFinalizer(unstructuredDataPipelineCR, UDPFinalizer) {
+		controllerutil.AddFinalizer(unstructuredDataPipelineCR, UDPFinalizer)
+		if err := r.Update(ctx, unstructuredDataPipelineCR); err != nil {
+			logger.Error(err, "failed to add finalizer")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
-	// DeepCopy to avoid mutating the shared informer cache
-	unstructuredDataPipelineCR = unstructuredDataPipelineCR.DeepCopy()
 
 	stages := unstructuredDataPipelineCR.Spec.Stages
 	if err := operatorv1alpha1.ValidateStages(stages); err != nil {
@@ -351,6 +368,84 @@ func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, 
 	}
 
 	return r.markStageCreated(ctx, unstructuredDataPipelineCR, stage.Name)
+}
+
+func (r *UnstructuredDataPipelineReconciler) handleDeletion(ctx context.Context, pipeline *operatorv1alpha1.UnstructuredDataPipeline) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(pipeline, UDPFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	if err := r.deleteAllStageCRs(ctx, pipeline); err != nil {
+		logger.Error(err, "failed to delete child stage CRs")
+		return r.handleError(ctx, pipeline, err)
+	}
+
+	allGone, err := r.allStageCRsDeleted(ctx, pipeline)
+	if err != nil {
+		logger.Error(err, "failed to check if child stage CRs are deleted")
+		return ctrl.Result{}, err
+	}
+	if !allGone {
+		logger.Info("child stage CRs still terminating, requeueing")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	patch := client.MergeFrom(pipeline.DeepCopy())
+	controllerutil.RemoveFinalizer(pipeline, UDPFinalizer)
+	if err := r.Patch(ctx, pipeline, patch); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "failed to remove finalizer")
+		return ctrl.Result{}, err
+	}
+	logger.Info("finalizer removed, pipeline deletion complete", "pipeline", pipeline.Name)
+	return ctrl.Result{}, nil
+}
+
+func (r *UnstructuredDataPipelineReconciler) deleteAllStageCRs(ctx context.Context, pipeline *operatorv1alpha1.UnstructuredDataPipeline) error {
+	listOpts := []client.ListOption{
+		client.InNamespace(pipeline.Namespace),
+		client.MatchingLabels{PipelineLabel: pipeline.Name},
+	}
+	for _, stg := range operatorv1alpha1.ListStages() {
+		if err := r.List(ctx, stg.ObjectList, listOpts...); err != nil {
+			return err
+		}
+		if err := meta.EachListItem(stg.ObjectList, func(obj runtime.Object) error {
+			o, ok := obj.(client.Object)
+			if !ok {
+				return fmt.Errorf("unexpected type %T in stage list", obj)
+			}
+			if o.GetDeletionTimestamp().IsZero() {
+				return r.Delete(ctx, o)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *UnstructuredDataPipelineReconciler) allStageCRsDeleted(ctx context.Context, pipeline *operatorv1alpha1.UnstructuredDataPipeline) (bool, error) {
+	listOpts := []client.ListOption{
+		client.InNamespace(pipeline.Namespace),
+		client.MatchingLabels{PipelineLabel: pipeline.Name},
+	}
+	for _, stg := range operatorv1alpha1.ListStages() {
+		if err := r.List(ctx, stg.ObjectList, listOpts...); err != nil {
+			return false, err
+		}
+		count := 0
+		_ = meta.EachListItem(stg.ObjectList, func(_ runtime.Object) error { count++; return nil })
+		if count > 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

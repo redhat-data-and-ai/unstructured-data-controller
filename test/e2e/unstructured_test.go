@@ -658,6 +658,19 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// Wait for the finalizer to complete and the object to be fully removed.
+			if err := apimachinerywait.PollUntilContextTimeout(ctx, 5*time.Second, 2*time.Minute, false,
+				func(ctx context.Context) (bool, error) {
+					err := kubeClient.Resources(testNamespace).Get(ctx, dataPipelineCRName, testNamespace, &v1alpha1.UnstructuredDataPipeline{})
+					if apierrors.IsNotFound(err) {
+						return true, nil
+					}
+					return false, err
+				},
+			); err != nil {
+				t.Fatalf("timed out waiting for pipeline %s to be deleted: %v", dataPipelineCRName, err)
+			}
+
 			return ctx
 		},
 	)
