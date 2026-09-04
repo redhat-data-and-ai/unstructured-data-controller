@@ -80,8 +80,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
 	if err := r.Get(ctx, req.NamespacedName, documentProcessorCR); err != nil {
-		logger.Error(err, "failed to get DocumentProcessor CR")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	documentProcessorCR = documentProcessorCR.DeepCopy()
 	documentProcessorCR.Spec.DocumentProcessorConfig.SetDefaults()

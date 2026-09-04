@@ -85,8 +85,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	chunksGeneratorCR := &operatorv1alpha1.ChunksGenerator{}
 	if err := r.Get(ctx, req.NamespacedName, chunksGeneratorCR); err != nil {
-		logger.Error(err, "failed to get ChunksGenerator CR")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	chunksGeneratorCR = chunksGeneratorCR.DeepCopy()
 	chunksGeneratorCR.Spec.ChunksGeneratorConfig.SetDefaults()

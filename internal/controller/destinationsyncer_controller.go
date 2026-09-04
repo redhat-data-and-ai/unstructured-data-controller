@@ -72,8 +72,7 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	destinationSyncCR := &operatorv1alpha1.DestinationSyncer{}
 	if err := r.Get(ctx, req.NamespacedName, destinationSyncCR); err != nil {
-		logger.Error(err, "failed to get DestinationSyncer CR")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if err := controllerutils.StatusPatch(ctx, r.Client, destinationSyncCR, func() {
