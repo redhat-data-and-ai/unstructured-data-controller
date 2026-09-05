@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
@@ -29,6 +30,20 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
+
+type pipelineFilterCtxKey struct{}
+
+// PipelineFilterMiddleware extracts ?pipelines= from the request URL and injects
+// the comma-separated allow-list into the context for per-connection filtering.
+func PipelineFilterMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if raw := r.URL.Query().Get("pipelines"); raw != "" {
+			ctx := context.WithValue(r.Context(), pipelineFilterCtxKey{}, raw)
+			r = r.WithContext(ctx)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // RegisterListPipelines registers the list_unstructured_data_pipelines_for_user MCP tool
 func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
@@ -105,6 +120,22 @@ If the pipeline has a "guidance" field, follow those instructions when working w
 			if p.Database != "" && userDBs[dbKey] {
 				accessible = append(accessible, p)
 			}
+		}
+
+		// per-connection allow-list from ?pipelines= query param
+		if raw, ok := ctx.Value(pipelineFilterCtxKey{}).(string); ok {
+			allowed := map[string]bool{}
+			for _, name := range strings.Split(raw, ",") {
+				allowed[strings.TrimSpace(name)] = true
+			}
+			filtered := accessible[:0]
+			for _, p := range accessible {
+				if allowed[p.Name] {
+					filtered = append(filtered, p)
+				}
+			}
+			accessible = filtered
+			log.Info("applied per-client query param filter", "accessible_after_filter", len(accessible))
 		}
 
 		if len(accessible) == 0 {
