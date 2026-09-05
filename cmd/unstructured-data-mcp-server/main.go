@@ -95,8 +95,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	protectedMCP := oauthMiddleware.Authenticate(mcpHandler)
-	mux.Handle("/mcp", protectedMCP)
-	mux.Handle("/mcp/{$}", protectedMCP) // match with trailing slash too
+	filteredMCP := mcptools.PipelineFilterMiddleware(protectedMCP)
+	mux.Handle("/mcp", filteredMCP)
+	mux.Handle("/mcp/{$}", filteredMCP) // match with trailing slash too
 
 	// OAuth discovery (unauthenticated)
 	mux.Handle("/.well-known/oauth-protected-resource", oauthMiddleware.ProtectedResourceMetadataHandler())
