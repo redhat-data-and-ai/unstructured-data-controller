@@ -163,30 +163,16 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 		return false, nil
 	}
 
-	logger.Info("retrieving chunked file from filestore", "file", chunksFilePath)
-	chunkedFileRaw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	texts, fileID, convertedMeta, chunksMeta, err := r.readChunksFile(ctx, chunksFilePath)
 	if err != nil {
-		logger.Error(err, "failed to retrieve chunked file")
+		logger.Error(err, "failed to read chunked file")
 		return false, err
 	}
 
-	chunkedFile := &unstructured.ChunksFile{}
-	if err := json.Unmarshal(chunkedFileRaw, &chunkedFile); err != nil {
-		logger.Error(err, "failed to unmarshal chunked file")
-		return false, err
-	}
-
-	// Validate chunked file structure
-	if chunkedFile.ConvertedDocument == nil || chunkedFile.ChunksDocument == nil {
-		return false, errors.New("invalid chunks file structure: missing required fields")
-	}
-	if chunkedFile.ChunksDocument.Chunks == nil || len(chunkedFile.ChunksDocument.Chunks.Text) == 0 {
+	if len(texts) == 0 {
 		logger.Info("chunks file has no text chunks, skipping", "file", chunksFilePath)
 		return false, nil
 	}
-
-	texts := make([]string, len(chunkedFile.ChunksDocument.Chunks.Text))
-	copy(texts, chunkedFile.ChunksDocument.Chunks.Text)
 
 	vegConfig := vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig
 	modelName := vegConfig.ModelName
@@ -204,8 +190,8 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 	})
 
 	embeddingFileMetadata := &unstructured.EmbeddingFileMetadata{
-		ConvertedFileMetadata:   chunkedFile.ConvertedDocument.Metadata,
-		ChunkFileMetadata:       chunkedFile.ChunksDocument.Metadata,
+		ConvertedFileMetadata:   convertedMeta,
+		ChunkFileMetadata:       chunksMeta,
 		ModelName:               modelName,
 		NomicEmbedTextV15Config: vegConfig.NomicEmbedTextV15Config,
 		GeminiEmbedding2Config:  vegConfig.GeminiEmbedding2Config,
@@ -252,26 +238,18 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 
 	logger.Info("successfully generated embeddings", "file", chunksFilePath, "embeddingCount", len(allEmbeddings))
 
-	// rearrange the embeddings
-	embeddings := make([]*unstructured.Embeddings, len(allEmbeddings))
+	embeddingRows := make([]unstructured.EmbeddingRow, len(allEmbeddings))
 	for i, embeddingVector := range allEmbeddings {
-		embeddings[i] = &unstructured.Embeddings{
-			Text:      texts[i],
-			Embedding: embeddingVector,
+		embeddingRows[i] = unstructured.EmbeddingRow{
+			FileID:     fileID,
+			ChunkIndex: i,
+			Text:       texts[i],
+			Embedding:  embeddingVector,
+			Metadata:   embeddingFileMetadata,
 		}
 	}
 
-	// Create the complete embeddings file structure
-	embeddingsFile := &unstructured.EmbeddingsFile{
-		ConvertedDocument: chunkedFile.ConvertedDocument,
-		ChunksDocument:    chunkedFile.ChunksDocument,
-		EmbeddingDocument: &unstructured.EmbeddingDocument{
-			Metadata:   embeddingFileMetadata,
-			Embeddings: embeddings,
-		},
-	}
-
-	embeddingsFileBytes, err := json.Marshal(embeddingsFile)
+	embeddingsFileBytes, err := json.Marshal(embeddingRows)
 	if err != nil {
 		logger.Error(err, "failed to marshal embeddings file")
 		return false, err
@@ -288,6 +266,38 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 	return true, nil
 }
 
+func (r *VectorEmbeddingsGeneratorReconciler) readChunksFile(ctx context.Context, chunksFilePath string) (texts []string, fileID string, convertedMeta *unstructured.ConvertedFileMetadata, chunksMeta *unstructured.ChunksFileMetadata, err error) {
+	chunkedFileRaw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+
+	// try new array format first
+	var chunkRows []unstructured.ChunkRow
+	if err := json.Unmarshal(chunkedFileRaw, &chunkRows); err == nil && len(chunkRows) > 0 && chunkRows[0].Metadata != nil {
+		texts = make([]string, len(chunkRows))
+		for i, row := range chunkRows {
+			texts[i] = row.Text
+		}
+		return texts, chunkRows[0].FileID, chunkRows[0].Metadata.ConvertedFileMetadata, chunkRows[0].Metadata, nil
+	}
+
+	// fall back to old single-object format
+	chunkedFile := &unstructured.ChunksFile{}
+	if err := json.Unmarshal(chunkedFileRaw, chunkedFile); err != nil {
+		return nil, "", nil, nil, err
+	}
+	if chunkedFile.ConvertedDocument == nil || chunkedFile.ChunksDocument == nil {
+		return nil, "", nil, nil, errors.New("invalid chunks file structure: missing required fields")
+	}
+	if chunkedFile.ChunksDocument.Chunks == nil {
+		return nil, "", nil, nil, nil
+	}
+	texts = make([]string, len(chunkedFile.ChunksDocument.Chunks.Text))
+	copy(texts, chunkedFile.ChunksDocument.Chunks.Text)
+	return texts, chunkedFile.ConvertedDocument.Metadata.FileIdentifier, chunkedFile.ConvertedDocument.Metadata, chunkedFile.ChunksDocument.Metadata, nil
+}
+
 func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("checking if file needs embedding", "file", chunksFilePath)
@@ -302,13 +312,8 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 		return false, err
 	}
 
-	chunkedFileRaw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	_, _, convertedMeta, chunksMeta, err := r.readChunksFile(ctx, chunksFilePath)
 	if err != nil {
-		return false, err
-	}
-
-	chunkedFile := &unstructured.ChunksFile{}
-	if err := json.Unmarshal(chunkedFileRaw, &chunkedFile); err != nil {
 		return false, err
 	}
 
@@ -325,26 +330,35 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 			return false, err
 		}
 
-		currentEmbeddedFile := &unstructured.EmbeddingsFile{}
-		if err := json.Unmarshal(embeddingsFileRaw, &currentEmbeddedFile); err != nil {
-			logger.Info("embeddings file exists but cannot be parsed, will re-embed", "file", chunksFilePath, "error", err)
-			return true, nil
-		}
-
-		// Check if the embedded file structure is valid
-		if currentEmbeddedFile.EmbeddingDocument == nil || currentEmbeddedFile.EmbeddingDocument.Metadata == nil {
-			logger.Info("embeddings file exists but has invalid structure, will re-embed", "file", chunksFilePath)
-			return true, nil
-		}
-
 		fileToEmbedMetadata := &unstructured.EmbeddingFileMetadata{
-			ConvertedFileMetadata:   chunkedFile.ConvertedDocument.Metadata,
-			ChunkFileMetadata:       chunkedFile.ChunksDocument.Metadata,
+			ConvertedFileMetadata:   convertedMeta,
+			ChunkFileMetadata:       chunksMeta,
 			ModelName:               vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.ModelName,
 			NomicEmbedTextV15Config: vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.NomicEmbedTextV15Config,
 			GeminiEmbedding2Config:  vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.GeminiEmbedding2Config,
 		}
 
+		// try new array format first
+		var embeddingRows []unstructured.EmbeddingRow
+		if err := json.Unmarshal(embeddingsFileRaw, &embeddingRows); err == nil && len(embeddingRows) > 0 && embeddingRows[0].Metadata != nil {
+			if embeddingRows[0].Metadata.Equal(fileToEmbedMetadata) {
+				logger.Info("embeddings file has the same configuration, no embedding needed", "file", chunksFilePath)
+				return false, nil
+			}
+			logger.Info("embeddings file exists but with different configuration, will re-embed", "file", chunksFilePath)
+			return true, nil
+		}
+
+		// fall back to old single-object format
+		currentEmbeddedFile := &unstructured.EmbeddingsFile{}
+		if err := json.Unmarshal(embeddingsFileRaw, currentEmbeddedFile); err != nil {
+			logger.Info("embeddings file exists but cannot be parsed, will re-embed", "file", chunksFilePath, "error", err)
+			return true, nil
+		}
+		if currentEmbeddedFile.EmbeddingDocument == nil || currentEmbeddedFile.EmbeddingDocument.Metadata == nil {
+			logger.Info("embeddings file exists but has invalid structure, will re-embed", "file", chunksFilePath)
+			return true, nil
+		}
 		if currentEmbeddedFile.EmbeddingDocument.Metadata.Equal(fileToEmbedMetadata) {
 			logger.Info("embeddings file has the same configuration, no embedding needed", "file", chunksFilePath)
 			return false, nil

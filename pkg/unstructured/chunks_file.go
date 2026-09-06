@@ -31,6 +31,13 @@ type ChunksFile struct {
 	ChunksDocument    *ChunksDocument    `json:"chunksDocument"`
 }
 
+type ChunkRow struct {
+	FileID     string              `json:"fileId"`
+	ChunkIndex int                 `json:"chunkIndex"`
+	Text       string              `json:"text"`
+	Metadata   *ChunksFileMetadata `json:"metadata"`
+}
+
 func (c *ChunksFileMetadata) Equal(other *ChunksFileMetadata) bool {
 	if !c.ConvertedFileMetadata.Equal(other.ConvertedFileMetadata) {
 		return false

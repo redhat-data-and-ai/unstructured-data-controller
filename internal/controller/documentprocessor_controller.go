@@ -232,16 +232,13 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
-		convertedFile := unstructured.ConvertedFile{
-			ConvertedDocument: &unstructured.ConvertedDocument{
-				Metadata: &convertedFileMetadata,
-				Content: &unstructured.Content{
-					Markdown: doclingResponse.Document.MDContent,
-				},
-			},
-		}
+		convertedRows := []unstructured.ConvertedRow{{
+			FileID:   job.FileIdentifier,
+			Markdown: doclingResponse.Document.MDContent,
+			Metadata: &convertedFileMetadata,
+		}}
 
-		convertedFileBytes, err := json.Marshal(convertedFile)
+		convertedFileBytes, err := json.Marshal(convertedRows)
 		if err != nil {
 			return err
 		}
@@ -400,13 +397,6 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 			return false, err
 		}
 
-		convertedFile := unstructured.ConvertedFile{}
-		err = json.Unmarshal(convertedFileRaw, &convertedFile)
-		if err != nil {
-			return false, err
-		}
-		currentConvertedFileMetadata := convertedFile.ConvertedDocument.Metadata
-
 		fileToConvertMetadata := unstructured.ConvertedFileMetadata{
 			RawFilePath:       rawFilePath,
 			FileIdentifier:    fileUID,
@@ -414,9 +404,22 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
 
-		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
-			logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
-			return false, nil
+		// try new array format first
+		var convertedRows []unstructured.ConvertedRow
+		if err := json.Unmarshal(convertedFileRaw, &convertedRows); err == nil && len(convertedRows) > 0 && convertedRows[0].Metadata != nil {
+			if convertedRows[0].Metadata.Equal(&fileToConvertMetadata) {
+				logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
+				return false, nil
+			}
+		} else {
+			// fall back to old single-object format
+			convertedFile := unstructured.ConvertedFile{}
+			if err := json.Unmarshal(convertedFileRaw, &convertedFile); err == nil && convertedFile.ConvertedDocument != nil && convertedFile.ConvertedDocument.Metadata != nil {
+				if convertedFile.ConvertedDocument.Metadata.Equal(&fileToConvertMetadata) {
+					logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
+					return false, nil
+				}
+			}
 		}
 	}
 
