@@ -24,7 +24,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
@@ -88,7 +87,7 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
-		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName, operatorv1alpha1.StageTypeSourceCrawler)
+		qc, err := k8sClient.GetFileStatusQueryConfig(ctx, args.PipelineName)
 		if err != nil {
 			log.Error("failed to get pipeline query config", "error", err)
 			return &mcp.CallToolResult{
@@ -111,6 +110,12 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 
 		result, err := snowflake.GetFileProcessingStatus(ctx, oauthToken,
 			database, schema,
+			snowflake.StageMVs{
+				Crawl:   qc.CrawlMV,
+				Convert: qc.ConvertMV,
+				Chunks:  qc.ChunksMV,
+				Embed:   qc.EmbedMV,
+			},
 			snowflake.FileStatusParams{
 				FileID:   args.FileID,
 				FileName: args.FileName,
