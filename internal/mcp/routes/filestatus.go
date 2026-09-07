@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 
-	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
@@ -51,7 +50,7 @@ func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	qc, err := h.k8sClient.GetPipelineQueryConfig(r.Context(), pipelineName, operatorv1alpha1.StageTypeSourceCrawler)
+	qc, err := h.k8sClient.GetFileStatusQueryConfig(r.Context(), pipelineName)
 	if err != nil {
 		slog.Error("failed to get pipeline query config", "pipeline", pipelineName, "error", err)
 		writeJSONError(w, fmt.Sprintf("pipeline %q not found or misconfigured", pipelineName), http.StatusNotFound)
@@ -67,6 +66,12 @@ func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	result, err := snowflake.GetFileProcessingStatus(r.Context(), oauthToken,
 		database, schema,
+		snowflake.StageMVs{
+			Crawl:   qc.CrawlMV,
+			Convert: qc.ConvertMV,
+			Chunks:  qc.ChunksMV,
+			Embed:   qc.EmbedMV,
+		},
 		snowflake.FileStatusParams{
 			FileID:   q.Get("file_id"),
 			FileName: q.Get("file_name"),

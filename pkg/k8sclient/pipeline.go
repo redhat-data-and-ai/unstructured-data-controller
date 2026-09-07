@@ -52,6 +52,15 @@ type QueryConfig struct {
 	Table    string
 }
 
+type FileStatusQueryConfig struct {
+	Database  string
+	Schema    string
+	CrawlMV   string
+	ConvertMV string
+	ChunksMV  string
+	EmbedMV   string
+}
+
 func pipelineNamespace() string {
 	if ns := os.Getenv("UNSTRUCTURED_DATA_CONTROLLER_NAMESPACE"); ns != "" {
 		return ns
@@ -297,4 +306,49 @@ func s3Destination(pipeline *operatorv1alpha1.UnstructuredDataPipeline) *operato
 		return &stage.DestinationSyncerConfig.S3DestinationConfig
 	}
 	return nil
+}
+
+func (c *Client) GetFileStatusQueryConfig(
+	ctx context.Context, name string,
+) (*FileStatusQueryConfig, error) {
+	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
+	err := c.client.Get(ctx, client.ObjectKey{
+		Namespace: pipelineNamespace(),
+		Name:      name,
+	}, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
+	}
+
+	cfg := &FileStatusQueryConfig{}
+	for _, stage := range pipeline.Spec.Stages {
+		if stage.QueryConfig == nil || stage.QueryConfig.Snowflake == nil {
+			continue
+		}
+		sq := stage.QueryConfig.Snowflake
+		if cfg.Database == "" {
+			cfg.Database = sq.Database
+			cfg.Schema = sq.Schema
+		}
+		switch stage.Type {
+		case operatorv1alpha1.StageTypeSourceCrawler:
+			cfg.CrawlMV = sq.Table
+		case operatorv1alpha1.StageTypeDocumentProcessor:
+			cfg.ConvertMV = sq.Table
+		case operatorv1alpha1.StageTypeChunksGenerator:
+			cfg.ChunksMV = sq.Table
+		case operatorv1alpha1.StageTypeVectorEmbeddingsGenerator:
+			cfg.EmbedMV = sq.Table
+		default:
+		}
+	}
+
+	if cfg.Database == "" {
+		return nil, fmt.Errorf("pipeline %q has no Snowflake query config on any stage", name)
+	}
+	if cfg.CrawlMV == "" || cfg.ConvertMV == "" || cfg.ChunksMV == "" || cfg.EmbedMV == "" {
+		return nil, fmt.Errorf(
+			"pipeline %q is missing Snowflake query config for one or more stages", name)
+	}
+	return cfg, nil
 }
