@@ -77,8 +77,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	sourceCrawlerCR := &operatorv1alpha1.SourceCrawler{}
 	if err := r.Get(ctx, req.NamespacedName, sourceCrawlerCR); err != nil {
-		logger.Error(err, "failed to get SourceCrawler CR")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
