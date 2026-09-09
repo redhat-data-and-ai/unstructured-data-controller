@@ -186,4 +186,4 @@ jobs:
         run: |
           IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
           kubectl create namespace ${{ env.NAMESPACE }}
-          make test-e2e IMG=${IMG}
+          make test-e2e IMG=${IMG} GDRIVE_FOLDER_URL=${{ secrets.GDRIVE_FOLDER_URL }} GDRIVE_SERVICE_ACCOUNT_JSON=${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}

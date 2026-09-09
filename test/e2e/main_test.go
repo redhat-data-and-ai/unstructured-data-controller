@@ -20,6 +20,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -142,6 +143,26 @@ func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envcon
 		return p.Err()
 	}
 
+	// Set CURRENT_ENV before the pod starts so it picks it up on first boot
+	if os.Getenv("GDRIVE_FOLDER_URL") != "" {
+		log.Println("GDrive e2e enabled: setting CURRENT_ENV=e2e-test on operator...")
+		setEnvCmd := fmt.Sprintf(
+			"kubectl set env deployment/%s -n %s CURRENT_ENV=e2e-test",
+			deploymentName, testNamespace)
+		if p := utils.RunCommandContext(ctx, setEnvCmd); p.Err() != nil {
+			log.Printf("Failed to set CURRENT_ENV: %s", p.Err())
+			return p.Err()
+		}
+		scaleDown := fmt.Sprintf("kubectl scale deployment/%s -n %s --replicas=0", deploymentName, testNamespace)
+		if p := utils.RunCommandContext(ctx, scaleDown); p.Err() != nil {
+			log.Printf("Failed to scale down: %s", p.Err())
+		}
+		scaleUp := fmt.Sprintf("kubectl scale deployment/%s -n %s --replicas=1", deploymentName, testNamespace)
+		if p := utils.RunCommandContext(ctx, scaleUp); p.Err() != nil {
+			log.Printf("Failed to scale up: %s", p.Err())
+		}
+	}
+
 	log.Println("Verifying deployment exists...")
 	checkCmd := fmt.Sprintf("kubectl get deployment %s -n %s", deploymentName, testNamespace)
 	if p := utils.RunCommandContext(ctx, checkCmd); p.Err() != nil {
@@ -160,6 +181,16 @@ func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envcon
 	); err != nil {
 		log.Printf("Timed out waiting for deployment: %s", err)
 		return err
+	}
+
+	// Decode base64-encoded GDrive service account JSON before envsubst
+	if saBase64 := os.Getenv("GDRIVE_SERVICE_ACCOUNT_JSON"); saBase64 != "" {
+		decoded, decErr := base64.StdEncoding.DecodeString(saBase64)
+		if decErr != nil {
+			return fmt.Errorf("failed to base64 decode GDRIVE_SERVICE_ACCOUNT_JSON: %w", decErr)
+		}
+		os.Setenv("GDRIVE_SERVICE_ACCOUNT_JSON", string(decoded))
+		log.Println("Decoded GDRIVE_SERVICE_ACCOUNT_JSON from base64")
 	}
 
 	log.Println("Creating consolidated unstructured secret")
@@ -277,8 +308,13 @@ func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envcon
 		log.Println("Ollama embedding service is successfully set up")
 	}
 
-	// get ControllerConfig from utils/utils_function.go
-	controllerConfig := operatorUtils.GetControllerConfigResource()
+	// get ControllerConfig — use GDrive-enabled version if GDRIVE_FOLDER_URL is set
+	var controllerConfig *v1alpha1.ControllerConfig
+	if os.Getenv("GDRIVE_FOLDER_URL") != "" {
+		controllerConfig = operatorUtils.GetControllerConfigResourceWithGDrive()
+	} else {
+		controllerConfig = operatorUtils.GetControllerConfigResource()
+	}
 	if err := config.Client().Resources().Create(ctx, controllerConfig); err != nil {
 		log.Printf("failed to apply ControllerConfig: %s", err)
 		return err

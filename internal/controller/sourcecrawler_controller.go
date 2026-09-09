@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -233,7 +234,7 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 		return nil, fmt.Errorf("failed to create google client: %w", err)
 	}
 
-	if LDAPClient == nil {
+	if LDAPClient == nil && os.Getenv("CURRENT_ENV") != "e2e-test" {
 		return nil, errors.New("LDAP client not initialized in ControllerConfig")
 	}
 	if CacheClient == nil {

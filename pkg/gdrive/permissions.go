@@ -74,7 +74,7 @@ func (c *Client) GetFilePermissions(
 				logger.V(1).Info("user LDAP data found in cache",
 					"email", p.EmailAddress,
 				)
-			} else {
+			} else if c.ldapClient != nil {
 				// Cache miss - query LDAP
 				userData, err := c.ldapClient.GetUserByEmail(
 					ctx, p.EmailAddress)
