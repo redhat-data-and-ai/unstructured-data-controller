@@ -26,9 +26,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
-	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
 type listFilesInPipelineArgs struct {
@@ -36,7 +36,7 @@ type listFilesInPipelineArgs struct {
 	Limit        int    `json:"limit,omitempty" jsonschema:"Max number of files to return. Defaults to 300 if not specified."`
 }
 
-func RegisterListFilesInPipeline(s *mcp.Server, k8sClient *k8sclient.Client) {
+func RegisterListFilesInPipeline(s *mcp.Server, k8sClient *k8sclient.Client, querier filestatus.StatusQuerier) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_files_in_pipeline",
 		Description: `List all files in a pipeline's crawl stage. Returns file_id, file_path, file_name, and file_url. Use the limit parameter to control how many files are returned (defaults to 300).
@@ -60,8 +60,7 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
-		oauthToken, ok := auth.AccessTokenFromContext(ctx)
-		if !ok {
+		if _, ok := auth.AccessTokenFromContext(ctx); !ok {
 			log.Error("oauth token not found in context")
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: errOAuthTokenNotFound}},
@@ -92,12 +91,12 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 
 		limit := args.Limit
 		if limit <= 0 {
-			limit = snowflake.MCPMaxResults
+			limit = filestatus.MCPMaxResults
 		}
 
 		log.Info("querying pipeline files", "database", database, "schema", schema, "table", table, "limit", limit)
 
-		files, err := snowflake.ListPipelineFiles(ctx, oauthToken, database, schema, table, limit)
+		files, err := querier.ListPipelineFiles(ctx, database, schema, table, limit)
 		if err != nil {
 			log.Error("failed to list pipeline files", "error", err)
 			return &mcp.CallToolResult{

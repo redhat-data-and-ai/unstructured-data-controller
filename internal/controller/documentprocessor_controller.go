@@ -301,10 +301,19 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 	switch doclingTaskStatus {
 	case docling.TaskStatusSuccess, docling.TaskStatusPartialSuccess:
 		logger.Info("docling task has been completed successfully, storing the converted file in the filestore", "taskID", job.TaskID, "filePath", job.FilePath)
-		// store the converted file in the filestore
+
+		rawMeta, err := getRawFileMetadata(ctx, job.FilePath, fs)
+		if err != nil {
+			return err
+		}
+
 		convertedFileMetadata := unstructured.ConvertedFileMetadata{
 			RawFilePath:       job.FilePath,
 			FileIdentifier:    job.FileIdentifier,
+			FilePath:          rawMeta.FilePath,
+			FileName:          rawMeta.FileName,
+			FileURL:           rawMeta.FileURL,
+			SourceType:        rawMeta.SourceType,
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
@@ -372,7 +381,12 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		// if the attempts > max attempts, remove the job from the status
 		if job.Attempts >= maxDoclingConversionAttempts {
 			logger.Error(fmt.Errorf("failed to convert file, max attempts reached for file: %s", job.FilePath), "failed to convert file, max attempts reached")
-			r.writeFailedConversionResult(ctx, job.FilePath, job.FileIdentifier,
+			rawMeta, metaErr := getRawFileMetadata(ctx, job.FilePath, fs)
+			if metaErr != nil {
+				logger.Error(metaErr, "failed to read raw file metadata for failed conversion", "filePath", job.FilePath)
+				rawMeta = &unstructured.RawFileMetadata{UID: job.FileIdentifier}
+			}
+			r.writeFailedConversionResult(ctx, job.FilePath, rawMeta,
 				fmt.Sprintf("max conversion attempts (%d) reached", maxDoclingConversionAttempts),
 				documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath, fs)
 			if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
@@ -412,10 +426,10 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		return nil
 	}
 
-	// fetch the File UID
-	fileUID, err := getFileUID(ctx, rawFilePath, fs)
+	// fetch the raw file metadata
+	rawMeta, err := getRawFileMetadata(ctx, rawFilePath, fs)
 	if err != nil {
-		logger.Error(err, "Failed to get file UID")
+		logger.Error(err, "Failed to get raw file metadata")
 		return err
 	}
 
@@ -432,7 +446,7 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 			return nil
 		}
 		logger.Error(err, "failed to convert file")
-		r.writeFailedConversionResult(ctx, rawFilePath, fileUID, err.Error(),
+		r.writeFailedConversionResult(ctx, rawFilePath, rawMeta, err.Error(),
 			documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath, fs)
 		return err
 	}
@@ -449,7 +463,7 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 		documentProcessorCR.AddOrUpdateJob(operatorv1alpha1.Job{
 			FilePath:          rawFilePath,
-			FileIdentifier:    fileUID,
+			FileIdentifier:    rawMeta.UID,
 			DocumentConverter: string(unstructured.DocumentConverterDocling),
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 			TaskID:            response.TaskID,
@@ -491,18 +505,13 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		return false, nil
 	}
 
-	// fetch the File UID
-	fileUID, err := getFileUID(ctx, rawFilePath, fs)
+	// fetch the raw file metadata
+	rawMeta, err := getRawFileMetadata(ctx, rawFilePath, fs)
 	if err != nil {
-		logger.Error(err, "Failed to get file UID")
+		logger.Error(err, "Failed to get raw file metadata")
 		return false, err
 	}
-
-	// let's check if the file exists in the permanently failing files list
-	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
-		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
-		return false, nil
-	}
+	fileUID := rawMeta.UID
 
 	// does the converted file exist in the output directory?
 	convertedFilePath := unstructured.RemapToOutputDir(
@@ -651,22 +660,22 @@ func existingJobDecision(
 	}
 }
 
-func getFileUID(ctx context.Context, rawFilePath string, fs *filestore.FileStore) (string, error) {
+func getRawFileMetadata(ctx context.Context, rawFilePath string, fs *filestore.FileStore) (*unstructured.RawFileMetadata, error) {
 	logger := log.FromContext(ctx)
 	metaDataFileRaw, err := fs.Retrieve(ctx, unstructured.MetadataPath(rawFilePath))
 	if err != nil {
 		logger.Error(err, "Failed to retrieve metadata file")
-		return "", err
+		return nil, err
 	}
 
-	metaDataFile := unstructured.RawFileMetadata{}
-	err = json.Unmarshal(metaDataFileRaw, &metaDataFile)
+	metaDataFile := &unstructured.RawFileMetadata{}
+	err = json.Unmarshal(metaDataFileRaw, metaDataFile)
 	if err != nil {
 		logger.Error(err, "Failed to unmarshal metadata file")
-		return "", err
+		return nil, err
 	}
 
-	return metaDataFile.UID, nil
+	return metaDataFile, nil
 }
 
 func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -710,13 +719,17 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *DocumentProcessorReconciler) writeFailedConversionResult(ctx context.Context, rawFilePath, fileIdentifier, errMsg string, doclingConfig operatorv1alpha1.DoclingConfig, inputPath, outputPath string, fs *filestore.FileStore) {
+func (r *DocumentProcessorReconciler) writeFailedConversionResult(ctx context.Context, rawFilePath string, rawMeta *unstructured.RawFileMetadata, errMsg string, doclingConfig operatorv1alpha1.DoclingConfig, inputPath, outputPath string, fs *filestore.FileStore) {
 	logger := log.FromContext(ctx)
 	failedFile := unstructured.ConvertedFile{
 		ConvertedDocument: &unstructured.ConvertedDocument{
 			Metadata: &unstructured.ConvertedFileMetadata{
 				RawFilePath:       rawFilePath,
-				FileIdentifier:    fileIdentifier,
+				FileIdentifier:    rawMeta.UID,
+				FilePath:          rawMeta.FilePath,
+				FileName:          rawMeta.FileName,
+				FileURL:           rawMeta.FileURL,
+				SourceType:        rawMeta.SourceType,
 				DocumentConverter: unstructured.DocumentConverterDocling,
 				DoclingConfig:     doclingConfig,
 				Error:             errMsg,

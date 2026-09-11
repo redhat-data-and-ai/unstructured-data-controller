@@ -40,6 +40,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/reranker"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -116,12 +117,14 @@ func main() {
 		middlewareOpts...)
 	oauthServer := auth.NewOAuthServer(provider, oauthCfg.CallbackURL, oauthStore, slog.Default())
 
+	statusQuerier := &snowflake.SnowflakeQuerier{}
+
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
 	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
 	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
-	mcptools.RegisterGetPipelineProcessingStatus(mcpServer, k8sClient)
-	mcptools.RegisterListFilesInPipeline(mcpServer, k8sClient)
+	mcptools.RegisterGetPipelineProcessingStatus(mcpServer, k8sClient, statusQuerier)
+	mcptools.RegisterListFilesInPipeline(mcpServer, k8sClient, statusQuerier)
 
 	if driveSearchOpts, reason := driveSearchOptions(oauthCfg, oauthMiddleware); driveSearchOpts != nil {
 		mcptools.RegisterSearchGoogleDrive(mcpServer, k8sClient, *driveSearchOpts)
@@ -153,7 +156,7 @@ func main() {
 	mux.HandleFunc("/auth/token", oauthServer.HandleToken)
 
 	// REST API endpoints (OAuth-protected)
-	fileStatusHandler := mcproutes.NewFileStatusHandler(k8sClient)
+	fileStatusHandler := mcproutes.NewFileStatusHandler(k8sClient, statusQuerier)
 	mux.Handle("GET /api/v1/pipelines/{pipeline_name}/files", oauthMiddleware.Authenticate(fileStatusHandler))
 
 	mux.HandleFunc("/healthz", healthHandler)

@@ -25,16 +25,17 @@ import (
 	"strings"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
-	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
 type FileStatusHandler struct {
 	k8sClient *k8sclient.Client
+	querier   filestatus.StatusQuerier
 }
 
-func NewFileStatusHandler(k8sClient *k8sclient.Client) *FileStatusHandler {
-	return &FileStatusHandler{k8sClient: k8sClient}
+func NewFileStatusHandler(k8sClient *k8sclient.Client, querier filestatus.StatusQuerier) *FileStatusHandler {
+	return &FileStatusHandler{k8sClient: k8sClient, querier: querier}
 }
 
 func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -44,8 +45,7 @@ func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oauthToken, ok := auth.AccessTokenFromContext(r.Context())
-	if !ok {
+	if _, ok := auth.AccessTokenFromContext(r.Context()); !ok {
 		writeJSONError(w, "oauth token not found", http.StatusUnauthorized)
 		return
 	}
@@ -58,21 +58,27 @@ func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := r.URL.Query()
-	page, _ := strconv.Atoi(q.Get("page"))
-	pageSize, _ := strconv.Atoi(q.Get("page_size"))
+	page, err := parseOptionalInt(q.Get("page"))
+	if err != nil {
+		writeJSONError(w, "invalid page parameter", http.StatusBadRequest)
+		return
+	}
+	pageSize, err := parseOptionalInt(q.Get("page_size"))
+	if err != nil {
+		writeJSONError(w, "invalid page_size parameter", http.StatusBadRequest)
+		return
+	}
 
 	database := strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_"))
 	schema := strings.ToUpper(qc.Schema)
 
-	result, err := snowflake.GetFileProcessingStatus(r.Context(), oauthToken,
-		database, schema,
-		snowflake.StageMVs{
-			Crawl:   qc.CrawlMV,
-			Convert: qc.ConvertMV,
-			Chunks:  qc.ChunksMV,
-			Embed:   qc.EmbedMV,
+	result, err := h.querier.GetFileProcessingStatus(r.Context(),
+		filestatus.QueryConfig{
+			Database: database,
+			Schema:   schema,
+			Stages:   qc.Stages,
 		},
-		snowflake.FileStatusParams{
+		filestatus.FileStatusParams{
 			FileID:   q.Get("file_id"),
 			FileName: q.Get("file_name"),
 			Status:   q.Get("status"),
@@ -92,6 +98,13 @@ func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		slog.Error("failed to encode response", "error", err)
 	}
+}
+
+func parseOptionalInt(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(s)
 }
 
 func writeJSONError(w http.ResponseWriter, msg string, status int) {
