@@ -38,13 +38,10 @@ type getPipelineProcessingStatusArgs struct {
 	Limit        int    `json:"limit,omitempty" jsonschema:"Max number of files to return. Defaults to 300 if not specified."`
 }
 
-func RegisterGetPipelineProcessingStatus(s *mcp.Server, k8sClient *k8sclient.Client, querier filestatus.StatusQuerier) {
+func RegisterGetPipelineProcessingStatus(s *mcp.Server, k8sClient *k8sclient.Client, newQuerier func(filestatus.StatusQuerierType) (filestatus.StatusQuerier, error)) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "get_pipeline_processing_status",
-		Description: `Get file processing status across all pipeline stages (crawl, convert, chunk, embed) for a given pipeline.
-Returns the error (if any) at each stage for each file. The response includes total_files (total count) so you know if more files exist beyond the returned set. Use the limit parameter to control how many files are returned (defaults to 300).
-If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
-On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.`,
+		Name:        "get_pipeline_processing_status",
+		Description: `Get file processing status across all configured pipeline stages for a given pipeline. Returns the error (if any) at each stage for each file, along with total and failed file counts.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getPipelineProcessingStatusArgs) (*mcp.CallToolResult, any, error) {
 		username := ""
 		if tokenInfo, ok := auth.TokenInfoFromContext(ctx); ok {
@@ -106,6 +103,15 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		log.Info("querying file processing status",
 			"database", database, "schema", schema,
 			"file_id", args.FileID, "file_name", args.FileName, "status", args.Status, "limit", limit)
+
+		querier, err := newQuerier(qc.ProviderType)
+		if err != nil {
+			log.Error("unsupported status provider", "provider", qc.ProviderType, "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: %v", err)}},
+				IsError: true,
+			}, nil, nil
+		}
 
 		result, err := querier.GetFileProcessingStatus(ctx,
 			filestatus.QueryConfig{

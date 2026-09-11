@@ -36,6 +36,7 @@ import (
 	mcptools "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/tools"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/reranker"
@@ -114,14 +115,12 @@ func main() {
 		middlewareOpts...)
 	oauthServer := auth.NewOAuthServer(provider, oauthCfg.CallbackURL, oauthStore, slog.Default())
 
-	statusQuerier := &snowflake.SnowflakeQuerier{}
-
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
 	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
 	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
-	mcptools.RegisterGetPipelineProcessingStatus(mcpServer, k8sClient, statusQuerier)
-	mcptools.RegisterListFilesInPipeline(mcpServer, k8sClient, statusQuerier)
+	mcptools.RegisterGetPipelineProcessingStatus(mcpServer, k8sClient, newStatusQuerier)
+	mcptools.RegisterListFilesInPipeline(mcpServer, k8sClient, newStatusQuerier)
 
 	if driveSearchOpts, reason := driveSearchOptions(oauthCfg, oauthMiddleware); driveSearchOpts != nil {
 		mcptools.RegisterSearchGoogleDrive(mcpServer, k8sClient, *driveSearchOpts)
@@ -153,8 +152,8 @@ func main() {
 	mux.HandleFunc("/auth/token", oauthServer.HandleToken)
 
 	// REST API endpoints (OAuth-protected)
-	fileStatusHandler := mcproutes.NewFileStatusHandler(k8sClient, statusQuerier)
-	mux.Handle("GET /api/v1/pipelines/{pipeline_name}/files", oauthMiddleware.Authenticate(fileStatusHandler))
+	fileStatusHandler := mcproutes.NewFileStatusHandler(k8sClient, newStatusQuerier)
+	mux.Handle("/api/v1/pipelines/{pipeline_name}/files", oauthMiddleware.Authenticate(fileStatusHandler))
 
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.HandleFunc("/readyz", healthHandler)
@@ -297,6 +296,15 @@ func resolveRerankerPoolDepth(raw string) (int, error) {
 			poolDepth, mcptools.MaxRerankerPool)
 	}
 	return poolDepth, nil
+}
+
+func newStatusQuerier(t filestatus.StatusQuerierType) (filestatus.StatusQuerier, error) {
+	switch t {
+	case filestatus.StatusQuerierTypeSnowflake:
+		return &snowflake.SnowflakeQuerier{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported status provider %q", t)
+	}
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
