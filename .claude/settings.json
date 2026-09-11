@@ -1,0 +1,60 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make build)",
+      "Bash(make test)",
+      "Bash(make lint)",
+      "Bash(make lint-fix)",
+      "Bash(make fmt)",
+      "Bash(make vet)",
+      "Bash(make generate)",
+      "Bash(make manifests)",
+      "Bash(make manifests generate)",
+      "Bash(make docker-build:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go mod tidy)",
+      "Bash(go mod vendor)",
+      "Bash(go get:*)",
+      "Bash(go list:*)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git reset --hard *)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(kubectl delete *)",
+      "Bash(make undeploy *)",
+      "Bash(make uninstall *)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Write(**/.env)",
+      "Write(**/.env.*)",
+      "Write(**/*.pem)",
+      "Write(**/*.key)",
+      "Edit(**/.env)",
+      "Edit(**/.env.*)",
+      "Edit(**/*.pem)",
+      "Edit(**/*.key)",
+      "Edit(**/zz_generated.deepcopy.go)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; [[ \"$f\" == *.go ]] && goimports -w \"$f\"; }"
+          }
+        ]
+      }
+    ]
+  }
+}
