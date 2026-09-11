@@ -189,14 +189,14 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 	}
 
 	// chunk the file
-	chunksFile, err := r.chunkFile(ctx, convertedFilePath, chunksGeneratorCR)
+	chunkRows, err := r.chunkFile(ctx, convertedFilePath, chunksGeneratorCR)
 	if err != nil {
 		logger.Error(err, "failed to chunk file")
 		return false, err
 	}
 
 	// store the chunks in the filestore
-	chunksFileBytes, err := json.Marshal(chunksFile)
+	chunksFileBytes, err := json.Marshal(chunkRows)
 	if err != nil {
 		logger.Error(err, "failed to marshal chunks file")
 		return false, err
@@ -222,13 +222,12 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		return false, err
 	}
 
-	convertedFile := unstructured.ConvertedFile{}
-	err = json.Unmarshal(convertedFileRaw, &convertedFile)
-	if err != nil {
+	var convertedRows []unstructured.ConvertedRow
+	if err := json.Unmarshal(convertedFileRaw, &convertedRows); err != nil {
 		return false, err
 	}
 
-	convertedFileMetadata := convertedFile.ConvertedDocument.Metadata
+	convertedFileMetadata := convertedRows[0].Metadata
 
 	// check if the chunked file does not exist in the filestore then return true
 	chunksFileExists, err := r.fileStore.Exists(ctx, chunksFilePath)
@@ -245,19 +244,22 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		return false, err
 	}
 
-	chunksFile := unstructured.ChunksFile{}
-	err = json.Unmarshal(chunksFileRaw, &chunksFile)
-	if err != nil {
-		return false, err
-	}
-
 	// now the chunks file should be the same as the current chunks file in filestore
 	newChunksFileMetadata := unstructured.ChunksFileMetadata{
 		ConvertedFileMetadata: convertedFileMetadata,
 		ChunkingTool:          unstructured.LangchainChunkingTool,
 		ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
 	}
-	if !chunksFile.ChunksDocument.Metadata.Equal(&newChunksFileMetadata) {
+
+	var chunkRows []unstructured.ChunkRow
+	if err := json.Unmarshal(chunksFileRaw, &chunkRows); err != nil {
+		logger.Info("chunks file cannot be parsed, re-chunking needed", "file", convertedFilePath)
+		return true, nil //nolint:nilerr // unparseable file means re-chunking is needed
+	}
+	if len(chunkRows) == 0 || chunkRows[0].Metadata == nil {
+		return true, nil
+	}
+	if !chunkRows[0].Metadata.Equal(&newChunksFileMetadata) {
 		logger.Info("chunks file config has changed, re-chunking needed", "file", convertedFilePath)
 		return true, nil
 	}
@@ -265,7 +267,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	return false, nil
 }
 
-func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (*unstructured.ChunksFile, error) {
+func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) ([]unstructured.ChunkRow, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("chunking file", "file", convertedFilePath)
 
@@ -275,11 +277,12 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 		return nil, err
 	}
 
-	convertedFile := unstructured.ConvertedFile{}
-	err = json.Unmarshal(convertedFileRaw, &convertedFile)
-	if err != nil {
+	var convertedRows []unstructured.ConvertedRow
+	if err := json.Unmarshal(convertedFileRaw, &convertedRows); err != nil {
 		return nil, err
 	}
+
+	convertedRow := convertedRows[0]
 
 	var chunker unstructured.Chunker
 	switch chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy {
@@ -321,24 +324,26 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 		return nil, fmt.Errorf("invalid strategy: %s", chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy)
 	}
 
-	chunks, err := chunker.Chunk(convertedFile.ConvertedDocument.Content.Markdown)
+	chunks, err := chunker.Chunk(convertedRow.Markdown)
 	if err != nil {
 		return nil, err
 	}
 
-	return &unstructured.ChunksFile{
-		ConvertedDocument: convertedFile.ConvertedDocument,
-		ChunksDocument: &unstructured.ChunksDocument{
-			Metadata: &unstructured.ChunksFileMetadata{
-				ChunkingTool:          unstructured.LangchainChunkingTool,
-				ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
-				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
-			},
-			Chunks: &unstructured.Chunks{
-				Text: chunks,
-			},
-		},
-	}, nil
+	metadata := &unstructured.ChunksFileMetadata{
+		ChunkingTool:          unstructured.LangchainChunkingTool,
+		ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
+		ConvertedFileMetadata: convertedRow.Metadata,
+	}
+	rows := make([]unstructured.ChunkRow, len(chunks))
+	for i, text := range chunks {
+		rows[i] = unstructured.ChunkRow{
+			FileID:     convertedRow.Metadata.FileIdentifier,
+			ChunkIndex: i,
+			Text:       text,
+			Metadata:   metadata,
+		}
+	}
+	return rows, nil
 }
 
 func (r *ChunksGeneratorReconciler) findDependents(ctx context.Context, obj client.Object) []reconcile.Request {
