@@ -30,12 +30,12 @@ import (
 )
 
 type FileStatusHandler struct {
-	k8sClient *k8sclient.Client
-	querier   filestatus.StatusQuerier
+	k8sClient  *k8sclient.Client
+	newQuerier func(filestatus.StatusQuerierType) (filestatus.StatusQuerier, error)
 }
 
-func NewFileStatusHandler(k8sClient *k8sclient.Client, querier filestatus.StatusQuerier) *FileStatusHandler {
-	return &FileStatusHandler{k8sClient: k8sClient, querier: querier}
+func NewFileStatusHandler(k8sClient *k8sclient.Client, newQuerier func(filestatus.StatusQuerierType) (filestatus.StatusQuerier, error)) *FileStatusHandler {
+	return &FileStatusHandler{k8sClient: k8sClient, newQuerier: newQuerier}
 }
 
 func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -69,10 +69,17 @@ func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	querier, err := h.newQuerier(qc.ProviderType)
+	if err != nil {
+		slog.Error("unsupported status provider", "provider", qc.ProviderType, "error", err)
+		writeJSONError(w, fmt.Sprintf("unsupported status provider: %v", err), http.StatusBadRequest)
+		return
+	}
+
 	database := strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_"))
 	schema := strings.ToUpper(qc.Schema)
 
-	result, err := h.querier.GetFileProcessingStatus(r.Context(),
+	result, err := querier.GetFileProcessingStatus(r.Context(),
 		filestatus.QueryConfig{
 			Database: database,
 			Schema:   schema,

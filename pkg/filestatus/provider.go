@@ -23,15 +23,22 @@ const (
 	MCPMaxResults   = 300
 )
 
+type StatusQuerierType string
+
+const (
+	StatusQuerierTypeSnowflake StatusQuerierType = "snowflake"
+)
+
 type StageMV struct {
 	Name  string
 	Table string
 }
 
 type QueryConfig struct {
-	Database string
-	Schema   string
-	Stages   []StageMV
+	Database     string
+	Schema       string
+	ProviderType StatusQuerierType
+	Stages       []StageMV
 }
 
 type StageStatus struct {

@@ -24,7 +24,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
@@ -36,12 +35,10 @@ type listFilesInPipelineArgs struct {
 	Limit        int    `json:"limit,omitempty" jsonschema:"Max number of files to return. Defaults to 300 if not specified."`
 }
 
-func RegisterListFilesInPipeline(s *mcp.Server, k8sClient *k8sclient.Client, querier filestatus.StatusQuerier) {
+func RegisterListFilesInPipeline(s *mcp.Server, k8sClient *k8sclient.Client, newQuerier func(filestatus.StatusQuerierType) (filestatus.StatusQuerier, error)) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "list_files_in_pipeline",
-		Description: `List all files in a pipeline's crawl stage. Returns file_id, file_path, file_name, and file_url. Use the limit parameter to control how many files are returned (defaults to 300).
-If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
-On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.`,
+		Name:        "list_files_in_pipeline",
+		Description: `List all files in a pipeline's first stage. Returns file_id, file_path, file_name, and file_url.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args listFilesInPipelineArgs) (*mcp.CallToolResult, any, error) {
 		username := ""
 		if tokenInfo, ok := auth.TokenInfoFromContext(ctx); ok {
@@ -76,7 +73,7 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
-		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName, operatorv1alpha1.StageTypeSourceCrawler)
+		qc, err := k8sClient.GetFileStatusQueryConfig(ctx, args.PipelineName)
 		if err != nil {
 			log.Error("failed to get pipeline query config", "error", err)
 			return &mcp.CallToolResult{
@@ -85,9 +82,18 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
+		querier, err := newQuerier(qc.ProviderType)
+		if err != nil {
+			log.Error("unsupported status provider", "provider", qc.ProviderType, "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: %v", err)}},
+				IsError: true,
+			}, nil, nil
+		}
+
 		database := strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_"))
 		schema := strings.ToUpper(qc.Schema)
-		table := strings.ToUpper(qc.Table)
+		table := strings.ToUpper(qc.Stages[0].Table)
 
 		limit := args.Limit
 		if limit <= 0 {

@@ -321,6 +321,7 @@ func (c *Client) GetFileStatusQueryConfig(
 		if cfg.Database == "" {
 			cfg.Database = sq.Database
 			cfg.Schema = sq.Schema
+			cfg.ProviderType = filestatus.StatusQuerierType(stage.QueryConfig.Type)
 		}
 		cfg.Stages = append(cfg.Stages, filestatus.StageMV{
 			Name:  stage.Name,
