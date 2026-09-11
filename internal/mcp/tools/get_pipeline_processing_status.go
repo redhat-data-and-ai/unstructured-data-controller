@@ -25,9 +25,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
-	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
 type getPipelineProcessingStatusArgs struct {
@@ -38,7 +38,7 @@ type getPipelineProcessingStatusArgs struct {
 	Limit        int    `json:"limit,omitempty" jsonschema:"Max number of files to return. Defaults to 300 if not specified."`
 }
 
-func RegisterGetPipelineProcessingStatus(s *mcp.Server, k8sClient *k8sclient.Client) {
+func RegisterGetPipelineProcessingStatus(s *mcp.Server, k8sClient *k8sclient.Client, querier filestatus.StatusQuerier) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_pipeline_processing_status",
 		Description: `Get file processing status across all pipeline stages (crawl, convert, chunk, embed) for a given pipeline.
@@ -70,8 +70,7 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
-		oauthToken, ok := auth.AccessTokenFromContext(ctx)
-		if !ok {
+		if _, ok := auth.AccessTokenFromContext(ctx); !ok {
 			log.Error("oauth token not found in context")
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: errOAuthTokenNotFound}},
@@ -101,22 +100,20 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 
 		limit := args.Limit
 		if limit <= 0 {
-			limit = snowflake.MCPMaxResults
+			limit = filestatus.MCPMaxResults
 		}
 
 		log.Info("querying file processing status",
 			"database", database, "schema", schema,
 			"file_id", args.FileID, "file_name", args.FileName, "status", args.Status, "limit", limit)
 
-		result, err := snowflake.GetFileProcessingStatus(ctx, oauthToken,
-			database, schema,
-			snowflake.StageMVs{
-				Crawl:   qc.CrawlMV,
-				Convert: qc.ConvertMV,
-				Chunks:  qc.ChunksMV,
-				Embed:   qc.EmbedMV,
+		result, err := querier.GetFileProcessingStatus(ctx,
+			filestatus.QueryConfig{
+				Database: database,
+				Schema:   schema,
+				Stages:   qc.Stages,
 			},
-			snowflake.FileStatusParams{
+			filestatus.FileStatusParams{
 				FileID:   args.FileID,
 				FileName: args.FileName,
 				Status:   args.Status,

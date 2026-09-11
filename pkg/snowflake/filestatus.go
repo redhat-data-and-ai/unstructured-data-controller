@@ -18,182 +18,178 @@ package snowflake
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 )
 
-const (
-	defaultPageSize = 100
-	MCPMaxResults   = 300
-)
+type SnowflakeQuerier struct{}
 
-type StageMVs struct {
-	Crawl, Convert, Chunks, Embed string
-}
+func (*SnowflakeQuerier) GetFileProcessingStatus(
+	ctx context.Context, qc filestatus.QueryConfig, params filestatus.FileStatusParams,
+) (*filestatus.FileStatusResult, error) {
+	oauthToken, ok := auth.AccessTokenFromContext(ctx)
+	if !ok {
+		return nil, errors.New("oauth token not found in context")
+	}
 
-type fileStatusRow struct {
-	FileID       string `db:"file_id"`
-	FilePath     string `db:"file_path"`
-	FileName     string `db:"file_name"`
-	FileURL      string `db:"file_url"`
-	SourceType   string `db:"source_type"`
-	CrawlError   string `db:"crawl_error"`
-	ConvertError string `db:"convert_error"`
-	ChunkError   string `db:"chunk_error"`
-	EmbedError   string `db:"embed_error"`
-	TotalCount   string `db:"total_count"`
-	FailedCount  string `db:"failed_count"`
-}
-
-type StageStatus struct {
-	Name  string `json:"name"`
-	Error string `json:"error"`
-}
-
-type FileStatus struct {
-	FileID   string        `json:"file_id"`
-	FilePath string        `json:"file_path"`
-	FileName string        `json:"file_name"`
-	FileURL  string        `json:"file_url"`
-	Stages   []StageStatus `json:"stages"`
-}
-
-type FileStatusResult struct {
-	PipelineName string       `json:"pipeline_name"`
-	TotalFiles   int          `json:"total_files"`
-	FailedFiles  int          `json:"failed_files"`
-	SourceType   string       `json:"source_type"`
-	Files        []FileStatus `json:"files"`
-}
-
-type FileStatusParams struct {
-	FileID   string
-	FileName string
-	Status   string
-	Page     int
-	PageSize int
-}
-
-type FileListResult struct {
-	FileID   string `json:"file_id" db:"file_id"`
-	FilePath string `json:"file_path" db:"file_path"`
-	FileName string `json:"file_name" db:"file_name"`
-	FileURL  string `json:"file_url" db:"file_url"`
-}
-
-func GetFileProcessingStatus(
-	ctx context.Context,
-	oauthToken, database, schema string,
-	mvs StageMVs,
-	params FileStatusParams,
-) (*FileStatusResult, error) {
 	if params.PageSize <= 0 {
-		params.PageSize = defaultPageSize
+		params.PageSize = filestatus.DefaultPageSize
 	}
 	if params.Page <= 0 {
 		params.Page = 1
 	}
 	offset := (params.Page - 1) * params.PageSize
 
-	fq := func(name string) string {
-		return fmt.Sprintf("%s.%s.%s", database, schema, name)
+	stages := qc.Stages
+	if len(stages) == 0 {
+		return nil, errors.New("no stages configured")
 	}
 
-	failedCond := "CRAWL_ERROR IS NOT NULL OR CONVERT_ERROR IS NOT NULL " +
-		"OR CHUNK_ERROR IS NOT NULL OR EMBED_ERROR IS NOT NULL"
+	query, args := buildFileStatusQuery(qc, params, offset)
 
-	joinClause := fmt.Sprintf(
-		"%s c\n"+
-			"FULL OUTER JOIN %s cv ON c.FILE_ID = cv.FILE_ID\n"+
-			"FULL OUTER JOIN (SELECT DISTINCT FILE_ID, ERROR FROM %s) ch "+
-			"ON COALESCE(c.FILE_ID, cv.FILE_ID) = ch.FILE_ID\n"+
-			"FULL OUTER JOIN (SELECT DISTINCT FILE_ID, ERROR FROM %s) e "+
-			"ON COALESCE(c.FILE_ID, cv.FILE_ID, ch.FILE_ID) = e.FILE_ID",
-		fq(mvs.Crawl), fq(mvs.Convert), fq(mvs.Chunks), fq(mvs.Embed))
+	scanner := func(rows *sql.Rows) (*filestatus.FileStatusResult, error) {
+		return scanFileStatusRows(rows, stages)
+	}
+	return queryWithFunc(ctx, oauthToken, query, scanner, args...)
+}
 
-	query := fmt.Sprintf(
-		"SELECT COALESCE(c.FILE_ID, cv.FILE_ID, ch.FILE_ID, e.FILE_ID) AS FILE_ID,\n"+
-			"  c.FILE_PATH, c.FILE_NAME, c.FILE_URL, c.SOURCE_TYPE,\n"+
-			"  c.ERROR AS CRAWL_ERROR, cv.ERROR AS CONVERT_ERROR,\n"+
-			"  ch.ERROR AS CHUNK_ERROR, e.ERROR AS EMBED_ERROR,\n"+
-			"  COUNT(*) OVER() AS TOTAL_COUNT,\n"+
-			"  SUM(CASE WHEN %s THEN 1 ELSE 0 END) OVER() AS FAILED_COUNT\n"+
-			"FROM %s", failedCond, joinClause)
+func buildFileStatusQuery(qc filestatus.QueryConfig, params filestatus.FileStatusParams, offset int) (string, []any) {
+	stages := qc.Stages
+	fq := func(name string) string {
+		return fmt.Sprintf("%s.%s.%s", qc.Database, qc.Schema, name)
+	}
 
+	// SELECT: common fields from s0, error from each stage
+	numStages := len(stages)
+	selectCols := make([]string, 0, 5+numStages+2)
+	selectCols = append(selectCols,
+		"s0.FILE_ID", "s0.FILE_PATH", "s0.FILE_NAME", "s0.FILE_URL", "s0.SOURCE_TYPE",
+	)
+	errorExprs := make([]string, 0, numStages)
+	for i := range stages {
+		selectCols = append(selectCols, fmt.Sprintf("s%d.ERROR AS ERROR_%d", i, i))
+		errorExprs = append(errorExprs, fmt.Sprintf("ERROR_%d IS NOT NULL", i))
+	}
+	failedCond := strings.Join(errorExprs, " OR ")
+	selectCols = append(selectCols,
+		"COUNT(*) OVER() AS TOTAL_COUNT",
+		fmt.Sprintf("SUM(CASE WHEN %s THEN 1 ELSE 0 END) OVER() AS FAILED_COUNT", failedCond),
+	)
+
+	// FROM: s0 with all common fields, subsequent stages LEFT JOIN on FILE_ID for error only.
+	// DISTINCT handles multi-row MVs (chunks, embeds).
+	from := fmt.Sprintf(
+		"(SELECT DISTINCT FILE_ID, FILE_PATH, FILE_NAME, FILE_URL, SOURCE_TYPE, ERROR FROM %s) s0",
+		fq(stages[0].Table))
+	for i := 1; i < len(stages); i++ {
+		from += fmt.Sprintf(
+			"\nLEFT JOIN (SELECT DISTINCT FILE_ID, ERROR FROM %s) s%d ON s0.FILE_ID = s%d.FILE_ID",
+			fq(stages[i].Table), i, i)
+	}
+
+	query := fmt.Sprintf("SELECT %s\nFROM %s", strings.Join(selectCols, ", "), from)
+
+	// WHERE
 	var conditions []string
 	var args []any
-
 	if params.FileID != "" {
-		conditions = append(conditions,
-			"COALESCE(c.FILE_ID, cv.FILE_ID, ch.FILE_ID, e.FILE_ID) = ?")
+		conditions = append(conditions, "s0.FILE_ID = ?")
 		args = append(args, params.FileID)
 	}
 	if params.FileName != "" {
-		conditions = append(conditions, "c.FILE_NAME LIKE ?")
+		conditions = append(conditions, "s0.FILE_NAME LIKE ?")
 		args = append(args, "%"+params.FileName+"%")
 	}
 	if params.Status == "failed" {
 		conditions = append(conditions, "("+failedCond+")")
 	}
-
 	if len(conditions) > 0 {
 		query += fmt.Sprintf("\nWHERE %s", strings.Join(conditions, " AND "))
 	}
 
-	query += fmt.Sprintf(
-		"\nORDER BY FILE_ID\nLIMIT %d OFFSET %d", params.PageSize, offset)
+	query += fmt.Sprintf("\nORDER BY s0.FILE_ID\nLIMIT %d OFFSET %d", params.PageSize, offset)
+	return query, args
+}
 
-	rows, err := queryRows[fileStatusRow](ctx, oauthToken, query, args...)
-	if err != nil {
-		return nil, err
+// scanFileStatusRows scans dynamically-columned rows into FileStatusResult.
+// Column order: FILE_ID, FILE_PATH, FILE_NAME, FILE_URL, SOURCE_TYPE,
+// ERROR_0..ERROR_{N-1}, TOTAL_COUNT, FAILED_COUNT
+func scanFileStatusRows(rows *sql.Rows, stages []filestatus.StageMV) (*filestatus.FileStatusResult, error) {
+	numStages := len(stages)
+	numCols := 5 + numStages + 2
+
+	result := &filestatus.FileStatusResult{
+		Files: make([]filestatus.FileStatus, 0),
 	}
 
-	result := &FileStatusResult{
-		Files: make([]FileStatus, 0, len(rows)),
-	}
-
-	for _, row := range rows {
-		if result.SourceType == "" && row.SourceType != "" {
-			result.SourceType = row.SourceType
+	for rows.Next() {
+		values := make([]sql.NullString, numCols)
+		ptrs := make([]any, numCols)
+		for i := range ptrs {
+			ptrs[i] = &values[i]
 		}
-		if result.TotalFiles == 0 && row.TotalCount != "" {
-			if count, err := strconv.Atoi(row.TotalCount); err == nil {
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		if result.SourceType == "" {
+			result.SourceType = values[4].String
+		}
+		if result.TotalFiles == 0 {
+			if count, err := strconv.Atoi(values[5+numStages].String); err == nil {
 				result.TotalFiles = count
 			}
 		}
-		if result.FailedFiles == 0 && row.FailedCount != "" {
-			if count, err := strconv.Atoi(row.FailedCount); err == nil {
+		if result.FailedFiles == 0 {
+			if count, err := strconv.Atoi(values[5+numStages+1].String); err == nil {
 				result.FailedFiles = count
 			}
 		}
 
-		result.Files = append(result.Files, FileStatus{
-			FileID:   row.FileID,
-			FilePath: row.FilePath,
-			FileName: row.FileName,
-			FileURL:  row.FileURL,
-			Stages: []StageStatus{
-				{Name: "crawl", Error: row.CrawlError},
-				{Name: "convert", Error: row.ConvertError},
-				{Name: "chunk", Error: row.ChunkError},
-				{Name: "embed", Error: row.EmbedError},
-			},
+		stageStatuses := make([]filestatus.StageStatus, numStages)
+		for i, stage := range stages {
+			stageStatuses[i] = filestatus.StageStatus{
+				Name:  stage.Name,
+				Error: values[5+i].String,
+			}
+		}
+
+		result.Files = append(result.Files, filestatus.FileStatus{
+			FileID:   values[0].String,
+			FilePath: values[1].String,
+			FileName: values[2].String,
+			FileURL:  values[3].String,
+			Stages:   stageStatuses,
 		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
 
 	return result, nil
 }
 
-func ListPipelineFiles(
-	ctx context.Context, oauthToken, database, schema, table string, limit int,
-) ([]FileListResult, error) {
+func (*SnowflakeQuerier) ListPipelineFiles(
+	ctx context.Context, database, schema, table string, limit int,
+) ([]filestatus.FileListResult, error) {
+	oauthToken, ok := auth.AccessTokenFromContext(ctx)
+	if !ok {
+		return nil, errors.New("oauth token not found in context")
+	}
+
 	if limit <= 0 {
-		limit = MCPMaxResults
+		limit = filestatus.MCPMaxResults
 	}
 	query := fmt.Sprintf(
 		`SELECT FILE_ID, FILE_PATH, FILE_NAME, FILE_URL FROM %s.%s.%s ORDER BY FILE_ID LIMIT %d`,
 		database, schema, table, limit,
 	)
-	return queryRows[FileListResult](ctx, oauthToken, query)
+	return queryRows[filestatus.FileListResult](ctx, oauthToken, query)
 }

@@ -24,6 +24,7 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -50,15 +51,6 @@ type QueryConfig struct {
 	Database string
 	Schema   string
 	Table    string
-}
-
-type FileStatusQueryConfig struct {
-	Database  string
-	Schema    string
-	CrawlMV   string
-	ConvertMV string
-	ChunksMV  string
-	EmbedMV   string
 }
 
 func pipelineNamespace() string {
@@ -310,7 +302,7 @@ func s3Destination(pipeline *operatorv1alpha1.UnstructuredDataPipeline) *operato
 
 func (c *Client) GetFileStatusQueryConfig(
 	ctx context.Context, name string,
-) (*FileStatusQueryConfig, error) {
+) (*filestatus.QueryConfig, error) {
 	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
 	err := c.client.Get(ctx, client.ObjectKey{
 		Namespace: pipelineNamespace(),
@@ -320,7 +312,7 @@ func (c *Client) GetFileStatusQueryConfig(
 		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
 	}
 
-	cfg := &FileStatusQueryConfig{}
+	cfg := &filestatus.QueryConfig{}
 	for _, stage := range pipeline.Spec.Stages {
 		if stage.QueryConfig == nil || stage.QueryConfig.Snowflake == nil {
 			continue
@@ -330,25 +322,14 @@ func (c *Client) GetFileStatusQueryConfig(
 			cfg.Database = sq.Database
 			cfg.Schema = sq.Schema
 		}
-		switch stage.Type {
-		case operatorv1alpha1.StageTypeSourceCrawler:
-			cfg.CrawlMV = sq.Table
-		case operatorv1alpha1.StageTypeDocumentProcessor:
-			cfg.ConvertMV = sq.Table
-		case operatorv1alpha1.StageTypeChunksGenerator:
-			cfg.ChunksMV = sq.Table
-		case operatorv1alpha1.StageTypeVectorEmbeddingsGenerator:
-			cfg.EmbedMV = sq.Table
-		default:
-		}
+		cfg.Stages = append(cfg.Stages, filestatus.StageMV{
+			Name:  stage.Name,
+			Table: sq.Table,
+		})
 	}
 
-	if cfg.Database == "" {
+	if len(cfg.Stages) == 0 {
 		return nil, fmt.Errorf("pipeline %q has no Snowflake query config on any stage", name)
-	}
-	if cfg.CrawlMV == "" || cfg.ConvertMV == "" || cfg.ChunksMV == "" || cfg.EmbedMV == "" {
-		return nil, fmt.Errorf(
-			"pipeline %q is missing Snowflake query config for one or more stages", name)
 	}
 	return cfg, nil
 }
