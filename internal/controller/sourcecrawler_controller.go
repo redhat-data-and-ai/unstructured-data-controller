@@ -119,6 +119,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		source = &unstructured.S3BucketSource{
 			S3Client:  sourceS3Client,
 			Bucket:    sourceCrawlerConfig.S3Config.Bucket,
+			Region:    sourceAWSConfig.Region,
 			Prefix:    sourceCrawlerConfig.S3Config.Prefix,
 			OutputDir: outputDir,
 		}
