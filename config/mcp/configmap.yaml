@@ -15,3 +15,7 @@ data:
   MCP_SERVER_PORT: "8080"
   # TODO: Replace with your Snowflake account identifier (e.g., xy12345.us-east-1)
   SNOWFLAKE_ACCOUNT: "<YOUR_SNOWFLAKE_ACCOUNT>"
+  # TODO: Replace with your embedding service endpoint URL
+  EMBEDDING_ENDPOINT: "<YOUR_EMBEDDING_ENDPOINT>"
+  # TODO: Replace with your embedding model name
+  EMBEDDING_MODEL_NAME: "<YOUR_EMBEDDING_MODEL_NAME>"
