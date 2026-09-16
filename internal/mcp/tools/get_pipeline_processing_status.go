@@ -1,0 +1,155 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+)
+
+type getPipelineProcessingStatusArgs struct {
+	PipelineName string `json:"pipeline_name" jsonschema:"Name of the UnstructuredDataPipeline. If not known, call list_unstructured_data_pipelines_for_user first."`
+	FileID       string `json:"file_id,omitempty" jsonschema:"Optional file ID to look up. Mutually exclusive with file_name."`
+	FileName     string `json:"file_name,omitempty" jsonschema:"Optional file name for fuzzy search (LIKE). Mutually exclusive with file_id."`
+	Status       string `json:"status,omitempty" jsonschema:"Optional filter. Set to 'failed' to show only files with at least one stage error."`
+	Limit        int    `json:"limit,omitempty" jsonschema:"Max number of files to return. Defaults to 300 if not specified."`
+}
+
+func RegisterGetPipelineProcessingStatus(s *mcp.Server, k8sClient *k8sclient.Client, newQuerier func(filestatus.StatusQuerierType) (filestatus.StatusQuerier, error)) {
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_pipeline_processing_status",
+		Description: `Get file processing status across all configured pipeline stages for a given pipeline. Returns the error (if any) at each stage for each file, along with total and failed file counts.`,
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getPipelineProcessingStatusArgs) (*mcp.CallToolResult, any, error) {
+		username := ""
+		if tokenInfo, ok := auth.TokenInfoFromContext(ctx); ok {
+			username = tokenInfo.Username
+		}
+		ctx = logger.NewContext(ctx, uuid.NewString(), "get_pipeline_processing_status", username)
+		log := logger.FromContext(ctx)
+
+		log.Info("tool invoked", "pipeline_name", args.PipelineName)
+
+		if args.PipelineName == "" {
+			log.Error("missing required parameter pipeline_name")
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "Error: pipeline_name is required. Call list_unstructured_data_pipelines_for_user first to get the pipeline name."}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		if args.FileID != "" && args.FileName != "" {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "Error: file_id and file_name are mutually exclusive. Provide only one."}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		if _, ok := auth.AccessTokenFromContext(ctx); !ok {
+			log.Error("oauth token not found in context")
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: errOAuthTokenNotFound}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		if k8sClient == nil {
+			log.Error("kubernetes client is nil")
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "Error: kubernetes client is not initialized"}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		qc, err := k8sClient.GetFileStatusQueryConfig(ctx, args.PipelineName)
+		if err != nil {
+			log.Error("failed to get pipeline query config", "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error resolving pipeline %q: %v", args.PipelineName, err)}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		database := strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_"))
+		schema := strings.ToUpper(qc.Schema)
+
+		limit := args.Limit
+		if limit <= 0 {
+			limit = filestatus.MCPMaxResults
+		}
+
+		log.Info("querying file processing status",
+			"database", database, "schema", schema,
+			"file_id", args.FileID, "file_name", args.FileName, "status", args.Status, "limit", limit)
+
+		querier, err := newQuerier(qc.ProviderType)
+		if err != nil {
+			log.Error("unsupported status provider", "provider", qc.ProviderType, "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: %v", err)}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		result, err := querier.GetFileProcessingStatus(ctx,
+			filestatus.QueryConfig{
+				Database: database,
+				Schema:   schema,
+				Stages:   qc.Stages,
+			},
+			filestatus.FileStatusParams{
+				FileID:   args.FileID,
+				FileName: args.FileName,
+				Status:   args.Status,
+				PageSize: limit,
+			},
+		)
+		if err != nil {
+			log.Error("failed to query file processing status", "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error querying file status: %v", err)}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		result.PipelineName = args.PipelineName
+
+		jsonBytes, err := json.Marshal(result)
+		if err != nil {
+			log.Error("failed to marshal result", "error", err)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error marshaling result: %v", err)}},
+				IsError: true,
+			}, nil, nil
+		}
+
+		log.Info("completed successfully", "pipeline", args.PipelineName, "total_files", result.TotalFiles)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{
+				Text: string(jsonBytes),
+			}},
+		}, nil, nil
+	})
+}
