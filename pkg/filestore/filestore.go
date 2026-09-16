@@ -51,6 +51,9 @@ type FileStore struct {
 // rootPath: /var/lib/unstructured/
 // s3Bucket: unstructured-data-bucket
 func New(_ context.Context, rootPath string, s3Bucket string) (*FileStore, error) {
+	if rootPath == "" {
+		rootPath = "/tmp/cache"
+	}
 	if err := os.MkdirAll(rootPath, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create cache directory %s: %w", rootPath, err)
 	}
