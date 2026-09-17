@@ -26,3 +26,7 @@ go.work
 *~
 .claude
 tmp/
+
+# Load test generated reports
+scripts/load/reports/*
+!scripts/load/reports/.gitkeep
