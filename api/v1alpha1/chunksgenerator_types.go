@@ -195,6 +195,9 @@ func (c *ChunksGeneratorConfig) SetDefaults() {
 	}
 }
 
+func (c *ChunksGenerator) GetLastAppliedGeneration() int64         { return c.Status.LastAppliedGeneration }
+func (c *ChunksGenerator) GetStatusConditions() []metav1.Condition { return c.Status.Conditions }
+
 func init() {
 	SchemeBuilder.Register(&ChunksGenerator{}, &ChunksGeneratorList{})
 }

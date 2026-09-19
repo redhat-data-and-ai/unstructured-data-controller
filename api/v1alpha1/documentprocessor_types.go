@@ -374,6 +374,9 @@ func (c *DoclingConfig) SetDefaults() {
 	}
 }
 
+func (d *DocumentProcessor) GetLastAppliedGeneration() int64         { return d.Status.LastAppliedGeneration }
+func (d *DocumentProcessor) GetStatusConditions() []metav1.Condition { return d.Status.Conditions }
+
 func init() {
 	SchemeBuilder.Register(&DocumentProcessor{}, &DocumentProcessorList{})
 }

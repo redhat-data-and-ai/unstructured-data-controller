@@ -83,6 +83,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to get DocumentProcessor CR")
 		return ctrl.Result{}, err
 	}
+
 	documentProcessorCR = documentProcessorCR.DeepCopy()
 	documentProcessorCR.Spec.DocumentProcessorConfig.SetDefaults()
 
@@ -545,7 +546,10 @@ func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj cl
 // Watches on other stage types trigger reconcile when an upstream dependency's status changes.
 func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(
+			predicate.GenerationChangedPredicate{},
+			controllerutils.ReconcileNeededPredicate{ConditionType: operatorv1alpha1.DocumentProcessorCondition},
+		)).
 		Watches(&operatorv1alpha1.SourceCrawler{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.ChunksGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.VectorEmbeddingsGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).

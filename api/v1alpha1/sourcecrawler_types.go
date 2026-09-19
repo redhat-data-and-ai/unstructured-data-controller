@@ -143,6 +143,9 @@ func (c *SourceCrawler) UpdateStatus(message string, err error) {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
+func (c *SourceCrawler) GetLastAppliedGeneration() int64         { return c.Status.LastAppliedGeneration }
+func (c *SourceCrawler) GetStatusConditions() []metav1.Condition { return c.Status.Conditions }
+
 func init() {
 	SchemeBuilder.Register(&SourceCrawler{}, &SourceCrawlerList{})
 }

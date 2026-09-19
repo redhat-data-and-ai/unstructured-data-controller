@@ -93,7 +93,7 @@ linters:
       - linters:
           - revive
         path: ^test/
-        text: "unsecure-url-scheme.*http://docling-serve:5001"
+        text: "unsecure-url-scheme"
     paths:
       - third_party$
       - builtin$

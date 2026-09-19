@@ -204,7 +204,10 @@ func (r *DestinationSyncerReconciler) findSecretDependents(ctx context.Context, 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DestinationSyncerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.DestinationSyncer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&operatorv1alpha1.DestinationSyncer{}, builder.WithPredicates(
+			predicate.GenerationChangedPredicate{},
+			controllerutils.ReconcileNeededPredicate{ConditionType: operatorv1alpha1.DestinationSyncerCondition},
+		)).
 		Watches(&operatorv1alpha1.SourceCrawler{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.ChunksGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).

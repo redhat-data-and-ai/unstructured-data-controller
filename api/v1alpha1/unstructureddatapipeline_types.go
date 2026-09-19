@@ -314,6 +314,13 @@ func (u *UnstructuredDataPipeline) UpdateStatus(message string, err error) {
 	u.Status.Conditions = append(u.Status.Conditions, condition)
 }
 
+func (u *UnstructuredDataPipeline) GetLastAppliedGeneration() int64 {
+	return u.Status.LastAppliedGeneration
+}
+func (u *UnstructuredDataPipeline) GetStatusConditions() []metav1.Condition {
+	return u.Status.Conditions
+}
+
 func init() {
 	SchemeBuilder.Register(&UnstructuredDataPipeline{}, &UnstructuredDataPipelineList{})
 }

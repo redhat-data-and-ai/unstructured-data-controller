@@ -126,6 +126,9 @@ func (d *DestinationSyncer) UpdateStatus(message string, err error) {
 	d.Status.Conditions = append(d.Status.Conditions, condition)
 }
 
+func (d *DestinationSyncer) GetLastAppliedGeneration() int64         { return d.Status.LastAppliedGeneration }
+func (d *DestinationSyncer) GetStatusConditions() []metav1.Condition { return d.Status.Conditions }
+
 func init() {
 	SchemeBuilder.Register(&DestinationSyncer{}, &DestinationSyncerList{})
 }

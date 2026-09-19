@@ -79,6 +79,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		logger.Error(err, "failed to get VectorEmbeddingsGenerator CR")
 		return ctrl.Result{}, err
 	}
+
 	vectorEmbeddingsGeneratorCR = vectorEmbeddingsGeneratorCR.DeepCopy()
 	vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.SetDefaults()
 
@@ -397,7 +398,10 @@ func (r *VectorEmbeddingsGeneratorReconciler) findDependents(ctx context.Context
 // SetupWithManager sets up the controller with the Manager.
 func (r *VectorEmbeddingsGeneratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.VectorEmbeddingsGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&operatorv1alpha1.VectorEmbeddingsGenerator{}, builder.WithPredicates(
+			predicate.GenerationChangedPredicate{},
+			controllerutils.ReconcileNeededPredicate{ConditionType: operatorv1alpha1.VectorEmbeddingGenerationConditionType},
+		)).
 		Watches(&operatorv1alpha1.SourceCrawler{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.ChunksGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
