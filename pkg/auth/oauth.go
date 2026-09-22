@@ -244,6 +244,9 @@ func claimsFromJWT(token string) *IntrospectionResponse {
 	}
 	if exp, ok := claims["exp"].(float64); ok {
 		resp.Exp = int64(exp)
+		if time.Now().Unix() >= int64(exp)-30 {
+			resp.Active = false
+		}
 	}
 	return resp
 }

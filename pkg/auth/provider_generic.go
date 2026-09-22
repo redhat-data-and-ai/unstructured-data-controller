@@ -84,7 +84,7 @@ func (p *GenericProvider) BuildAuthURL(callbackURL, state string) (string, error
 	q.Set("client_id", p.clientID)
 	q.Set("redirect_uri", callbackURL)
 	q.Set("state", state)
-	q.Set("scope", "openid")
+	q.Set("scope", "openid offline_access")
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }

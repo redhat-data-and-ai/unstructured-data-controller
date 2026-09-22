@@ -26,9 +26,15 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
-const pkceMethodS256 = "S256"
+const (
+	pkceMethodS256 = "S256"
+	testUsername   = "testuser"
+)
 
 // mockProvider implements Provider for testing middleware behavior in isolation.
 type mockProvider struct {
@@ -196,7 +202,7 @@ func TestMiddleware_Authenticate(t *testing.T) {
 
 	t.Run("active token passes through with context", func(t *testing.T) {
 		p := &mockProvider{introspectFunc: func(_ context.Context, _ string) (*IntrospectionResponse, error) {
-			return &IntrospectionResponse{Active: true, Sub: "user-123", Username: "testuser"}, nil
+			return &IntrospectionResponse{Active: true, Sub: "user-123", Username: testUsername}, nil
 		}}
 		m := NewMiddleware(p, logger, false)
 
@@ -224,8 +230,8 @@ func TestMiddleware_Authenticate(t *testing.T) {
 		if capturedInfo.Sub != "user-123" {
 			t.Errorf("Sub = %q, want %q", capturedInfo.Sub, "user-123")
 		}
-		if capturedInfo.Username != "testuser" {
-			t.Errorf("Username = %q, want %q", capturedInfo.Username, "testuser")
+		if capturedInfo.Username != testUsername {
+			t.Errorf("Username = %q, want %q", capturedInfo.Username, testUsername)
 		}
 	})
 
@@ -351,6 +357,44 @@ func TestValidatePKCE(t *testing.T) {
 	}
 	if ValidatePKCE("", "challenge", pkceMethodS256) {
 		t.Error("ValidatePKCE should reject empty verifier")
+	}
+}
+
+func TestClaimsFromJWT_ExpiredToken(t *testing.T) {
+	expiredClaims := jwt.MapClaims{
+		"sub":                testUsername,
+		"preferred_username": testUsername,
+		"exp":                float64(time.Now().Add(-10 * time.Minute).Unix()),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, expiredClaims)
+	tokenString, _ := token.SignedString([]byte("test-secret"))
+
+	resp := claimsFromJWT(tokenString)
+
+	if resp.Active {
+		t.Fatal("expired token should have Active=false")
+	}
+	if resp.Username != testUsername {
+		t.Errorf("Username = %q, want %q", resp.Username, testUsername)
+	}
+}
+
+func TestClaimsFromJWT_ValidToken(t *testing.T) {
+	validClaims := jwt.MapClaims{
+		"sub":                testUsername,
+		"preferred_username": testUsername,
+		"exp":                float64(time.Now().Add(30 * time.Minute).Unix()),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, validClaims)
+	tokenString, _ := token.SignedString([]byte("test-secret"))
+
+	resp := claimsFromJWT(tokenString)
+
+	if !resp.Active {
+		t.Fatal("valid token should have Active=true")
+	}
+	if resp.Username != testUsername {
+		t.Errorf("Username = %q, want %q", resp.Username, testUsername)
 	}
 }
 

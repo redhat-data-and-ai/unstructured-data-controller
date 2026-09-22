@@ -26,8 +26,9 @@ func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 			DoclingServeURL:             "http://docling-serve:5001",
 			DataStorageBucket:           "data-storage-bucket",
 			DataStorageBucketRegion:     "us-east-1",
-			DataStorageBucketEndpoint:   "http://localstack:4566",                      //nolint:revive // localstack uses HTTP
-			NomicEndpoint:               "http://ollama-embedding:11434/v1/embeddings", //nolint:revive // e2e uses HTTP
+			//nolint:revive,nolintlint // local e2e services use HTTP
+			DataStorageBucketEndpoint:   "http://localstack:4566",
+			NomicEndpoint:               "http://ollama-embedding:11434/v1/embeddings",
 			DataStorageDirectory:        "/data/storage",
 			MaxConcurrentDoclingTasks:   3,
 			MaxConcurrentLangchainTasks: 3,
