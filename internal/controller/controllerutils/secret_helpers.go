@@ -59,6 +59,21 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 	}, nil
 }
 
+// SQSQueueURLFromSecret reads the per-dataproduct SQS queue URL from the same
+// secret used for AWS credentials, keyed by <prefix>SQS_QUEUE_URL (e.g.
+// SOURCE_S3_SQS_QUEUE_URL). Returns an empty string if the secret or key is
+// absent, so callers can fall back to the default polling interval.
+func SQSQueueURLFromSecret(ctx context.Context, c client.Client, secretName, namespace, prefix string) (string, error) {
+	if secretName == "" {
+		return "", nil
+	}
+	secret := &corev1.Secret{}
+	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+		return "", fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
+	}
+	return string(secret.Data[prefix+"SQS_QUEUE_URL"]), nil
+}
+
 // GDriveCredentialsFromSecret reads the Google service account JSON
 // from a K8s Secret. The secret must contain a key named
 // "SOURCE_GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON".

@@ -168,6 +168,16 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// determine requeue strategy
 	if sourceCrawlerConfig.Type == operatorv1alpha1.TypeS3 {
 		sqsQueueURL := sourceCrawlerConfig.S3Config.SQSQueueURL
+		if sqsQueueURL == "" {
+			// Pipeline authors don't have to hardcode the queue URL in the CR —
+			// data-platform-operator provisions it and stores it in the same
+			// per-dataproduct secret used for S3 credentials.
+			secretQueueURL, err := controllerutils.SQSQueueURLFromSecret(ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace, "SOURCE_S3_")
+			if err != nil {
+				return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to get SQS queue URL from secret: %w", err))
+			}
+			sqsQueueURL = secretQueueURL
+		}
 		if sqsQueueURL != "" {
 			sourceAWSConfig, err := controllerutils.AWSConfigFromSecret(ctx, r.Client, sourceCrawlerCR.Spec.SecretRef, sourceCrawlerCR.Namespace, "SOURCE_S3_")
 			if err != nil {
