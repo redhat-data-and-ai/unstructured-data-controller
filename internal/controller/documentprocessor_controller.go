@@ -215,30 +215,15 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (err error) {
+func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) error {
 	logger := log.FromContext(ctx)
-	// recover from panic semaphore panic
-	defer func() {
-		if panicErr := recover(); panicErr != nil {
-			logger.Info("recovered from panic in processJob, likely stale job from previous session", "panic", panicErr, "taskID", job.TaskID, "filePath", job.FilePath)
-			if panicMessage, ok := panicErr.(string); ok && strings.Contains(panicMessage, docling.SemaphorePanicError) {
-				logger.Info("semaphore panic detected, removing stale job", "taskID", job.TaskID)
-				if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
-					documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-				}); updateErr != nil {
-					logger.Error(updateErr, "failed to delete stale job after panic", "filePath", job.FilePath)
-					err = updateErr
-					return
-				}
 
-				logger.Info("successfully removed stale job after semaphore panic", "filePath", job.FilePath)
-				err = fmt.Errorf("reconcileJob() function exited with panic: %v", panicErr)
-				return
-			}
-			// we don't want to recover from other types of panic
-			panic(panicErr)
-		}
-	}()
+	if !doclingClient.IsAcquiredTask(job.TaskID) {
+		logger.Info("stale job detected, removing", "taskID", job.TaskID, "filePath", job.FilePath)
+		return controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
+		})
+	}
 
 	doclingTaskStatus, doclingResponse, err := doclingClient.GetConvertedFile(ctx, job.TaskID)
 	if err != nil {
@@ -248,10 +233,19 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 	switch doclingTaskStatus {
 	case docling.TaskStatusSuccess, docling.TaskStatusPartialSuccess:
 		logger.Info("docling task has been completed successfully, storing the converted file in the filestore", "taskID", job.TaskID, "filePath", job.FilePath)
-		// store the converted file in the filestore
+
+		rawMeta, err := r.getRawFileMetadata(ctx, job.FilePath)
+		if err != nil {
+			return err
+		}
+
 		convertedFileMetadata := unstructured.ConvertedFileMetadata{
 			RawFilePath:       job.FilePath,
 			FileIdentifier:    job.FileIdentifier,
+			FilePath:          rawMeta.FilePath,
+			FileName:          rawMeta.FileName,
+			FileURL:           rawMeta.FileURL,
+			SourceType:        rawMeta.SourceType,
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
@@ -289,6 +283,14 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		// if the attempts > max attempts, remove the job from the status
 		if job.Attempts >= maxDoclingConversionAttempts {
 			logger.Error(fmt.Errorf("failed to convert file, max attempts reached for file: %s", job.FilePath), "failed to convert file, max attempts reached")
+			rawMeta, metaErr := r.getRawFileMetadata(ctx, job.FilePath)
+			if metaErr != nil {
+				logger.Error(metaErr, "failed to read raw file metadata for failed conversion", "filePath", job.FilePath)
+				rawMeta = &unstructured.RawFileMetadata{UID: job.FileIdentifier}
+			}
+			r.writeFailedConversionResult(ctx, job.FilePath, rawMeta,
+				fmt.Sprintf("max conversion attempts (%d) reached", maxDoclingConversionAttempts),
+				documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath)
 			if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 				documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
 				documentProcessorCR.DeleteJobByFilePath(job.FilePath)
@@ -326,10 +328,10 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		return nil
 	}
 
-	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	// fetch the raw file metadata
+	rawMeta, err := r.getRawFileMetadata(ctx, rawFilePath)
 	if err != nil {
-		logger.Error(err, "Failed to get file UID")
+		logger.Error(err, "Failed to get raw file metadata")
 		return err
 	}
 
@@ -341,11 +343,13 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	}
 	response, err := doclingClient.ConvertFile(ctx, fileURL, *doclingCfg)
 	if err != nil {
-		logger.Error(err, "failed to convert file")
 		if strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
-			logger.Error(err, "failed to convert file, semaphore acquire error, will try again later")
-			return nil // no error, just skip the conversion this time
+			logger.Info("semaphore full, will try again later", "filePath", rawFilePath)
+			return nil
 		}
+		logger.Error(err, "failed to convert file")
+		r.writeFailedConversionResult(ctx, rawFilePath, rawMeta, err.Error(),
+			documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath)
 		return err
 	}
 
@@ -361,7 +365,7 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 		documentProcessorCR.AddOrUpdateJob(operatorv1alpha1.Job{
 			FilePath:          rawFilePath,
-			FileIdentifier:    fileUID,
+			FileIdentifier:    rawMeta.UID,
 			DocumentConverter: string(unstructured.DocumentConverterDocling),
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 			TaskID:            response.TaskID,
@@ -403,11 +407,18 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		return false, nil
 	}
 
-	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	// fetch the raw file metadata
+	rawMeta, err := r.getRawFileMetadata(ctx, rawFilePath)
 	if err != nil {
-		logger.Error(err, "Failed to get file UID")
+		logger.Error(err, "Failed to get raw file metadata")
 		return false, err
+	}
+	fileUID := rawMeta.UID
+
+	// let's check if the file exists in the permanently failing files list
+	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
+		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
+		return false, nil
 	}
 
 	// does the converted file exist in the output directory?
@@ -437,16 +448,15 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
 
+		if convertedFile.ConvertedDocument.Content == nil {
+			logger.Info("converted file exists but has no content (previous failure), re-converting", "filePath", rawFilePath)
+			return true, nil
+		}
+
 		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
 			logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
 			return false, nil
 		}
-	}
-
-	// let's check if the file exists in the permanently failing files list
-	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
-		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
-		return false, nil
 	}
 
 	// now let's check if the job exists in status for this file
@@ -498,22 +508,22 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	return true, nil
 }
 
-func (r *DocumentProcessorReconciler) getFileUID(ctx context.Context, rawFilePath string) (string, error) {
+func (r *DocumentProcessorReconciler) getRawFileMetadata(ctx context.Context, rawFilePath string) (*unstructured.RawFileMetadata, error) {
 	logger := log.FromContext(ctx)
 	metaDataFileRaw, err := r.fileStore.Retrieve(ctx, unstructured.MetadataPath(rawFilePath))
 	if err != nil {
 		logger.Error(err, "Failed to retrieve metadata file")
-		return "", err
+		return nil, err
 	}
 
-	metaDataFile := unstructured.RawFileMetadata{}
-	err = json.Unmarshal(metaDataFileRaw, &metaDataFile)
+	metaDataFile := &unstructured.RawFileMetadata{}
+	err = json.Unmarshal(metaDataFileRaw, metaDataFile)
 	if err != nil {
 		logger.Error(err, "Failed to unmarshal metadata file")
-		return "", err
+		return nil, err
 	}
 
-	return metaDataFile.UID, nil
+	return metaDataFile, nil
 }
 
 func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -552,6 +562,31 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&operatorv1alpha1.DestinationSyncer{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Named("documentprocessor").
 		Complete(r)
+}
+
+func (r *DocumentProcessorReconciler) writeFailedConversionResult(ctx context.Context, rawFilePath string, rawMeta *unstructured.RawFileMetadata, errMsg string, doclingConfig operatorv1alpha1.DoclingConfig, inputPath, outputPath string) {
+	logger := log.FromContext(ctx)
+	failedFile := unstructured.ConvertedFile{
+		ConvertedDocument: &unstructured.ConvertedDocument{
+			Metadata: &unstructured.ConvertedFileMetadata{
+				RawFilePath:       rawFilePath,
+				FileIdentifier:    rawMeta.UID,
+				FilePath:          rawMeta.FilePath,
+				FileName:          rawMeta.FileName,
+				FileURL:           rawMeta.FileURL,
+				SourceType:        rawMeta.SourceType,
+				DocumentConverter: unstructured.DocumentConverterDocling,
+				DoclingConfig:     doclingConfig,
+				Error:             errMsg,
+			},
+		},
+	}
+	if failedBytes, marshalErr := json.Marshal(failedFile); marshalErr == nil {
+		failedPath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+		if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+			logger.Error(storeErr, "failed to store failed conversion result", "filePath", rawFilePath)
+		}
+	}
 }
 
 func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, err error) (ctrl.Result, error) {
