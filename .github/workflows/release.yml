@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  MCP_IMAGE_NAME: ${{ github.repository }}-mcp-server
+
+jobs:
+  release:
+    name: Create Draft Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate tag format
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid tag format: ${TAG}. Expected vMAJOR.MINOR.PATCH (e.g., v0.12.0)"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine release type
+        id: info
+        run: |
+          TAG="${{ github.ref_name }}"
+          PATCH_NUM="${TAG##*.}"
+          MINOR_VERSION="${TAG%.*}"
+          if [[ "$PATCH_NUM" == "0" ]]; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+          echo "minor_version=${MINOR_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Run release script (minor)
+        if: steps.info.outputs.type == 'minor'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x hack/release.sh
+          hack/release.sh minor --version "${{ github.ref_name }}" --force
+
+      - name: Run release script (patch)
+        if: steps.info.outputs.type == 'patch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x hack/release.sh
+          hack/release.sh patch "${{ steps.info.outputs.minor_version }}" --version "${{ github.ref_name }}" --force
+
+      - name: Summary
+        run: |
+          TAG="${{ github.ref_name }}"
+          {
+            echo "## Draft Release ${TAG}"
+            echo ""
+            echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+            echo "- **Controller image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${TAG}\`"
+            echo "- **MCP server image**: \`${{ env.REGISTRY }}/${{ env.MCP_IMAGE_NAME }}:${TAG}\`"
+            if [[ "${{ steps.info.outputs.type }}" == "minor" ]]; then
+              echo "- **Release branch**: \`release-${{ steps.info.outputs.minor_version }}.x\`"
+            fi
+            echo ""
+            echo "> **Note:** This is a draft release. Review the release notes and publish when ready."
+          } >> "$GITHUB_STEP_SUMMARY"
