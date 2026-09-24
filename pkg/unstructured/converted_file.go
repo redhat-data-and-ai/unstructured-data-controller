@@ -47,6 +47,12 @@ type ConvertedFile struct {
 	ConvertedDocument *ConvertedDocument `json:"convertedDocument"`
 }
 
+type ConvertedRow struct {
+	FileID   string                 `json:"fileId"`
+	Markdown string                 `json:"markdown"`
+	Metadata *ConvertedFileMetadata `json:"metadata"`
+}
+
 func (c *ConvertedFileMetadata) Equal(other *ConvertedFileMetadata) bool {
 	if c.RawFilePath != other.RawFilePath {
 		return false
