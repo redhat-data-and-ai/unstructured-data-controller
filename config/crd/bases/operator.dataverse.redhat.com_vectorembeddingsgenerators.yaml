@@ -89,6 +89,19 @@ spec:
             description: VectorEmbeddingsGeneratorStatus defines the observed state
               of VectorEmbeddingsGenerator.
             properties:
+              appliedConfig:
+                properties:
+                  batchSize:
+                    minimum: 1
+                    type: integer
+                  modelName:
+                    type: string
+                  nomicEmbedTextV15Config:
+                    properties:
+                      encodingformat:
+                        type: string
+                    type: object
+                type: object
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
