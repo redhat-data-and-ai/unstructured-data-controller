@@ -1,0 +1,5 @@
+{
+  "queries": [
+    { "pipeline_name": "REPLACE_WITH_YOUR_PIPELINE_NAME", "text": "your search query here" }
+  ]
+}
