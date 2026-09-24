@@ -24,5 +24,10 @@ go.work
 *.swp
 *.swo
 *~
-.claude
+.claude/*
+!.claude/rules/
+!.claude/settings.json
+!.claude/agents/
+!.claude/skills/
+!.claude/CLAUDE.md
 tmp/

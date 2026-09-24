@@ -1,0 +1,172 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+
+tone_instructions: >
+  Be concise and direct. Focus on correctness, error handling, and Kubernetes operator patterns.
+  Security is paramount — flag any security concerns, input validation gaps, or credential exposure.
+  Challenge patterns that contradict best practices — do not accept code just because it matches existing patterns.
+  Flag scope creep — PRs should do one thing. Skip style and formatting — golangci-lint handles that.
+
+early_access: true
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  changed_files_summary: true
+
+  path_filters:
+    - "!vendor/**"
+    - "!**/*_generated*.go"
+    - "!**/zz_generated.deepcopy.go"
+    - "!go.sum"
+    - "!config/crd/bases/**"
+    - "!**/*.png"
+    - "!**/*.jpg"
+    - "!**/*.svg"
+
+  path_instructions:
+    - path: "api/v1alpha1/**/*.go"
+      instructions: |
+        Review for Kubernetes API type conventions:
+        - Spec struct, Status struct with Conditions []metav1.Condition and LastAppliedGeneration int64
+        - CR struct with kubebuilder markers: +kubebuilder:object:root=true, +kubebuilder:subresource:status
+        - +kubebuilder:printcolumn for Status and Message using the condition type
+        - JSON tags must use camelCase. Optional fields must be pointer types with +optional marker.
+        - UpdateStatus() and SetWaiting() methods on CR struct
+        - Condition type constant defined (e.g. MyResourceCondition = "MyResourceReady")
+        - init() with SchemeBuilder.Register
+        - Do NOT review zz_generated.deepcopy.go
+
+    - path: "internal/controller/**/*.go"
+      instructions: |
+        Review for controller-runtime and operator patterns.
+        Reference: kubernetes-sigs/cluster-api, cert-manager.
+        Challenge patterns that contradict best practices even if
+        they exist in this codebase. The existing handleError pattern
+        double-logs (logs + returns) — new code should not copy it.
+        - Reconciler struct embeds client.Client with Scheme *runtime.Scheme
+        - SetupWithManager uses GenerationChangedPredicate{} on the primary resource
+        - Status updates use controllerutils.StatusPatch — re-fetch object before mutating
+        - Errors must be wrapped with context: fmt.Errorf("creating X for %s: %w", name, err)
+        - Never ignore errors with _ =. Never return both error AND Requeue: true.
+        - Handle errors once: either log OR return, never both (double-logging creates confusing logs)
+        - RBAC markers use namespace=unstructured-controller-namespace
+        - Import alias operatorv1alpha1 for API types
+        - log.FromContext(ctx) for logging — never global loggers
+        - Structured key-value pairs in log calls, never fmt.Sprintf in messages
+        - Variable names must be descriptive — no single-letter vars
+          except i/j in loops, method receivers, ctx/err in tiny scopes
+        - Name K8s objects by kind: crawlerDeployment, processorPod — not dep or p
+        - Reconcilers must be idempotent and level-triggered (react to state, not events)
+
+    - path: "internal/mcp/**/*.go"
+      instructions: |
+        Review MCP server tool implementations for:
+        - Proper error handling — every error must be checked and wrapped with context
+        - Consistent tool registration patterns
+        - Input validation on all user-facing parameters
+        - Context propagation — use the ctx passed to the handler
+
+    - path: "pkg/**/*.go"
+      instructions: |
+        Review package code for idiomatic Go (reference: Effective Go, Google Go Style Guide):
+        - Clean interfaces — accept interfaces, return structs
+        - Every error must be checked and wrapped with fmt.Errorf("context: %w", err)
+        - No direct Kubernetes client dependencies except in pkg/k8sclient
+        - Proper context propagation — pass ctx through, never store in structs
+        - Descriptive variable names — no single-letter vars outside tiny scopes
+        - Acronyms all-caps: ID, HTTP, URL, API — never Id, Http
+
+    - path: "test/**/*.go"
+      instructions: |
+        Review test code for:
+        - E2E tests must use //go:build e2e tag and sigs.k8s.io/e2e-framework
+        - Unit tests should use envtest where Kubernetes interaction is needed
+        - Table-driven tests with descriptive test case names
+        - Tests must cover both passing and failing cases — not just the happy path
+        - Assertions should check specific error messages/types, not just err != nil
+        - Dot imports of ginkgo/v2 and gomega are allowed in this project
+
+    - path: "Dockerfile*"
+      instructions: |
+        Review Dockerfiles for:
+        - Multi-stage builds with minimal final image
+        - No secrets or credentials in build args or COPY
+        - Proper COPY ordering for layer caching (go.mod/go.sum before source)
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Review GitHub Actions workflows for:
+        - Pinned action versions (prefer SHA over mutable tags)
+        - Minimal permissions (contents: read where possible)
+        - No secrets exposed in logs or echo statements
+
+    - path: "**/*.go"
+      instructions: |
+        General Go review — apply to all Go files.
+        This code is reviewed by humans. Flag missing comments on
+        non-obvious decisions, branches, fallbacks, retries, timeouts,
+        and workarounds. Every choice should have a comment explaining
+        the intent so a future reader understands without asking.
+        - Every error return must be checked. No _ = foo() for error-returning functions.
+        - Always check if err != nil — never use if err == nil as the primary branch. Error path first.
+        - Wrap errors with context using %w: fmt.Errorf("doing X: %w", err)
+        - Handle errors once: either log OR return, never both.
+        - Use errors.Is/errors.As for error matching, never string comparison.
+        - Variable names must be descriptive. No single-letter vars
+          except loop indices and tiny-scope ctx/err.
+        - Acronyms all-caps: ID, HTTP, URL, API.
+        - Structured logging with key-value pairs, never fmt.Sprintf in log messages.
+        - No fmt.Println or global loggers.
+        - Flag any hardcoded secrets, API keys, tokens, internal URLs, or company-specific information.
+        - Changes must have accompanying tests. Bug fixes need regression tests.
+        - Do not comment on import ordering, line length, or formatting — golangci-lint handles that.
+
+  tools:
+    golangci-lint:
+      enabled: true
+      config_file: .golangci.yml
+    yamllint:
+      enabled: true
+      config_file: .yamllint
+    hadolint:
+      enabled: true
+    actionlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    checkmake:
+      enabled: true
+    shellcheck:
+      enabled: true
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - main
+      - "release-*"
+    ignore_title_keywords:
+      - wip
+      - draft
+      - do-not-merge
+      - "\\[skip review\\]"
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: auto
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "**/.claude/CLAUDE.md"
+      - "**/.claude/rules/*.md"
+      - "**/CONTRIBUTING.md"
