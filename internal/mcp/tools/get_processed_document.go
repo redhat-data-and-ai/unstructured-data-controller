@@ -43,6 +43,7 @@ func RegisterGetProcessedDocument(s *mcp.Server, k8sClient *k8sclient.Client) {
 		Name: "get_processed_document",
 		Description: `Retrieve the processed document output for a given file_id from a pipeline's DocumentProcessor stage Snowflake table.
 If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
+Always cite sources: include file_id in your answer so the user can visit the source file. For Google Drive sources, provide the URL as https://drive.google.com/file/d/<file_id>/view.
 On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getProcessedDocumentArgs) (*mcp.CallToolResult, any, error) {
 		username := ""

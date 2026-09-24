@@ -45,6 +45,8 @@ func RegisterGetChunksForEmbeddings(s *mcp.Server, k8sClient *k8sclient.Client, 
 		Description: `Search for relevant text chunks in a pipeline's data product using vector cosine similarity. Returns top matching chunks for the given query.
 If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
 If the returned chunks are not sufficient to answer the user's question, you may call get_processed_document with the same pipeline_name and the file_id from the top matching chunk to retrieve the full processed document for more context.
+If no matching chunks are found, it could be because the user does not have access to the original source file — suggest they request access to it.
+Always cite sources: include file_id in your answer so the user can visit the source file. For Google Drive sources, provide the URL as https://drive.google.com/file/d/<file_id>/view.
 On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.
 On follow-up: if the user is not satisfied, ask them which pipeline to search. Do NOT automatically try other pipelines.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getChunksArgs) (*mcp.CallToolResult, any, error) {
