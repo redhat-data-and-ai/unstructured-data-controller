@@ -157,7 +157,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	successMessage := fmt.Sprintf("successfully reconciled source crawler: %s", sourceCrawlerCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
-		sourceCrawlerCR.Status.FilesProcessed += int64(len(storedFiles))
+		sourceCrawlerCR.Status.FilesProcessed = int64(len(storedFiles))
 		sourceCrawlerCR.Status.GDriveStatus = gdriveStatus
 		sourceCrawlerCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
