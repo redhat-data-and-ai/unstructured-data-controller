@@ -59,15 +59,16 @@ import (
 //	  jobs: []                               # tracks in-flight docling conversion jobs
 
 const (
-	DocumentProcessorCondition    = "DocumentProcessorReady"
-	DefaultDocumentProcessorType  = "docling"
-	DefaultOCRPreset              = "auto"
-	DefaultPDFBackend             = "docling_parse"
-	DefaultPipeline               = "standard"
-	DefaultTableMode              = "accurate"
-	DefaultImageExportMode        = "embedded"
+	DocumentProcessorCondition   = "DocumentProcessorReady"
+	DefaultDocumentProcessorType = "docling"
+	DefaultOCRPreset             = "auto"
+	DefaultPDFBackend            = "docling_parse"
+	DefaultPipeline              = "standard"
+	DefaultTableMode             = "accurate"
+	// "placeholder" prevents raw base64 image data from leaking into markdown content
+	// that flows into chunking and embedding stages.
+	DefaultImageExportMode        = "placeholder"
 	DefaultImagesScale            = "2.0"
-	DefaultPictureDescModel       = "qwen3-8-27b-fp8"
 	DefaultPictureDescMaxTokens   = 4096
 	DefaultPictureDescTimeout     = "60"
 	DefaultPictureDescConcurrency = 5
@@ -347,7 +348,7 @@ func (c *DoclingConfig) SetDefaults() {
 		c.ImagesScale = DefaultImagesScale
 	}
 	if c.DoPictureDescription == nil {
-		c.DoPictureDescription = boolPtr(true)
+		c.DoPictureDescription = boolPtr(false)
 	}
 	if c.DoPictureClassification == nil {
 		c.DoPictureClassification = boolPtr(true)
@@ -355,9 +356,6 @@ func (c *DoclingConfig) SetDefaults() {
 	if *c.DoPictureDescription {
 		if c.PictureDescriptionAPI == nil {
 			c.PictureDescriptionAPI = &PictureDescriptionAPI{}
-		}
-		if c.PictureDescriptionAPI.Params.Model == "" {
-			c.PictureDescriptionAPI.Params.Model = DefaultPictureDescModel
 		}
 		if c.PictureDescriptionAPI.Params.MaxTokens == 0 {
 			c.PictureDescriptionAPI.Params.MaxTokens = DefaultPictureDescMaxTokens

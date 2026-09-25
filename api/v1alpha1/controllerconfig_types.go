@@ -74,6 +74,9 @@ type ControllerConfigSpec struct {
 	// vlm
 	// +optional
 	VLMAPIURL string `json:"vlmAPIURL,omitempty"`
+	// vlmModelID is the model identifier for the VLM endpoint (e.g. "Qwen/Qwen3.8-27B-FP8").
+	// +optional
+	VLMModelID string `json:"vlmModelID,omitempty"`
 
 	// nomic
 	// +optional

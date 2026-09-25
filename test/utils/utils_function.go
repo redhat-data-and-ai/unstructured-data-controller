@@ -22,10 +22,10 @@ func GetControllerConfigResource() *v1alpha1.ControllerConfig {
 			Namespace: DefaultE2ENamespace,
 		},
 		Spec: v1alpha1.ControllerConfigSpec{
-			SecretRef:                   "operator-secret",
-			DoclingServeURL:             "http://docling-serve:5001",
-			DataStorageBucket:           "data-storage-bucket",
-			DataStorageBucketRegion:     "us-east-1",
+			SecretRef:               "operator-secret",
+			DoclingServeURL:         "http://docling-serve:5001",
+			DataStorageBucket:       "data-storage-bucket",
+			DataStorageBucketRegion: "us-east-1",
 			//nolint:revive,nolintlint // local e2e services use HTTP
 			DataStorageBucketEndpoint:   "http://localstack:4566",
 			NomicEndpoint:               "http://ollama-embedding:11434/v1/embeddings",

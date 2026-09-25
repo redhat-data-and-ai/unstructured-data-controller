@@ -173,6 +173,10 @@ spec:
               vlmAPIURL:
                 description: vlm
                 type: string
+              vlmModelID:
+                description: vlmModelID is the model identifier for the VLM endpoint
+                  (e.g. "Qwen/Qwen3.8-27B-FP8").
+                type: string
             type: object
           status:
             description: ControllerConfigStatus defines the observed state of ControllerConfig.
