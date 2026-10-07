@@ -9,6 +9,10 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -87,7 +91,20 @@ func (c *HTTPClient) createHTTPRequest(
 
 func (c *HTTPClient) GenerateEmbeddings(
 	ctx context.Context, inputs []string, encodingFormat string,
-) (*EmbeddingResult, error) {
+) (result *EmbeddingResult, err error) {
+	ctx, span := otel.Tracer("pkg/embedding").Start(ctx, "embedding.generate",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("embedding.model", c.Config.ModelName),
+			attribute.Int("embedding.input_count", len(inputs)),
+		))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	logger := log.FromContext(ctx)
 	if len(inputs) == 0 {
 		logger.Info("no inputs provided")

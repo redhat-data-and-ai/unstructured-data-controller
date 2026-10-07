@@ -19,6 +19,11 @@ package snowflake
 import (
 	"context"
 	"fmt"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ChunkResult struct {
@@ -30,7 +35,17 @@ type ChunkResult struct {
 
 func SearchChunks(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral string, limit int,
-) ([]ChunkResult, error) {
+) (result []ChunkResult, err error) {
+	ctx, span := otel.Tracer("pkg/snowflake").Start(ctx, "snowflake.search_chunks",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("db.system", "snowflake"), attribute.String("db.name", database)))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	query := fmt.Sprintf(
 		`SELECT FILE_ID, CHUNK_INDEX, CHUNK_TEXT, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
 			`FROM %s.%s.%s ORDER BY score DESC LIMIT %d`,

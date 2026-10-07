@@ -19,6 +19,11 @@ package snowflake
 import (
 	"context"
 	"fmt"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ProcessedDocumentResult struct {
@@ -28,7 +33,17 @@ type ProcessedDocumentResult struct {
 
 func GetProcessedDocument(
 	ctx context.Context, oauthToken, database, schema, table, fileID string,
-) (*ProcessedDocumentResult, error) {
+) (_ *ProcessedDocumentResult, err error) {
+	ctx, span := otel.Tracer("pkg/snowflake").Start(ctx, "snowflake.get_processed_document",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("db.system", "snowflake"), attribute.String("db.name", database)))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	query := fmt.Sprintf(
 		`SELECT FILE_ID, MARKDOWN_CONTENT FROM %s.%s.%s WHERE FILE_ID = ? LIMIT 1`,
 		database, schema, table,

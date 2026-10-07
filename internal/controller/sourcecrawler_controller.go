@@ -66,7 +66,11 @@ type SourceCrawlerReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sourcecrawlers/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",namespace=unstructured-controller-namespace,resources=secrets,verbs=get;list;watch
 
-func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	if metricsProvider != nil {
+		obs := metricsProvider.ReconcileObserver(SourceCrawlerControllerName)
+		defer obs.End(ctx, &retErr)
+	}
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", SourceCrawlerControllerName)
 
@@ -191,13 +195,17 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	logger.Info("successfully stored files to filestore", "count", len(storedFiles))
 
 	successMessage := fmt.Sprintf("successfully reconciled source crawler: %s", sourceCrawlerCR.Name)
+	storedCount := int64(len(storedFiles))
 	if err := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
-		sourceCrawlerCR.Status.FilesProcessed += int64(len(storedFiles))
+		sourceCrawlerCR.Status.FilesProcessed += storedCount
 		sourceCrawlerCR.Status.GDriveStatus = gdriveStatus
 		sourceCrawlerCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update SourceCrawler CR status")
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
+	}
+	if metricsProvider != nil {
+		metricsProvider.RecordFilesProcessed(ctx, SourceCrawlerControllerName, storedCount)
 	}
 
 	// determine requeue strategy

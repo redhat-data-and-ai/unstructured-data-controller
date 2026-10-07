@@ -22,12 +22,17 @@ import (
 	"fmt"
 	"strings"
 
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/attribute"
+
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	udcmetrics "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/metrics"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
@@ -38,19 +43,27 @@ type getProcessedDocumentArgs struct {
 	FileID       string `json:"file_id" jsonschema:"The file identifier to look up in the DocumentProcessor stage output"`
 }
 
-func RegisterGetProcessedDocument(s *mcp.Server, k8sClient *k8sclient.Client) {
+func RegisterGetProcessedDocument(s *mcp.Server, k8sClient *k8sclient.Client, mp *udcmetrics.Provider) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_processed_document",
 		Description: `Retrieve the processed document output for a given file_id from a pipeline's DocumentProcessor stage Snowflake table.
 If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
 On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.`,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getProcessedDocumentArgs) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getProcessedDocumentArgs) (res *mcp.CallToolResult, _ any, _ error) {
 		username := ""
 		if tokenInfo, ok := auth.TokenInfoFromContext(ctx); ok {
 			username = tokenInfo.Username
 		}
 		ctx = logger.NewContext(ctx, uuid.NewString(), "get_processed_document", username)
 		log := logger.FromContext(ctx)
+
+		if mp != nil {
+			var endTool func(bool)
+			ctx, endTool = mp.ToolObserver(ctx, "get_processed_document",
+				attribute.String("mcp.pipeline_name", args.PipelineName),
+				attribute.String("mcp.file_id", args.FileID))
+			defer func() { endTool(res != nil && res.IsError) }()
+		}
 
 		log.Info("tool invoked", "pipeline_name", args.PipelineName, "file_id", args.FileID)
 
@@ -87,7 +100,11 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
+		k8sStart := time.Now()
 		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName, operatorv1alpha1.StageTypeDocumentProcessor)
+		if mp != nil {
+			mp.RecordExternalCall(ctx, "k8s", "get_pipeline_query_config", time.Since(k8sStart), err)
+		}
 		if err != nil {
 			log.Error("failed to get pipeline query config", "error", err)
 			return &mcp.CallToolResult{
@@ -109,7 +126,11 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		tableName := strings.ToUpper(qc.Table)
 
 		log.Info("querying snowflake", "database", databaseName, "schema", schemaName, "table", tableName, "file_id", args.FileID)
+		sfStart := time.Now()
 		doc, err := snowflake.GetProcessedDocument(ctx, oauthToken, databaseName, schemaName, tableName, args.FileID)
+		if mp != nil {
+			mp.RecordExternalCall(ctx, "snowflake", "get_processed_document", time.Since(sfStart), err)
+		}
 		if err != nil {
 			log.Error("failed to get processed document from snowflake", "error", err)
 			return &mcp.CallToolResult{

@@ -62,7 +62,11 @@ type DocumentProcessorReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors/finalizers,verbs=update
 
-func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	if metricsProvider != nil {
+		obs := metricsProvider.ReconcileObserver(DocumentProcessorControllerName)
+		defer obs.End(ctx, &retErr)
+	}
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", DocumentProcessorControllerName)
 
@@ -273,6 +277,9 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		}); updateErr != nil {
 			logger.Error(updateErr, "failed to delete job from status as it has completed successfully", "filePath", job.FilePath)
 			return updateErr
+		}
+		if metricsProvider != nil {
+			metricsProvider.RecordFilesProcessed(ctx, DocumentProcessorControllerName, 1)
 		}
 		logger.Info("successfully removed job from status as it has completed successfully", "filePath", job.FilePath)
 

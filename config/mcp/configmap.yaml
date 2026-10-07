@@ -19,3 +19,7 @@ data:
   EMBEDDING_ENDPOINT: "<YOUR_EMBEDDING_ENDPOINT>"
   # TODO: Replace with your embedding model name
   EMBEDDING_MODEL_NAME: "<YOUR_EMBEDDING_MODEL_NAME>"
+  # [OTEL] Uncomment to enable OTLP push for metrics and traces to an OTel Collector.
+  # Without this, only Prometheus scraping on /metrics is available.
+  # OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc:4317"
+  # OTEL_EXPORTER_OTLP_INSECURE: "true"

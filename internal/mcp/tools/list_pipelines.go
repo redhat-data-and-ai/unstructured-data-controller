@@ -23,11 +23,15 @@ import (
 	"net/http"
 	"strings"
 
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	udcmetrics "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/metrics"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
@@ -61,7 +65,7 @@ func isPipelineAllowed(ctx context.Context, pipelineName string) bool {
 }
 
 // RegisterListPipelines registers the list_unstructured_data_pipelines_for_user MCP tool
-func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client) {
+func RegisterListPipelines(s *mcp.Server, k8sClient *k8sclient.Client, mp *udcmetrics.Provider) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_unstructured_data_pipelines_for_user",
 		Description: `List the UnstructuredDataPipelines the authenticated user has access to. Returns an array of {name, description, guidance}.
@@ -69,13 +73,19 @@ If EXACTLY ONE pipeline matches the user's question, use it.
 If MORE THAN ONE pipeline could match, STOP and ask the user which one to use. Do NOT pick one yourself.
 If NONE match, tell the user. Do NOT try all pipelines.
 If the pipeline has a "guidance" field, follow those instructions when working with this pipeline's data.`,
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (res *mcp.CallToolResult, _ any, _ error) {
 		username := ""
 		if tokenInfo, ok := auth.TokenInfoFromContext(ctx); ok {
 			username = tokenInfo.Username
 		}
 		ctx = logger.NewContext(ctx, uuid.NewString(), "list_unstructured_data_pipelines_for_user", username)
 		log := logger.FromContext(ctx)
+
+		if mp != nil {
+			var endTool func(bool)
+			ctx, endTool = mp.ToolObserver(ctx, "list_pipelines")
+			defer func() { endTool(res != nil && res.IsError) }()
+		}
 
 		log.Info("tool invoked")
 
@@ -100,7 +110,11 @@ If the pipeline has a "guidance" field, follow those instructions when working w
 			}, nil, nil
 		}
 
+		k8sStart := time.Now()
 		pipelines, err := k8sClient.ListPipelines(ctx)
+		if mp != nil {
+			mp.RecordExternalCall(ctx, "k8s", "list_pipelines", time.Since(k8sStart), err)
+		}
 		if err != nil {
 			log.Error("failed to list pipelines from kubernetes", "error", err)
 			return &mcp.CallToolResult{
@@ -112,7 +126,11 @@ If the pipeline has a "guidance" field, follow those instructions when working w
 		}
 		log.Info("listed pipelines from kubernetes", "count", len(pipelines))
 
+		sfStart := time.Now()
 		databases, err := snowflake.ShowDatabases(ctx, oauthToken)
+		if mp != nil {
+			mp.RecordExternalCall(ctx, "snowflake", "show_databases", time.Since(sfStart), err)
+		}
 		if err != nil {
 			log.Error("failed to list databases from snowflake", "error", err)
 			return &mcp.CallToolResult{
