@@ -88,6 +88,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		logger.Error(err, "failed to get ChunksGenerator CR")
 		return ctrl.Result{}, err
 	}
+
 	chunksGeneratorCR = chunksGeneratorCR.DeepCopy()
 	chunksGeneratorCR.Spec.ChunksGeneratorConfig.SetDefaults()
 
@@ -368,7 +369,10 @@ func (r *ChunksGeneratorReconciler) findDependents(ctx context.Context, obj clie
 // SetupWithManager sets up the controller with the Manager.
 func (r *ChunksGeneratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.ChunksGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&operatorv1alpha1.ChunksGenerator{}, builder.WithPredicates(
+			predicate.GenerationChangedPredicate{},
+			controllerutils.ReconcileNeededPredicate{ConditionType: operatorv1alpha1.ChunksGeneratorCondition},
+		)).
 		Watches(&operatorv1alpha1.SourceCrawler{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.VectorEmbeddingsGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).

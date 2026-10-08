@@ -86,6 +86,7 @@ func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req 
 		logger.Error(err, "failed to get UnstructuredDataPipeline CR")
 		return ctrl.Result{}, err
 	}
+
 	// DeepCopy to avoid mutating the shared informer cache
 	unstructuredDataPipelineCR = unstructuredDataPipelineCR.DeepCopy()
 
@@ -356,7 +357,10 @@ func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, 
 // SetupWithManager sets up the controller with the Manager.
 func (r *UnstructuredDataPipelineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.UnstructuredDataPipeline{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&operatorv1alpha1.UnstructuredDataPipeline{}, builder.WithPredicates(
+			predicate.GenerationChangedPredicate{},
+			controllerutils.ReconcileNeededPredicate{ConditionType: operatorv1alpha1.UnstructuredDataPipelineCondition},
+		)).
 		Owns(&operatorv1alpha1.SourceCrawler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.ChunksGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
