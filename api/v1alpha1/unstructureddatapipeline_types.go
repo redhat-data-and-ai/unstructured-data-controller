@@ -174,6 +174,8 @@ type GitConfig struct {
 	Provider GitProvider `json:"provider,omitempty"`
 	// Repos is the list of git repositories to crawl.
 	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	Repos []GitRepo `json:"repos"`
 	// PollInterval configures how often to check for new commits via ls-remote.
 	// Defaults to "5m". Minimum enforced is "5m". Examples: "5m", "1h", "24h".
