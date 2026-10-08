@@ -12,6 +12,10 @@ spec:
       app: unstructured-data-mcp-server
   template:
     metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
       labels:
         app: unstructured-data-mcp-server
     spec:
@@ -32,6 +36,9 @@ spec:
         ports:
         - name: http
           containerPort: 8080
+          protocol: TCP
+        - name: metrics
+          containerPort: 8000
           protocol: TCP
 
         env:

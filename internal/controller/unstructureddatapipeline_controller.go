@@ -67,7 +67,11 @@ type UnstructuredDataPipelineReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=destinationsyncers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=destinationsyncers/status,verbs=get
 
-func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	if metricsProvider != nil {
+		obs := metricsProvider.ReconcileObserver(UnstructuredDataPipelineControllerName)
+		defer obs.End(ctx, &retErr)
+	}
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", UnstructuredDataPipelineControllerName)
 

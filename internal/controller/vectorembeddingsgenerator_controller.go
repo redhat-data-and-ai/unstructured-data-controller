@@ -55,7 +55,11 @@ type VectorEmbeddingsGeneratorReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators/finalizers,verbs=update
 
-func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	if metricsProvider != nil {
+		obs := metricsProvider.ReconcileObserver(VectorEmbeddingsGeneratorControllerName)
+		defer obs.End(ctx, &retErr)
+	}
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", VectorEmbeddingsGeneratorControllerName)
 
@@ -143,6 +147,9 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	}); err != nil {
 		logger.Error(err, "failed to update VectorEmbeddingsGenerator CR status", "namespace", vectorEmbeddingsGeneratorCR.Namespace, "name", vectorEmbeddingsGeneratorCR.Name)
 		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
+	}
+	if metricsProvider != nil {
+		metricsProvider.RecordFilesProcessed(ctx, VectorEmbeddingsGeneratorControllerName, filesProcessed)
 	}
 	logger.Info("successfully updated VectorEmbeddingsGenerator CR status", "status", vectorEmbeddingsGeneratorCR.Status)
 
