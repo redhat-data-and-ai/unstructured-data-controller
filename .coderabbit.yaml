@@ -4,11 +4,10 @@
 language: en-US
 
 # Global tone for all review comments
+# Max 250 chars. Style/formatting is handled by golangci-lint - skip those.
 tone_instructions: >
-  Be concise and direct. Focus on correctness, error handling, and Kubernetes operator patterns.
-  Security is paramount - flag any security concerns, input validation gaps, or credential exposure.
-  Challenge patterns that contradict best practices - do not accept code just because it matches existing patterns.
-  Flag scope creep - PRs should do one thing. Skip style and formatting - golangci-lint handles that.
+  Concise, direct. Focus on correctness, security, and K8s operator patterns.
+  Challenge bad patterns. Flag scope creep. Skip style - linter handles it.
 
 # Opt into beta features as they become available
 early_access: true
@@ -150,10 +149,9 @@ reviews:
     golangci-lint:
       enabled: true
       config_file: .golangci.yml
-    # YAML linter - uses project's .yamllint config
+    # YAML linter
     yamllint:
       enabled: true
-      config_file: .yamllint
     # Dockerfile linter
     hadolint:
       enabled: true
