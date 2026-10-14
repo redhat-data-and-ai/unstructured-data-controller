@@ -34,8 +34,13 @@ type Content struct {
 type ConvertedFileMetadata struct {
 	RawFilePath       string                 `json:"rawFilePath"`
 	FileIdentifier    string                 `json:"fileIdentifier"`
+	FilePath          string                 `json:"filePath,omitempty"`
+	FileName          string                 `json:"fileName,omitempty"`
+	FileURL           string                 `json:"fileURL,omitempty"`
+	SourceType        string                 `json:"sourceType,omitempty"`
 	DocumentConverter DocumentConverter      `json:"documentConverter"`
 	DoclingConfig     v1alpha1.DoclingConfig `json:"doclingConfig"`
+	Error             string                 `json:"error,omitempty"`
 }
 
 type ConvertedDocument struct {
