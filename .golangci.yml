@@ -92,6 +92,14 @@ linters:
         text: "var-naming"
       - linters:
           - revive
+        path: pkg/metrics/
+        text: "var-naming"
+      - linters:
+          - unparam
+        path: internal/controller/
+        text: "handleError"
+      - linters:
+          - revive
         path: ^test/
         text: "unsecure-url-scheme"
     paths:

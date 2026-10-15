@@ -85,7 +85,11 @@ type ControllerConfigReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=controllerconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=controllerconfigs/finalizers,verbs=update
 
-func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	if metricsProvider != nil {
+		obs := metricsProvider.ReconcileObserver("ControllerConfig")
+		defer obs.End(ctx, &retErr)
+	}
 	logger := log.FromContext(ctx)
 	logger.Info(fmt.Sprintf("Reconciling controller config %s", req.NamespacedName))
 

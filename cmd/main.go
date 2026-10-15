@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -40,6 +41,8 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller"
+	udcmetrics "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/metrics"
+	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -91,6 +94,20 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Initialize OTel metrics provider. Custom OTel metrics are registered on
+	// controller-runtime's Prometheus registry so they appear on the existing
+	// /metrics endpoint alongside built-in metrics (reconcile counts, work queue depth).
+	// OTLP push to a collector activates when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+	metricsProvider, err := udcmetrics.Init(context.Background(), udcmetrics.Config{
+		ServiceName:          "unstructured-data-controller",
+		ServiceVersion:       "0.1.0",
+		PrometheusRegisterer: crmetrics.Registry,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to initialize metrics provider")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -210,6 +227,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	controller.SetMetricsProvider(metricsProvider)
+
 	if err := (&controller.ControllerConfigReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -263,6 +282,13 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	// Register the OTel metrics provider as a Runnable so it shuts down
+	// gracefully (flushing pending telemetry) when the manager stops.
+	if err := mgr.Add(metricsProvider); err != nil {
+		setupLog.Error(err, "unable to add metrics provider to manager")
+		os.Exit(1)
+	}
 
 	if metricsCertWatcher != nil {
 		setupLog.Info("Adding metrics certificate watcher to manager")

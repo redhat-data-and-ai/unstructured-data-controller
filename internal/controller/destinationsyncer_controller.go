@@ -56,7 +56,11 @@ type DestinationSyncerReconciler struct {
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=unstructureddatapipelines,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",namespace=unstructured-controller-namespace,resources=secrets,verbs=get;list;watch
 
-func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	if metricsProvider != nil {
+		obs := metricsProvider.ReconcileObserver(DestinationSyncerControllerName)
+		defer obs.End(ctx, &retErr)
+	}
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", DestinationSyncerControllerName)
 
@@ -142,6 +146,9 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}); err != nil {
 		logger.Error(err, "failed to update DestinationSyncer CR status")
 		return r.handleError(ctx, destinationSyncCR, err)
+	}
+	if metricsProvider != nil {
+		metricsProvider.RecordFilesProcessed(ctx, DestinationSyncerControllerName, totalFilesSynced)
 	}
 
 	return ctrl.Result{}, nil

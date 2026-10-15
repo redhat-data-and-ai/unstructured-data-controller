@@ -61,6 +61,13 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        # [OTEL] Uncomment to enable OTLP push for metrics and traces.
+        # When set, the controller pushes telemetry to the OTel Collector via gRPC.
+        # Without this, only Prometheus scraping on /metrics is available.
+        # - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        #   value: "http://otel-collector.observability.svc:4317"
+        # - name: OTEL_EXPORTER_OTLP_INSECURE
+        #   value: "true"
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

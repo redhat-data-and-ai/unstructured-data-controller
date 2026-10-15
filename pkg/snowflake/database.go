@@ -18,6 +18,11 @@ package snowflake
 
 import (
 	"context"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type DatabaseInfo struct {
@@ -25,6 +30,16 @@ type DatabaseInfo struct {
 	Comment string `json:"comment,omitempty" db:"comment"`
 }
 
-func ShowDatabases(ctx context.Context, oauthToken string) ([]DatabaseInfo, error) {
+func ShowDatabases(ctx context.Context, oauthToken string) (result []DatabaseInfo, err error) {
+	ctx, span := otel.Tracer("pkg/snowflake").Start(ctx, "snowflake.show_databases",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("db.system", "snowflake")))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	return queryRows[DatabaseInfo](ctx, oauthToken, "SHOW DATABASES;")
 }

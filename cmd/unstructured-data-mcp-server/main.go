@@ -33,18 +33,33 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	udcmetrics "github.com/redhat-data-and-ai/unstructured-data-controller/pkg/metrics"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 const (
-	serverName    = "unstructured-data-controller"
-	serverVersion = "0.1.0"
-	defaultAddr   = ":8080"
+	serverName     = "unstructured-data-controller"
+	serverVersion  = "0.1.0"
+	defaultAddr    = ":8080"
+	defaultMetrics = ":8000"
 )
 
 func main() {
 	logger.Init()
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+
+	// Initialize OTel metrics and tracing. Prometheus metrics are served on /metrics.
+	// OTLP push (for Datadog/Langfuse) activates when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+	metricsProvider, err := udcmetrics.Init(
+		context.Background(), udcmetrics.Config{
+			ServiceName:    serverName,
+			ServiceVersion: serverVersion,
+		},
+	)
+	if err != nil {
+		slog.Error("failed to initialize metrics provider", "error", err)
+		os.Exit(1)
+	}
 
 	oauthCfg, err := auth.NewOAuthConfigFromEnv()
 	if err != nil {
@@ -80,9 +95,9 @@ func main() {
 		ModelName:  os.Getenv("EMBEDDING_MODEL_NAME"),
 	})
 
-	mcptools.RegisterListPipelines(mcpServer, k8sClient)
-	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient)
-	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
+	mcptools.RegisterListPipelines(mcpServer, k8sClient, metricsProvider)
+	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, metricsProvider)
+	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient, metricsProvider)
 
 	oauthStore := auth.NewOAuthStore()
 	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection)
@@ -126,6 +141,23 @@ func main() {
 		// WriteTimeout intentionally unset: Streamable HTTP uses SSE which requires long-lived responses.
 	}
 
+	// Metrics are served on a dedicated port so scraping tools cannot reach
+	// the MCP protocol, OAuth, or health endpoints through the metrics port.
+	metricsAddr := defaultMetrics
+	if port := os.Getenv("METRICS_PORT"); port != "" {
+		metricsAddr = ":" + port
+	}
+	metricsMux := http.NewServeMux()
+	if h := metricsProvider.PrometheusHandler(); h != nil {
+		metricsMux.Handle("/metrics", h)
+	}
+	metricsSrv := &http.Server{
+		Addr:              metricsAddr,
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -133,6 +165,14 @@ func main() {
 		slog.Info("MCP server starting", "addr", addr, "endpoint", "/mcp")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed to start", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	go func() {
+		slog.Info("metrics server starting", "addr", metricsAddr)
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("metrics server failed to start", "error", err)
 			os.Exit(1)
 		}
 	}()
@@ -154,6 +194,13 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("server shutdown error", "error", err)
+	}
+	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics server shutdown error", "error", err)
+	}
+	// Flush pending OTLP metrics/traces before exit.
+	if err := metricsProvider.Shutdown(shutdownCtx); err != nil {
+		slog.Error("metrics provider shutdown error", "error", err)
 	}
 	oauthMiddleware.Close()
 	oauthStore.Close()

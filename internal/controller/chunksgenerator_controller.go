@@ -65,7 +65,11 @@ type ChunksGeneratorReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
-func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+	if metricsProvider != nil {
+		obs := metricsProvider.ReconcileObserver(ChunksGeneratorControllerName)
+		defer obs.End(ctx, &retErr)
+	}
 	logger := log.FromContext(ctx)
 	logger.Info("reconciling", "controller", ChunksGeneratorControllerName)
 
@@ -165,6 +169,10 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status", "namespace", chunksGeneratorCR.Namespace, "name", chunksGeneratorCR.Name)
 		return r.handleError(ctx, chunksGeneratorCR, err)
+	}
+	// Record after the patch succeeds to avoid inflating the counter on retries.
+	if metricsProvider != nil {
+		metricsProvider.RecordFilesProcessed(ctx, ChunksGeneratorControllerName, filesProcessed)
 	}
 	logger.Info("successfully updated ChunksGenerator CR status", "status", chunksGeneratorCR.Status)
 
@@ -375,6 +383,7 @@ func (r *ChunksGeneratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&operatorv1alpha1.DestinationSyncer{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Complete(r)
 }
+
 func (r *ChunksGeneratorReconciler) handleError(ctx context.Context, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, err error) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Error(err, "encountered error")

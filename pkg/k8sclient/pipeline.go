@@ -21,6 +21,11 @@ import (
 	"fmt"
 	"os"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -63,10 +68,20 @@ func snowflakeQueryConfig(
 	return nil
 }
 
-func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
+func (c *Client) ListPipelines(ctx context.Context) (_ []PipelineInfo, err error) {
+	ctx, span := otel.Tracer("pkg/k8sclient").Start(ctx, "k8s.list_pipelines",
+		trace.WithSpanKind(trace.SpanKindClient))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	pipelineList := &operatorv1alpha1.UnstructuredDataPipelineList{}
 
-	err := c.client.List(ctx, pipelineList, &client.ListOptions{
+	err = c.client.List(ctx, pipelineList, &client.ListOptions{
 		Namespace: pipelineNamespace(),
 	})
 	if err != nil {
@@ -93,9 +108,22 @@ func (c *Client) ListPipelines(ctx context.Context) ([]PipelineInfo, error) {
 
 func (c *Client) GetPipelineQueryConfig(
 	ctx context.Context, name string, stageType operatorv1alpha1.StageType,
-) (*QueryConfig, error) {
+) (_ *QueryConfig, err error) {
+	ctx, span := otel.Tracer("pkg/k8sclient").Start(ctx, "k8s.get_pipeline_query_config",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("pipeline.name", name),
+			attribute.String("stage.type", string(stageType)),
+		))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
-	err := c.client.Get(ctx, client.ObjectKey{
+	err = c.client.Get(ctx, client.ObjectKey{
 		Namespace: pipelineNamespace(),
 		Name:      name,
 	}, pipeline)
