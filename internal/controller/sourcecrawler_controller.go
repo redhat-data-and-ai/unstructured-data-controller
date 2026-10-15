@@ -174,6 +174,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	storedFiles, err := source.SyncFilesToFilestore(ctx, r.fileStore)
+	storedCount := int64(len(storedFiles))
 
 	var gdriveStatus []operatorv1alpha1.GDriveFolderStatus
 	if gds, ok := source.(*unstructured.GDriveSource); ok {
@@ -182,6 +183,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if err != nil {
 		if patchErr := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
+			sourceCrawlerCR.Status.FilesProcessed += storedCount
 			sourceCrawlerCR.Status.GDriveStatus = gdriveStatus
 		}); patchErr != nil {
 			logger.Error(patchErr, "failed to update SourceCrawler CR status with gdrive status")
