@@ -137,7 +137,7 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	successMessage := fmt.Sprintf("successfully reconciled destination sync: %s", destinationSyncCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, destinationSyncCR, func() {
-		destinationSyncCR.Status.FilesProcessed += totalFilesSynced
+		destinationSyncCR.Status.FilesProcessed = totalFilesSynced
 		destinationSyncCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update DestinationSyncer CR status")
