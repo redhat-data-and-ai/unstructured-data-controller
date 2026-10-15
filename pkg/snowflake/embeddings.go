@@ -39,3 +39,16 @@ func SearchChunks(
 
 	return queryRows[ChunkResult](ctx, oauthToken, query)
 }
+
+// SearchChunksWithFileFilter performs vector similarity search scoped to files matching the given pattern.
+func SearchChunksWithFileFilter(
+	ctx context.Context, oauthToken, database, schema, table, vectorLiteral, filePattern string, limit int,
+) ([]ChunkResult, error) {
+	query := fmt.Sprintf(
+		`SELECT FILE_ID, CHUNK_INDEX, CHUNK_TEXT, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
+			`FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\' ORDER BY score DESC LIMIT %d`,
+		vectorLiteral, database, schema, table, limit,
+	)
+
+	return queryRows[ChunkResult](ctx, oauthToken, query, filePattern)
+}

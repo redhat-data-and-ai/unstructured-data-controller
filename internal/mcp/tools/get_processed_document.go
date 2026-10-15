@@ -31,17 +31,21 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
-const errOAuthTokenNotFound = "Error: oauth token not found in context"
+const (
+	errOAuthTokenNotFound = "Error: oauth token not found in context"
+	maxDocuments          = 20
+)
 
 type getProcessedDocumentArgs struct {
-	PipelineName string `json:"pipeline_name" jsonschema:"Name of the UnstructuredDataPipeline. If not known, call list_unstructured_data_pipelines_for_user first and pick the matching pipeline based on its description."`
-	FileID       string `json:"file_id" jsonschema:"The file identifier to look up in the DocumentProcessor stage output"`
+	PipelineName   string `json:"pipeline_name" jsonschema:"Name of the UnstructuredDataPipeline. If not known, call list_unstructured_data_pipelines_for_user first and pick the matching pipeline based on its description."`
+	FileID         string `json:"file_id,omitempty" jsonschema:"The exact file identifier to look up. Takes priority over file_path_filter if both are provided."`
+	FilePathFilter string `json:"file_path_filter,omitempty" jsonschema:"Glob pattern to retrieve processed documents from files matching this path. Use * to match any path segment. Examples: '*/README.md', '*/aemv2/*'."`
 }
 
 func RegisterGetProcessedDocument(s *mcp.Server, k8sClient *k8sclient.Client) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_processed_document",
-		Description: `Retrieve the processed document output for a given file_id from a pipeline's DocumentProcessor stage Snowflake table.
+		Description: `Retrieve processed document output from a pipeline's DocumentProcessor stage. Supports exact lookup via file_id or glob pattern matching via file_path_filter (e.g. "*/README.md"). At least one of file_id or file_path_filter is required.
 If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
 On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, args getProcessedDocumentArgs) (*mcp.CallToolResult, any, error) {
@@ -52,12 +56,12 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		ctx = logger.NewContext(ctx, uuid.NewString(), "get_processed_document", username)
 		log := logger.FromContext(ctx)
 
-		log.Info("tool invoked", "pipeline_name", args.PipelineName, "file_id", args.FileID)
+		log.Info("tool invoked", "pipeline_name", args.PipelineName, "file_id", args.FileID, "file_path_filter", args.FilePathFilter)
 
-		if args.PipelineName == "" || args.FileID == "" {
-			log.Error("missing required parameters", "pipeline_name", args.PipelineName, "file_id_empty", args.FileID == "")
+		if args.PipelineName == "" || (args.FileID == "" && args.FilePathFilter == "") {
+			log.Error("missing required parameters", "pipeline_name", args.PipelineName, "file_id_empty", args.FileID == "", "file_path_filter_empty", args.FilePathFilter == "")
 			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: "Error: pipeline_name and file_id are required. Call list_unstructured_data_pipelines_for_user first to get the pipeline name."}},
+				Content: []mcp.Content{&mcp.TextContent{Text: "Error: pipeline_name and at least one of file_id or file_path_filter are required. Call list_unstructured_data_pipelines_for_user first to get the pipeline name."}},
 				IsError: true,
 			}, nil, nil
 		}
@@ -108,17 +112,66 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		schemaName := strings.ToUpper(qc.Schema)
 		tableName := strings.ToUpper(qc.Table)
 
-		log.Info("querying snowflake", "database", databaseName, "schema", schemaName, "table", tableName, "file_id", args.FileID)
-		doc, err := snowflake.GetProcessedDocument(ctx, oauthToken, databaseName, schemaName, tableName, args.FileID)
-		if err != nil {
-			log.Error("failed to get processed document from snowflake", "error", err)
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve the processed document for file_id %q. Please verify the file_id is correct.", args.FileID)}},
-				IsError: true,
-			}, nil, nil
+		var result any
+		var responseMsg string
+
+		if args.FileID != "" {
+			log.Info("querying snowflake by file_id", "database", databaseName, "schema", schemaName, "table", tableName, "file_id", args.FileID)
+			doc, queryErr := snowflake.GetProcessedDocument(ctx, oauthToken, databaseName, schemaName, tableName, args.FileID)
+			if queryErr != nil {
+				log.Error("failed to get processed document", "error", queryErr)
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve the processed document for file_id %q. Please verify the file_id is correct.", args.FileID)}},
+					IsError: true,
+				}, nil, nil
+			}
+			result = doc
+			responseMsg = fmt.Sprintf("Processed document for file_id %q in pipeline %q", args.FileID, args.PipelineName)
+		} else {
+			filePattern := convertFileGlobToSQL(args.FilePathFilter)
+			log.Info("querying snowflake by file path pattern", "database", databaseName, "schema", schemaName, "table", tableName, "filePattern", filePattern)
+			count, countErr := snowflake.CountProcessedDocumentsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern)
+			if countErr != nil {
+				log.Error("failed to count matching documents", "error", countErr)
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve processed documents matching %q.", args.FilePathFilter)}},
+					IsError: true,
+				}, nil, nil
+			}
+			log.Info("counted matching documents", "count", count, "max", maxDocuments, "filePattern", filePattern, "fileID", args.FileID, "pipeline_name", args.PipelineName)
+			if count == 0 {
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("No processed documents found matching %q in pipeline %q.", args.FilePathFilter, args.PipelineName)}},
+				}, nil, nil
+			}
+
+			if count > maxDocuments {
+				log.Info("pattern matched too many documents, returning file IDs only", "count", count, "max", maxDocuments)
+				fileIDs, listErr := snowflake.ListFileIDsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern)
+				if listErr != nil {
+					log.Error("failed to list matching file IDs", "error", listErr)
+					return &mcp.CallToolResult{
+						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve processed documents matching %q.", args.FilePathFilter)}},
+						IsError: true,
+					}, nil, nil
+				}
+				result = fileIDs
+				responseMsg = fmt.Sprintf("Pattern %q matched %d documents in pipeline %q, which exceeds the limit of %d. Narrow your pattern or use file_id with one of these paths", args.FilePathFilter, count, args.PipelineName, maxDocuments)
+			} else {
+				docs, queryErr := snowflake.GetProcessedDocumentsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern, maxDocuments)
+				if queryErr != nil {
+					log.Error("failed to get processed documents", "error", queryErr)
+					return &mcp.CallToolResult{
+						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve processed documents matching %q.", args.FilePathFilter)}},
+						IsError: true,
+					}, nil, nil
+				}
+				result = docs
+				responseMsg = fmt.Sprintf("Found %d processed document(s) matching %q in pipeline %q", len(docs), args.FilePathFilter, args.PipelineName)
+			}
 		}
 
-		jsonBytes, err := json.Marshal(doc)
+		jsonBytes, err := json.Marshal(result)
 		if err != nil {
 			log.Error("failed to marshal result", "error", err)
 			return &mcp.CallToolResult{
@@ -127,10 +180,10 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}, nil, nil
 		}
 
-		log.Info("completed successfully", "pipeline", args.PipelineName, "file_id", args.FileID)
+		log.Info("completed successfully", "pipeline", args.PipelineName)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{
-				Text: fmt.Sprintf("Processed document for file_id %q in pipeline %q:\n%s", args.FileID, args.PipelineName, string(jsonBytes)),
+				Text: fmt.Sprintf("%s:\n%s", responseMsg, string(jsonBytes)),
 			}},
 		}, nil, nil
 	})

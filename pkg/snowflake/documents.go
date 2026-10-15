@@ -19,6 +19,7 @@ package snowflake
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
 
 type ProcessedDocumentResult struct {
@@ -42,4 +43,60 @@ func GetProcessedDocument(
 		return nil, fmt.Errorf("no processed document found for file_id %q", fileID)
 	}
 	return &results[0], nil
+}
+
+// CountProcessedDocumentsByFilePath returns the number of documents matching the given LIKE pattern.
+func CountProcessedDocumentsByFilePath(
+	ctx context.Context, oauthToken, database, schema, table, filePattern string,
+) (int, error) {
+	query := fmt.Sprintf(
+		`SELECT COUNT(*) AS count FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\'`,
+		database, schema, table,
+	)
+	type countResult struct {
+		Count string `db:"count"`
+	}
+	results, err := queryRows[countResult](ctx, oauthToken, query, filePattern)
+	if err != nil {
+		return 0, err
+	}
+	if len(results) == 0 {
+		return 0, nil
+	}
+	return strconv.Atoi(results[0].Count)
+}
+
+// ListFileIDsByFilePath returns just the file_id values matching the given LIKE pattern.
+func ListFileIDsByFilePath(
+	ctx context.Context, oauthToken, database, schema, table, filePattern string,
+) ([]string, error) {
+	query := fmt.Sprintf(
+		`SELECT FILE_ID FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\'`,
+		database, schema, table,
+	)
+	type fileIDResult struct {
+		FileID string `db:"file_id"`
+	}
+	results, err := queryRows[fileIDResult](ctx, oauthToken, query, filePattern)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.FileID
+	}
+	return ids, nil
+}
+
+// GetProcessedDocumentsByFilePath retrieves processed documents matching
+// the given LIKE pattern, up to the specified limit.
+func GetProcessedDocumentsByFilePath(
+	ctx context.Context, oauthToken, database, schema, table, filePattern string, limit int,
+) ([]ProcessedDocumentResult, error) {
+	query := fmt.Sprintf(
+		`SELECT FILE_ID, MARKDOWN_CONTENT FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\' LIMIT %d`,
+		database, schema, table, limit,
+	)
+
+	return queryRows[ProcessedDocumentResult](ctx, oauthToken, query, filePattern)
 }
