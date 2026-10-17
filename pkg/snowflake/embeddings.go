@@ -26,6 +26,11 @@ type ChunkResult struct {
 	ChunkIndex string `json:"chunk_index" db:"chunk_index"`
 	ChunkText  string `json:"chunk_text" db:"chunk_text"`
 	Score      string `json:"score" db:"score"`
+	// RerankerScore is populated by the MCP tool layer after retrieval, never by
+	// a query. It deliberately carries no db tag: scanRows renders every mapped
+	// column as a string, so tagging a non-string field would make it skip this
+	// one silently.
+	RerankerScore *float64 `json:"reranker_score,omitempty"`
 }
 
 func SearchChunks(

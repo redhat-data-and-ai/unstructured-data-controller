@@ -62,7 +62,14 @@ func scanRows[T any](rows *sql.Rows) ([]T, error) {
 			if val == nil {
 				continue
 			}
-			rv.Field(idx).SetString(fmt.Sprintf("%s", val))
+			// SetString panics on a non-string field, and a panic here takes down
+			// the whole server rather than one request. Skip instead: this scanner
+			// renders every column as a string, so a non-string target is a tagging
+			// mistake, not something to crash on.
+			if rv.Field(idx).Kind() != reflect.String {
+				continue
+			}
+			rv.Field(idx).SetString(dbValueString(val))
 		}
 
 		results = append(results, item)
@@ -73,4 +80,11 @@ func scanRows[T any](rows *sql.Rows) ([]T, error) {
 	}
 
 	return results, nil
+}
+
+func dbValueString(value any) string {
+	if bytes, ok := value.([]byte); ok {
+		return string(bytes)
+	}
+	return fmt.Sprint(value)
 }

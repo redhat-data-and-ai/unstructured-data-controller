@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/reranker"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -80,8 +82,33 @@ func main() {
 		ModelName:  os.Getenv("EMBEDDING_MODEL_NAME"),
 	})
 
+	// Reranking is opt-in and needs both the endpoint and the model name: an empty
+	// model would be sent as "model": "" and rejected on every request, so treat a
+	// half-configured reranker as disabled rather than silently failing per query.
+	// Every branch logs, so the active retrieval path is always visible at startup.
+	var rerankerClient reranker.Reranker
+	rerankerEndpoint := os.Getenv("RERANKER_ENDPOINT")
+	rerankerModelName := os.Getenv("RERANKER_MODEL_NAME")
+	rerankerPoolDepth := mcptools.DefaultRerankerPool
+	switch {
+	case rerankerEndpoint == "":
+		slog.Info("reranking disabled, RERANKER_ENDPOINT is not set")
+	case rerankerModelName == "":
+		slog.Error("reranking disabled, RERANKER_ENDPOINT is set but RERANKER_MODEL_NAME is empty")
+	default:
+		rerankerPoolDepth = resolveRerankerPoolDepth(os.Getenv("RERANKER_CANDIDATE_POOL"))
+		rerankerClient = reranker.NewHTTPClient(&reranker.HTTPClientConfig{
+			Endpoint:   rerankerEndpoint,
+			APIKey:     os.Getenv("RERANKER_API_KEY"),
+			AuthFormat: "Bearer",
+			ModelName:  rerankerModelName,
+		})
+		slog.Info("reranker client initialized",
+			"endpoint", rerankerEndpoint, "model", rerankerModelName, "candidate_pool", rerankerPoolDepth)
+	}
+
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
-	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient)
+	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
 
 	oauthStore := auth.NewOAuthStore()
@@ -158,6 +185,34 @@ func main() {
 	oauthMiddleware.Close()
 	oauthStore.Close()
 	slog.Info("MCP server stopped")
+}
+
+// resolveRerankerPoolDepth validates RERANKER_CANDIDATE_POOL. An environment
+// variable is external input, so a bad value degrades to the default with a
+// warning rather than failing startup: reranking is best-effort and a
+// misconfigured pool should not take the server down.
+func resolveRerankerPoolDepth(raw string) int {
+	if raw == "" {
+		return mcptools.DefaultRerankerPool
+	}
+
+	poolDepth, err := strconv.Atoi(raw)
+	if err != nil {
+		slog.Warn("RERANKER_CANDIDATE_POOL is not a number, using the default",
+			"value", raw, "default", mcptools.DefaultRerankerPool)
+		return mcptools.DefaultRerankerPool
+	}
+	if poolDepth <= 0 {
+		slog.Warn("RERANKER_CANDIDATE_POOL must be positive, using the default",
+			"value", poolDepth, "default", mcptools.DefaultRerankerPool)
+		return mcptools.DefaultRerankerPool
+	}
+	if poolDepth > mcptools.MaxRerankerPool {
+		slog.Warn("RERANKER_CANDIDATE_POOL exceeds the maximum, clamping",
+			"value", poolDepth, "max", mcptools.MaxRerankerPool)
+		return mcptools.MaxRerankerPool
+	}
+	return poolDepth
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
