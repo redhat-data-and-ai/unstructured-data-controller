@@ -127,6 +127,51 @@ func GetUnstructuredDataPipelineResourceWithStage(name, namespace string) v1alph
 	}
 }
 
+const (
+	gitRepoURL  = "https://github.com/redhat-data-and-ai/unstructured-data-controller.git"
+	gitRepoName = "unstructured-data-controller"
+)
+
+// GetGitPipelineCrawlOnly creates a pipeline CR with a public git source and crawl stage only.
+func GetGitPipelineCrawlOnly(name, namespace string) v1alpha1.UnstructuredDataPipeline {
+	if namespace == "" {
+		namespace = DefaultE2ENamespace
+	}
+	return v1alpha1.UnstructuredDataPipeline{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "unstructured-data-controller",
+				"app.kubernetes.io/managed-by": "kustomize",
+			},
+		},
+		Spec: v1alpha1.UnstructuredDataPipelineSpec{
+			Description: "e2e test git pipeline - crawl only",
+			Stages: []v1alpha1.PipelineStage{
+				{
+					Name: "crawl",
+					Type: v1alpha1.StageTypeSourceCrawler,
+					SourceCrawlerConfig: &v1alpha1.SourceCrawlerConfig{
+						Type: v1alpha1.TypeGit,
+						GitConfig: &v1alpha1.GitConfig{
+							Repos: []v1alpha1.GitRepo{
+								{
+									Repo:        gitRepoURL,
+									Name:        gitRepoName,
+									Revision:    "v0.1.0",
+									FileFormats: []string{"md"},
+									Paths:       []string{"README.md"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 // RandomStringGenerator will return a random string of provided length
 func RandomStringGenerator(length int) string {
 	charset := "abcdefghijklmnopqrstuvwxyz0123456789"

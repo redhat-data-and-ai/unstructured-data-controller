@@ -147,6 +147,12 @@ test-e2e: setup-test-e2e ## Run the e2e tests. Expected an isolated environment 
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: test-e2e-git
+test-e2e-git: setup-test-e2e ## Run fast git source e2e tests (crawl-only, skips docling/ollama)
+	SKIP_DOCLING_SETUP=true SKIP_OLLAMA_SETUP=true \
+		go test -count=1 -tags e2e -run TestGitSourceCrawl ./test/e2e/ -v -timeout=10m
+	$(MAKE) cleanup-test-e2e
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint and yamllint linters
 	$(GOLANGCI_LINT) run
