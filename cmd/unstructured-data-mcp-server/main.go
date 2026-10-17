@@ -33,6 +33,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/reranker"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -80,8 +81,24 @@ func main() {
 		ModelName:  os.Getenv("EMBEDDING_MODEL_NAME"),
 	})
 
+	var rerankerClient reranker.Reranker
+	if endpoint := os.Getenv("RERANKER_ENDPOINT"); endpoint != "" {
+		rerankerClient = reranker.NewHTTPClient(&reranker.HTTPClientConfig{
+			Endpoint:   endpoint,
+			APIKey:     os.Getenv("RERANKER_API_KEY"),
+			AuthFormat: "Bearer",
+			ModelName:  os.Getenv("RERANKER_MODEL_NAME"),
+		})
+		slog.Info("reranker client initialized", "endpoint", endpoint, "model", os.Getenv("RERANKER_MODEL_NAME"))
+	}
+
+	hybridSearchEnabled := os.Getenv("ENABLE_HYBRID_SEARCH") == "true"
+	if hybridSearchEnabled {
+		slog.Info("hybrid search (vector + keyword with RRF) enabled")
+	}
+
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
-	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient)
+	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, hybridSearchEnabled)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
 
 	oauthStore := auth.NewOAuthStore()
