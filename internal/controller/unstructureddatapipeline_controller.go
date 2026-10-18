@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -40,6 +41,7 @@ import (
 const (
 	UnstructuredDataPipelineControllerName = "UnstructuredDataPipeline"
 	PipelineLabel                          = "operator.dataverse.redhat.com/unstructured-data-pipeline"
+	UnstructuredDataPipelineFinalizer      = "operator.dataverse.redhat.com/unstructured-data-pipeline-finalizer"
 )
 
 var (
@@ -69,6 +71,20 @@ type UnstructuredDataPipelineReconciler struct {
 
 func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Fetch the CR before the health check so that deletion is never blocked
+	// by an unhealthy ControllerConfig.
+	unstructuredDataPipelineCR := &operatorv1alpha1.UnstructuredDataPipeline{}
+	if err := r.Get(ctx, req.NamespacedName, unstructuredDataPipelineCR); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	// DeepCopy to avoid mutating the shared informer cache
+	unstructuredDataPipelineCR = unstructuredDataPipelineCR.DeepCopy()
+
+	if !unstructuredDataPipelineCR.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, unstructuredDataPipelineCR)
+	}
+
 	logger.Info("reconciling", "controller", UnstructuredDataPipelineControllerName)
 
 	isHealthy, err := IsConfigCRHealthy(ctx, r.Client, req.Namespace)
@@ -81,13 +97,19 @@ func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	unstructuredDataPipelineCR := &operatorv1alpha1.UnstructuredDataPipeline{}
-	if err := r.Get(ctx, req.NamespacedName, unstructuredDataPipelineCR); err != nil {
-		logger.Error(err, "failed to get UnstructuredDataPipeline CR")
-		return ctrl.Result{}, err
+	// Ensure the finalizer is registered before any other work.
+	if !controllerutil.ContainsFinalizer(unstructuredDataPipelineCR, UnstructuredDataPipelineFinalizer) {
+		patch := client.MergeFrom(unstructuredDataPipelineCR.DeepCopy())
+		controllerutil.AddFinalizer(unstructuredDataPipelineCR, UnstructuredDataPipelineFinalizer)
+		if err := r.Patch(ctx, unstructuredDataPipelineCR, patch); err != nil {
+			logger.Error(err, "failed to add finalizer")
+			return ctrl.Result{}, err
+		}
+		// Adding a finalizer only bumps metadata, not spec, so generation stays the
+		// same and GenerationChangedPredicate would swallow the resulting UPDATE
+		// event.  Explicit requeue ensures we continue without relying on the watch.
+		return ctrl.Result{Requeue: true}, nil
 	}
-	// DeepCopy to avoid mutating the shared informer cache
-	unstructuredDataPipelineCR = unstructuredDataPipelineCR.DeepCopy()
 
 	stages := unstructuredDataPipelineCR.Spec.Stages
 	if err := operatorv1alpha1.ValidateStages(stages); err != nil {
@@ -353,10 +375,37 @@ func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, 
 	return r.markStageCreated(ctx, unstructuredDataPipelineCR, stage.Name)
 }
 
+func (r *UnstructuredDataPipelineReconciler) handleDeletion(ctx context.Context, pipeline *operatorv1alpha1.UnstructuredDataPipeline) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(pipeline, UnstructuredDataPipelineFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	patch := client.MergeFrom(pipeline.DeepCopy())
+	controllerutil.RemoveFinalizer(pipeline, UnstructuredDataPipelineFinalizer)
+	if err := r.Patch(ctx, pipeline, patch); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return ctrl.Result{}, nil
+		}
+		logger.Error(err, "failed to remove finalizer")
+		return ctrl.Result{}, err
+	}
+	logger.Info("finalizer removed, pipeline deletion complete", "pipeline", pipeline.Name)
+	return ctrl.Result{}, nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *UnstructuredDataPipelineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&operatorv1alpha1.UnstructuredDataPipeline{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		For(&operatorv1alpha1.UnstructuredDataPipeline{}, builder.WithPredicates(predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			predicate.Funcs{
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return !e.ObjectNew.GetDeletionTimestamp().IsZero()
+				},
+			},
+		))).
 		Owns(&operatorv1alpha1.SourceCrawler{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.ChunksGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
