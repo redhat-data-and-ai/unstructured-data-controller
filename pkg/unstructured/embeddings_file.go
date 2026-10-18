@@ -29,6 +29,14 @@ type EmbeddingsFile struct {
 	EmbeddingDocument *EmbeddingDocument `json:"embeddingDocument"`
 }
 
+type EmbeddingRow struct {
+	FileID     string                 `json:"fileId"`
+	ChunkIndex int                    `json:"chunkIndex"`
+	Text       string                 `json:"text"`
+	Embedding  []float64              `json:"embedding"`
+	Metadata   *EmbeddingFileMetadata `json:"metadata"`
+}
+
 func (c *EmbeddingFileMetadata) Equal(other *EmbeddingFileMetadata) bool {
 	if !cmp.Equal(c.ConvertedFileMetadata, other.ConvertedFileMetadata) {
 		return false
