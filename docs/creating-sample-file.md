@@ -25,7 +25,7 @@ The controller automatically processes unstructured files through a pipeline of 
 
 ```bash
 # Upload to S3 source bucket
-aws s3 cp test.pdf s3://data-ingestion-bucket/documents/
+awslocal s3 cp test.pdf s3://data-ingestion-bucket/documents/
 
 # The pipeline will automatically:
 # 1. Crawl the file from S3
@@ -46,8 +46,8 @@ kubectl get chunksgenerator -n unstructured-controller-namespace
 kubectl get vectorembeddingsgenerator -n unstructured-controller-namespace
 kubectl get destinationsyncer -n unstructured-controller-namespace
 
-# View controller logs
-kubectl logs -f deployment/unstructured-data-controller -n unstructured-controller-namespace
+# View controller logs: the controller runs in the terminal where you started
+# it with `make run` (see the setup guide), so its output appears there
 ```
 
 ---
@@ -60,16 +60,16 @@ Each stage writes to its own directory in the filestore:
 pipelines/<pipeline-name>/stages/
   crawl/
     file.pdf                    # raw file from source
-    file.pdf-metadata.json      # ETag-based change tracking
+    file.pdf.json               # metadata sidecar (ETag-based change tracking)
   convert/
-    file.pdf-converted.json     # Markdown conversion
+    file.pdf.json               # Markdown conversion
   chunk/
-    file.pdf-chunks.json        # chunked content
+    file.pdf.json               # chunked content
   embed/
-    file.pdf-vector-embeddings.json  # vector embeddings
+    file.pdf.json               # vector embeddings
 ```
 
 Destination S3 mirrors this structure at:
 ```
-s3://output-bucket/prefix/stages/<stage-name>/file.pdf.json
+s3://output-bucket/processed/stages/embed/file.pdf.json
 ```
