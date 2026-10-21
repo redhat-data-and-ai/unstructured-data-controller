@@ -12,6 +12,10 @@ on:
       - synchronize
     branches: [main, release-*]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
 env:
   KIND_CLUSTER: unstructured-data-controller-test-e2e
   NAMESPACE: unstructured-controller-namespace
