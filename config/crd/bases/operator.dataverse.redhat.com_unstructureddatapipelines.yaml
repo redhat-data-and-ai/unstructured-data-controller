@@ -53,6 +53,9 @@ spec:
                   does.
                 minLength: 1
                 type: string
+              displayName:
+                description: DisplayName is the human-readable name of the pipeline.
+                type: string
               guidance:
                 description: Guidance exposed via the MCP server to share details
                   about how to best use this Unstructured Data Pipeline.
@@ -373,9 +376,14 @@ spec:
                                 IDs to crawl recursively.
                               items:
                                 properties:
+                                  description:
+                                    type: string
+                                  name:
+                                    type: string
                                   url:
                                     type: string
                                 required:
+                                - name
                                 - url
                                 type: object
                               minItems: 1

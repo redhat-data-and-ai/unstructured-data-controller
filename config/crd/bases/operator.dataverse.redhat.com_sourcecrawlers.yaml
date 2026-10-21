@@ -145,9 +145,14 @@ spec:
                           IDs to crawl recursively.
                         items:
                           properties:
+                            description:
+                              type: string
+                            name:
+                              type: string
                             url:
                               type: string
                           required:
+                          - name
                           - url
                           type: object
                         minItems: 1

@@ -226,7 +226,9 @@ type GoogleDriveConfig struct {
 }
 
 type GoogleDriveFolders struct {
-	URL string `json:"url"`
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Description string `json:"description,omitempty"`
 }
 
 type SkipFolders struct {
@@ -273,6 +275,9 @@ type SnowflakeQueryConfig struct {
 
 // UnstructuredDataPipelineSpec defines the desired state of UnstructuredDataPipeline
 type UnstructuredDataPipelineSpec struct {
+	// DisplayName is the human-readable name of the pipeline.
+	// +optional
+	DisplayName string `json:"displayName"`
 	// Description is a human-readable summary of what the pipeline does.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
