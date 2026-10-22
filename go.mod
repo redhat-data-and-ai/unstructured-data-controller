@@ -1,6 +1,6 @@
 module github.com/redhat-data-and-ai/unstructured-data-controller
 
-go 1.25.8
+go 1.26.10
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.9
