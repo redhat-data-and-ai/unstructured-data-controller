@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -30,6 +31,8 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/reranker"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/rrf"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
@@ -40,7 +43,12 @@ type getChunksArgs struct {
 	Limit          int    `json:"limit,omitempty" jsonschema:"Number of chunks to return. Use a lower value (1-5) for specific factual questions. Use a higher value for broad questions like summaries or 'tell me everything about X'. Defaults to 10 if not specified."`
 }
 
-func RegisterGetChunksForEmbeddings(s *mcp.Server, k8sClient *k8sclient.Client, embeddingClient *embedding.HTTPClient) {
+// rerankerOverFetchMultiplier controls how many more candidates to retrieve from
+// Snowflake when reranking is enabled, giving the cross-encoder a broader set to
+// re-score before truncating to the requested limit.
+const rerankerOverFetchMultiplier = 3
+
+func RegisterGetChunksForEmbeddings(s *mcp.Server, k8sClient *k8sclient.Client, embeddingClient *embedding.HTTPClient, rerankerClient reranker.Reranker, hybridSearchEnabled bool) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_chunks_for_embeddings",
 		Description: `Search for relevant text chunks in a pipeline's data product using vector cosine similarity. Optionally scope the search to specific files using file_path_filter with glob patterns (e.g. "*/README.md", "*/aemv2/*").
@@ -137,14 +145,19 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			limit = 10
 		}
 
-		var chunks []snowflake.ChunkResult
+		fetchLimit := limit
+		if rerankerClient != nil {
+			fetchLimit = limit * rerankerOverFetchMultiplier
+		}
+
+		var vectorChunks []snowflake.ChunkResult
 		if args.FilePathFilter != "" {
 			filePattern := convertFileGlobToSQL(args.FilePathFilter)
-			log.Info("searching snowflake with file filter", "database", databaseName, "schema", schemaName, "table", tableName, "filePattern", filePattern, "limit", limit)
-			chunks, err = snowflake.SearchChunksWithFileFilter(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral, filePattern, limit)
+			log.Info("searching snowflake with file filter", "database", databaseName, "schema", schemaName, "table", tableName, "filePattern", filePattern, "limit", fetchLimit)
+			vectorChunks, err = snowflake.SearchChunksWithFileFilter(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral, filePattern, fetchLimit)
 		} else {
-			log.Info("searching snowflake", "database", databaseName, "schema", schemaName, "table", tableName, "limit", limit)
-			chunks, err = snowflake.SearchChunks(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral, limit)
+			log.Info("searching snowflake", "database", databaseName, "schema", schemaName, "table", tableName, "limit", fetchLimit)
+			vectorChunks, err = snowflake.SearchChunks(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral, fetchLimit)
 		}
 		if err != nil {
 			log.Error("failed to search chunks in snowflake", "error", err, "database", databaseName, "schema", schemaName, "table", tableName)
@@ -152,6 +165,40 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error searching chunks: %v", err)}},
 				IsError: true,
 			}, nil, nil
+		}
+
+		chunks := vectorChunks
+
+		if hybridSearchEnabled {
+			var keywordChunks []snowflake.ChunkResult
+			if args.FilePathFilter != "" {
+				filePattern := convertFileGlobToSQL(args.FilePathFilter)
+				log.Info("running keyword search with file filter", "limit", fetchLimit)
+				keywordChunks, err = snowflake.SearchChunksByKeywordWithFileFilter(ctx, oauthToken, databaseName, schemaName, tableName, args.Query, filePattern, fetchLimit)
+			} else {
+				log.Info("running keyword search", "limit", fetchLimit)
+				keywordChunks, err = snowflake.SearchChunksByKeyword(ctx, oauthToken, databaseName, schemaName, tableName, args.Query, fetchLimit)
+			}
+			if err != nil {
+				log.Error("keyword search failed, using vector results only", "error", err)
+			} else {
+				chunks = rrf.Fuse(vectorChunks, keywordChunks, rrf.DefaultK)
+				log.Info("hybrid search fused", "vector_count", len(vectorChunks), "keyword_count", len(keywordChunks), "fused_count", len(chunks))
+				if len(chunks) > fetchLimit {
+					chunks = chunks[:fetchLimit]
+				}
+			}
+		}
+
+		if rerankerClient != nil && len(chunks) > 0 {
+			chunks, err = rerankChunks(ctx, rerankerClient, args.Query, chunks, limit)
+			if err != nil {
+				log.Error("reranking failed, returning pre-rerank results", "error", err)
+			}
+		}
+
+		if len(chunks) > limit {
+			chunks = chunks[:limit]
 		}
 
 		jsonBytes, err := json.Marshal(chunks)
@@ -198,4 +245,43 @@ func convertFileGlobToSQL(glob string) string {
 	pattern := strings.ReplaceAll(glob, "%", "\\%")
 	pattern = strings.ReplaceAll(pattern, "_", "\\_")
 	return strings.ReplaceAll(pattern, "*", "%")
+}
+
+// rerankChunks sends the chunk texts through a cross-encoder reranker,
+// assigns reranker scores, re-sorts by relevance, and truncates to limit.
+func rerankChunks(ctx context.Context, rerankerClient reranker.Reranker, query string, chunks []snowflake.ChunkResult, limit int) ([]snowflake.ChunkResult, error) {
+	log := logger.FromContext(ctx)
+
+	documents := make([]string, len(chunks))
+	for i, chunk := range chunks {
+		documents[i] = chunk.ChunkText
+	}
+
+	results, err := rerankerClient.Rerank(ctx, query, documents, limit)
+	if err != nil {
+		return chunks, fmt.Errorf("calling reranker: %w", err)
+	}
+
+	log.Info("reranking applied", "candidates", len(chunks), "results", len(results))
+
+	reranked := make([]snowflake.ChunkResult, 0, len(results))
+	for _, result := range results {
+		if result.Index < 0 || result.Index >= len(chunks) {
+			continue
+		}
+		chunk := chunks[result.Index]
+		score := result.RelevanceScore
+		chunk.RerankerScore = &score
+		reranked = append(reranked, chunk)
+	}
+
+	sort.Slice(reranked, func(i, j int) bool {
+		return *reranked[i].RerankerScore > *reranked[j].RerankerScore
+	})
+
+	if len(reranked) > limit {
+		reranked = reranked[:limit]
+	}
+
+	return reranked, nil
 }
