@@ -45,7 +45,8 @@ import (
 //	        type: googleDrive
 //	        googleDriveConfig:
 //	          folders:
-//	            - url: "https://drive.google.com/drive/folders/1ABCdef_example_folder_id"
+//	            - name: example-folder
+//	              url: "https://drive.google.com/drive/folders/1ABCdef_example_folder_id"
 //	          skipFolders:
 //	            - pattern: ".archive"
 //	    - name: convert
@@ -217,8 +218,11 @@ type GitRepo struct {
 // GDriveConfig configures Google Drive folder crawling at the pipeline level.
 // Controller-level settings (maxRetries, concurrency, LDAP) are in ControllerConfig.
 type GoogleDriveConfig struct {
-	// FolderIDs is the list of Google Drive folder IDs to crawl recursively.
+	// Folders is the list of Google Drive folders to crawl recursively.
+	// Each folder's artifacts are stored under a subdirectory named by the folder's Name field.
 	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
 	Folders []GoogleDriveFolders `json:"folders"`
 	// SkipFolderNames is an optional list of folder names to skip during crawling.
 	// +optional
@@ -226,8 +230,11 @@ type GoogleDriveConfig struct {
 }
 
 type GoogleDriveFolders struct {
-	// +optional
-	Name string `json:"name,omitempty"`
+	// Name is a short identifier for this folder, used as the storage path subdirectory.
+	// Must be unique across folders. Must be a safe path segment: alphanumeric, hyphens, underscores, and dots (not leading).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`
+	Name string `json:"name"`
 	// +kubebuilder:validation:Required
 	URL string `json:"url"`
 	// +optional

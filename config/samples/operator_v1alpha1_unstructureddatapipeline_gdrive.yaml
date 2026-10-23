@@ -13,7 +13,8 @@ spec:
         type: googleDrive
         googleDriveConfig:
           folders:
-            - url: "1ua4tWAwVVZV_0p93asX5KJt7ycKH03ta"
+            - name: shared-docs
+              url: "1ua4tWAwVVZV_0p93asX5KJt7ycKH03ta"
           skipFolders:
             - pattern: "_indexes"
             - pattern: "_synthesized"
