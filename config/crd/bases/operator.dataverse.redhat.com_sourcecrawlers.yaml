@@ -141,17 +141,30 @@ spec:
                       Controller-level settings (maxRetries, concurrency, LDAP) are in ControllerConfig.
                     properties:
                       folders:
-                        description: FolderIDs is the list of Google Drive folder
-                          IDs to crawl recursively.
+                        description: |-
+                          Folders is the list of Google Drive folders to crawl recursively.
+                          Each folder's artifacts are stored under a subdirectory named by the folder's Name field.
                         items:
                           properties:
+                            description:
+                              type: string
+                            name:
+                              description: |-
+                                Name is a short identifier for this folder, used as the storage path subdirectory.
+                                Must be unique across folders. Must be a safe path segment: alphanumeric, hyphens, underscores, and dots (not leading).
+                              pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]*$
+                              type: string
                             url:
                               type: string
                           required:
+                          - name
                           - url
                           type: object
                         minItems: 1
                         type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
                       skipFolders:
                         description: SkipFolderNames is an optional list of folder
                           names to skip during crawling.
@@ -251,9 +264,12 @@ spec:
                   properties:
                     error:
                       type: string
+                    name:
+                      type: string
                     url:
                       type: string
                   required:
+                  - name
                   - url
                   type: object
                 type: array
