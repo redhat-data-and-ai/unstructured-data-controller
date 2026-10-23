@@ -137,6 +137,29 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			}
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to process converted file", "file", convertedFilePath)
+			var convertedFileMetadata *unstructured.ConvertedFileMetadata
+			if raw, readErr := r.fileStore.Retrieve(ctx, convertedFilePath); readErr == nil {
+				var cf unstructured.ConvertedFile
+				if json.Unmarshal(raw, &cf) == nil && cf.ConvertedDocument != nil {
+					convertedFileMetadata = cf.ConvertedDocument.Metadata
+				}
+			}
+			failedChunks := unstructured.ChunksFile{
+				ChunksDocument: &unstructured.ChunksDocument{
+					Metadata: &unstructured.ChunksFileMetadata{
+						ConvertedFileMetadata: convertedFileMetadata,
+						ChunkingTool:          unstructured.LangchainChunkingTool,
+						ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
+						Error:                 err.Error(),
+					},
+				},
+			}
+			if failedBytes, marshalErr := json.Marshal(failedChunks); marshalErr == nil {
+				failedPath := unstructured.RemapToOutputDir(convertedFilePath, inputPath, outputPath)
+				if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+					logger.Error(storeErr, "failed to store failed chunking status", "file", convertedFilePath)
+				}
+			}
 			continue
 		}
 		if processed {
@@ -228,6 +251,11 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		return false, err
 	}
 
+	if convertedFile.ConvertedDocument.Content == nil {
+		logger.Info("converted file has no content (upstream failure), skipping chunking", "file", convertedFilePath)
+		return false, nil
+	}
+
 	convertedFileMetadata := convertedFile.ConvertedDocument.Metadata
 
 	// check if the chunked file does not exist in the filestore then return true
@@ -257,6 +285,11 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		ChunkingTool:          unstructured.LangchainChunkingTool,
 		ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
 	}
+	if chunksFile.ChunksDocument.Chunks == nil {
+		logger.Info("chunks file exists but has no chunks (previous failure), re-chunking", "file", convertedFilePath)
+		return true, nil
+	}
+
 	if !chunksFile.ChunksDocument.Metadata.Equal(&newChunksFileMetadata) {
 		logger.Info("chunks file config has changed, re-chunking needed", "file", convertedFilePath)
 		return true, nil
