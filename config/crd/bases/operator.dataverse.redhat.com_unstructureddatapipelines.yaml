@@ -383,7 +383,6 @@ spec:
                                   url:
                                     type: string
                                 required:
-                                - name
                                 - url
                                 type: object
                               minItems: 1
