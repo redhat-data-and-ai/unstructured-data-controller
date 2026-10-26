@@ -34,15 +34,16 @@ import (
 )
 
 type getChunksArgs struct {
-	PipelineName string `json:"pipeline_name" jsonschema:"Name of the UnstructuredDataPipeline. If not known, call list_unstructured_data_pipelines_for_user first and pick the matching pipeline based on its description."`
-	Query        string `json:"query" jsonschema:"The search query to find relevant chunks"`
-	Limit        int    `json:"limit,omitempty" jsonschema:"Number of chunks to return. Use a lower value (1-5) for specific factual questions. Use a higher value for broad questions like summaries or 'tell me everything about X'. Defaults to 10 if not specified."`
+	PipelineName   string `json:"pipeline_name" jsonschema:"Name of the UnstructuredDataPipeline. If not known, call list_unstructured_data_pipelines_for_user first and pick the matching pipeline based on its description."`
+	Query          string `json:"query" jsonschema:"The search query to find relevant chunks using vector cosine similarity."`
+	FilePathFilter string `json:"file_path_filter,omitempty" jsonschema:"Optional glob pattern to scope the search to files matching this path. Use * to match any path segment. Examples: '*/README.md', 'repo-name/docs/*', '*/aemv2/*'."`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Number of chunks to return. Use a lower value (1-5) for specific factual questions. Use a higher value for broad questions like summaries or 'tell me everything about X'. Defaults to 10 if not specified."`
 }
 
 func RegisterGetChunksForEmbeddings(s *mcp.Server, k8sClient *k8sclient.Client, embeddingClient *embedding.HTTPClient) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_chunks_for_embeddings",
-		Description: `Search for relevant text chunks in a pipeline's data product using vector cosine similarity. Returns top matching chunks for the given query.
+		Description: `Search for relevant text chunks in a pipeline's data product using vector cosine similarity. Optionally scope the search to specific files using file_path_filter with glob patterns (e.g. "*/README.md", "*/aemv2/*").
 If pipeline_name is not known, call list_unstructured_data_pipelines_for_user first and follow the instructions in its response.
 If the returned chunks are not sufficient to answer the user's question, you may call get_processed_document with the same pipeline_name and the file_id from the top matching chunk to retrieve the full processed document for more context.
 On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.
@@ -125,8 +126,8 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			}, nil, nil
 		}
 		log.Info("embedding generated", "vector_dimensions", len(result.Embeddings[0]))
-
 		vectorLiteral := formatVectorLiteral(result.Embeddings[0])
+
 		databaseName := strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_"))
 		schemaName := strings.ToUpper(qc.Schema)
 		tableName := strings.ToUpper(qc.Table)
@@ -136,8 +137,15 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 			limit = 10
 		}
 
-		log.Info("searching snowflake", "database", databaseName, "schema", schemaName, "table", tableName, "limit", limit)
-		chunks, err := snowflake.SearchChunks(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral, limit)
+		var chunks []snowflake.ChunkResult
+		if args.FilePathFilter != "" {
+			filePattern := convertFileGlobToSQL(args.FilePathFilter)
+			log.Info("searching snowflake with file filter", "database", databaseName, "schema", schemaName, "table", tableName, "filePattern", filePattern, "limit", limit)
+			chunks, err = snowflake.SearchChunksWithFileFilter(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral, filePattern, limit)
+		} else {
+			log.Info("searching snowflake", "database", databaseName, "schema", schemaName, "table", tableName, "limit", limit)
+			chunks, err = snowflake.SearchChunks(ctx, oauthToken, databaseName, schemaName, tableName, vectorLiteral, limit)
+		}
 		if err != nil {
 			log.Error("failed to search chunks in snowflake", "error", err, "database", databaseName, "schema", schemaName, "table", tableName)
 			return &mcp.CallToolResult{
@@ -179,4 +187,15 @@ func formatVectorLiteral(vec []float64) string {
 		parts[i] = strconv.FormatFloat(v, 'f', -1, 64)
 	}
 	return "[" + strings.Join(parts, ",") + "]"
+}
+
+// convertFileGlobToSQL converts a file path glob pattern to a SQL LIKE pattern,
+// escaping literal SQL wildcards (% and _) before converting glob * to %.
+func convertFileGlobToSQL(glob string) string {
+	if glob == "" {
+		return ""
+	}
+	pattern := strings.ReplaceAll(glob, "%", "\\%")
+	pattern = strings.ReplaceAll(pattern, "_", "\\_")
+	return strings.ReplaceAll(pattern, "*", "%")
 }
