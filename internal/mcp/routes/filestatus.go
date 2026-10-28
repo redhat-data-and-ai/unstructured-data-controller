@@ -95,7 +95,7 @@ func (h *FileStatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		slog.Error("failed to query file status", "pipeline", pipelineName, "error", err)
-		writeJSONError(w, fmt.Sprintf("failed to query file status: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, "unable to retrieve file processing status, please try again later", http.StatusInternalServerError)
 		return
 	}
 

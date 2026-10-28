@@ -37,6 +37,9 @@ type GitSource struct {
 	FileFormats []string
 	OutputDir   string
 	CommitSHA   string
+	RepoURL     string
+	RepoSlug    string
+	Revision    string
 }
 
 func (g *GitSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.FileStore) ([]RawFileMetadata, error) {
@@ -62,15 +65,18 @@ func (g *GitSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.File
 			continue
 		}
 
-		filePath := path.Join(g.OutputDir, entry.Path)
-		sourceFileMap[filePath] = true
+		storagePath := path.Join(g.OutputDir, entry.Path)
+		sourceFileMap[storagePath] = true
 
 		file := RawFileMetadata{
-			FilePath: filePath,
-			UID:      entry.Hash,
+			FilePath:   path.Join(g.RepoSlug, entry.Path),
+			UID:        entry.Hash,
+			FileName:   path.Base(entry.Path),
+			FileURL:    g.RepoURL + "/-/blob/" + g.Revision + "/" + entry.Path,
+			SourceType: "git",
 		}
 
-		stored, err := g.storeFile(ctx, fs, &file, entry.Content)
+		stored, err := g.storeFile(ctx, fs, storagePath, &file, entry.Content)
 		if err != nil {
 			logger.Error(err, "failed to store git file", "path", entry.Path)
 			errorList[entry.Path] = err
@@ -113,13 +119,12 @@ func (g *GitSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.File
 }
 
 func (*GitSource) storeFile(
-	ctx context.Context, fs *filestore.FileStore, file *RawFileMetadata, content []byte,
+	ctx context.Context, fs *filestore.FileStore, storagePath string, file *RawFileMetadata, content []byte,
 ) (bool, error) {
 	logger := log.FromContext(ctx)
-	filePath := file.FilePath
-	metadataPath := MetadataPath(filePath)
+	metadataPath := MetadataPath(storagePath)
 
-	fileExists, err := fs.Exists(ctx, filePath)
+	fileExists, err := fs.Exists(ctx, storagePath)
 	if err != nil {
 		return false, err
 	}
@@ -139,21 +144,21 @@ func (*GitSource) storeFile(
 			return false, err
 		}
 		if existingFile.UID == file.UID {
-			logger.V(1).Info("git file unchanged, skipping", "file", filePath)
+			logger.V(1).Info("git file unchanged, skipping", "file", storagePath)
 			return false, nil
 		}
 	}
 
-	if err := fs.Store(ctx, filePath, content); err != nil {
-		return false, fmt.Errorf("failed to store file %s: %w", filePath, err)
+	if err := fs.Store(ctx, storagePath, content); err != nil {
+		return false, fmt.Errorf("failed to store file %s: %w", storagePath, err)
 	}
 
 	metadataData, err := json.Marshal(file)
 	if err != nil {
-		return false, fmt.Errorf("failed to marshal metadata for %s: %w", filePath, err)
+		return false, fmt.Errorf("failed to marshal metadata for %s: %w", storagePath, err)
 	}
 	if err := fs.Store(ctx, metadataPath, metadataData); err != nil {
-		return false, fmt.Errorf("failed to store metadata for %s: %w", filePath, err)
+		return false, fmt.Errorf("failed to store metadata for %s: %w", storagePath, err)
 	}
 
 	return true, nil

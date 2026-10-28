@@ -205,9 +205,14 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to process converted file", "file", convertedFilePath)
 			var convertedFileMetadata *unstructured.ConvertedFileMetadata
-			if raw, readErr := r.fileStore.Retrieve(ctx, convertedFilePath); readErr == nil {
+			raw, readErr := r.fileStore.Retrieve(ctx, convertedFilePath)
+			if readErr != nil {
+				logger.Error(readErr, "failed to retrieve converted file for error metadata", "file", convertedFilePath)
+			} else {
 				var cf unstructured.ConvertedFile
-				if json.Unmarshal(raw, &cf) == nil && cf.ConvertedDocument != nil {
+				if unmarshalErr := json.Unmarshal(raw, &cf); unmarshalErr != nil {
+					logger.Error(unmarshalErr, "failed to unmarshal converted file for error metadata", "file", convertedFilePath)
+				} else if cf.ConvertedDocument != nil {
 					convertedFileMetadata = cf.ConvertedDocument.Metadata
 				}
 			}
@@ -221,11 +226,14 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 					},
 				},
 			}
-			if failedBytes, marshalErr := json.Marshal(failedChunks); marshalErr == nil {
-				failedPath := unstructured.RemapToOutputDir(convertedFilePath, inputPath, outputPath)
-				if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
-					logger.Error(storeErr, "failed to store failed chunking status", "file", convertedFilePath)
-				}
+			failedBytes, marshalErr := json.Marshal(failedChunks)
+			if marshalErr != nil {
+				logger.Error(marshalErr, "failed to marshal failed chunking status", "file", convertedFilePath)
+				continue
+			}
+			failedPath := unstructured.RemapToOutputDir(convertedFilePath, inputPath, outputPath)
+			if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+				logger.Error(storeErr, "failed to store failed chunking status", "file", convertedFilePath)
 			}
 			continue
 		}
