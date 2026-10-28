@@ -433,6 +433,9 @@ func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
 			FileFormats: repo.FileFormats,
 			OutputDir:   repoOutputDir,
 			CommitSHA:   currentHash,
+			RepoURL:     repo.Repo,
+			RepoSlug:    slug,
+			Revision:    revision,
 		}
 
 		storedFiles, syncErr := gitSource.SyncFilesToFilestore(ctx, fs)
