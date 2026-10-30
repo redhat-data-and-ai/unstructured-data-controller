@@ -162,28 +162,61 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 ##@ Build
 
+# Stamp VERSION into the binaries so the service.version telemetry attribute
+# identifies the release. Deliberately not named LDFLAGS, which a developer may
+# already have exported, and := so VERSION is expanded once.
+VERSION_LDFLAGS := -X main.version=$(VERSION)
+MCP_VERSION_LDFLAGS := -X main.serverVersion=$(VERSION)
+
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -ldflags "$(VERSION_LDFLAGS)" -o bin/manager cmd/main.go
+
+.PHONY: build-mcp-server
+build-mcp-server: fmt vet ## Build MCP server binary.
+	go build -ldflags "$(MCP_VERSION_LDFLAGS)" -o bin/unstructured-data-mcp-server ./cmd/unstructured-data-mcp-server
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run -ldflags "$(VERSION_LDFLAGS)" ./cmd/main.go
+
+.PHONY: run-mcp-server
+run-mcp-server: fmt vet ## Run the MCP server from your host.
+	go run -ldflags "$(MCP_VERSION_LDFLAGS)" ./cmd/unstructured-data-mcp-server
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build --build-arg VERSION=$(VERSION) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
 
+##@ Observability
+
+OTEL_COMPOSE := $(CONTAINER_TOOL) compose -f hack/otel/compose.yaml
+
+.PHONY: otel-dev-up
+otel-dev-up: ## Start a local OTel Collector that prints everything it receives.
+	$(OTEL_COMPOSE) up -d
+	@echo "Collector listening on localhost:4317 (gRPC). Point a binary at it with:"
+	@echo "  OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 OTEL_EXPORTER_OTLP_INSECURE=true make run"
+	@echo "Then watch it with: make otel-dev-logs"
+
+.PHONY: otel-dev-logs
+otel-dev-logs: ## Follow the local OTel Collector logs.
+	$(OTEL_COMPOSE) logs -f
+
+.PHONY: otel-dev-down
+otel-dev-down: ## Stop the local OTel Collector.
+	$(OTEL_COMPOSE) down
+
 .PHONY: docker-build-mcp
 docker-build-mcp: ## Build docker image for the MCP server.
-	$(CONTAINER_TOOL) build -f Dockerfile.mcp -t ${IMG_MCP} .
+	$(CONTAINER_TOOL) build --build-arg VERSION=$(VERSION) -f Dockerfile.mcp -t ${IMG_MCP} .
 
 .PHONY: docker-push-mcp
 docker-push-mcp: ## Push docker image for the MCP server.

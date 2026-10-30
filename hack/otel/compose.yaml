@@ -1,0 +1,20 @@
+---
+# Local OpenTelemetry Collector for development and review.
+#
+#   make otel-dev-up
+#   OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 OTEL_EXPORTER_OTLP_INSECURE=true make run
+#   make otel-dev-logs
+#
+# See hack/otel/collector-config.yaml for what it does with the data.
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.137.0
+    container_name: udc-otel-collector
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      # OTLP/gRPC, which is what both binaries use.
+      - "4317:4317"
+      # OTLP/HTTP, for curl-ing synthetic payloads at the collector.
+      - "4318:4318"
