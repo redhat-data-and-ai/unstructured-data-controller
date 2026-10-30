@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -33,18 +34,48 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/telemetry"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 const (
-	serverName    = "unstructured-data-controller"
-	serverVersion = "0.1.0"
-	defaultAddr   = ":8080"
+	serverName  = "unstructured-data-controller"
+	defaultAddr = ":8080"
+
+	// Tool calls are user-driven and low volume, unlike the controller's
+	// continuous reconcile loops, so every trace is kept by default.
+	// OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG override this.
+	defaultTraceSampleRatio = 1.0
+
+	// Telemetry gets its own flush budget rather than sharing the server's
+	// shutdown context, which srv.Shutdown may already have consumed. The pod
+	// sets no terminationGracePeriodSeconds, so Kubernetes allows 30s and the
+	// worst case here (10s drain + 5s flush) fits comfortably.
+	telemetryFlushTimeout = 5 * time.Second
 )
+
+// serverVersion is stamped at build time with -ldflags "-X main.serverVersion=...".
+// It is reported both over the MCP protocol and as the service.version
+// resource attribute.
+var serverVersion = "dev"
 
 func main() {
 	logger.Init()
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+
+	// Configured from the standard OTEL_* environment variables, which the
+	// deployment supplies through its existing envFrom ConfigMap. No endpoint
+	// means no telemetry and no behaviour change.
+	telemetryProvider, err := telemetry.Setup(context.Background(), telemetry.Config{
+		ServiceName:      "unstructured-data-mcp-server",
+		ServiceVersion:   serverVersion,
+		TraceSampleRatio: defaultTraceSampleRatio,
+		Logger:           ctrl.Log.WithName("telemetry"),
+	})
+	if err != nil {
+		slog.Error("failed to set up telemetry", "error", err)
+		os.Exit(1)
+	}
 
 	oauthCfg, err := auth.NewOAuthConfigFromEnv()
 	if err != nil {
@@ -129,15 +160,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("MCP server starting", "addr", addr, "endpoint", "/mcp")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("server failed to start", "error", err)
-			os.Exit(1)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
 		}
 	}()
 
-	<-ctx.Done()
+	// Wait for a signal or for the listener to fail. Reporting the failure
+	// over a channel rather than calling os.Exit inside the goroutine keeps
+	// every exit path running the shutdown sequence below, so the telemetry
+	// flush cannot be skipped.
+	var listenErr error
+	select {
+	case <-ctx.Done():
+	case listenErr = <-serveErr:
+		slog.Error("server failed to start", "error", listenErr)
+	}
+
 	slog.Info("shutting down MCP server")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -157,7 +198,21 @@ func main() {
 	}
 	oauthMiddleware.Close()
 	oauthStore.Close()
+
+	// Fresh context: shutdownCtx above shares its 10s budget with
+	// srv.Shutdown and may already be expired, and the SDK's flush returns
+	// immediately on an expired context, dropping whatever is buffered.
+	flushCtx, cancelFlush := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+	if err := telemetryProvider.Shutdown(flushCtx); err != nil {
+		slog.Error("failed to flush telemetry", "error", err)
+	}
+	cancelFlush()
+
 	slog.Info("MCP server stopped")
+
+	if listenErr != nil {
+		os.Exit(1)
+	}
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {

@@ -7,6 +7,9 @@ WORKDIR /opt/app-root/src
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 
+# Stamped into the binary as the service.version telemetry attribute.
+ARG VERSION=dev
+
 # Copy the Go Modules manifests (for dependency caching)
 COPY go.mod go.mod
 COPY go.sum go.sum
@@ -20,7 +23,7 @@ COPY internal/ internal/
 
 # Build
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -a -o manager cmd/main.go
+    go build -a -ldflags "-X main.version=${VERSION}" -o manager cmd/main.go
 
 # Use Red Hat UBI minimal as runtime image
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest

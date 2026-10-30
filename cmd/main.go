@@ -17,15 +17,18 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	prometheusbridge "go.opentelemetry.io/contrib/bridges/prometheus"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -34,18 +37,44 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/telemetry"
 	// +kubebuilder:scaffold:imports
+)
+
+const (
+	// serviceName identifies this binary to the observability backends.
+	serviceName = "unstructured-data-controller"
+
+	// The pod sets terminationGracePeriodSeconds: 10 (config/manager/manager.yaml),
+	// while controller-runtime defaults GracefulShutdownTimeout to 30s. Left at
+	// the default, the kubelet would SIGKILL the manager two thirds of the way
+	// through its drain and no telemetry would ever be flushed. Both halves are
+	// budgeted inside the 10s instead: 5s to drain the reconcilers, then 3s to
+	// flush. Changing either value, or the pod's grace period, means
+	// re-checking the other two.
+	managerGracefulShutdownTimeout = 5 * time.Second
+	telemetryFlushTimeout          = 3 * time.Second
+
+	// Reconcile loops run continuously, so traces are sampled down by default.
+	// OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG override this at runtime.
+	defaultTraceSampleRatio = 0.1
 )
 
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+
+	// version is stamped at build time with -ldflags "-X main.version=...".
+	// It becomes the service.version resource attribute, which is how a
+	// backend tells one release of this operator from another.
+	version = "dev"
 )
 
 func init() {
@@ -91,6 +120,37 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Telemetry is configured entirely from the standard OTEL_* environment
+	// variables and stays a no-op until an endpoint is set, so a default
+	// install behaves exactly as it did before. See pkg/telemetry.
+	//
+	// context.Background() rather than the signal context: the OTLP exporters
+	// retain this context for their gRPC dialer, so a context that is
+	// cancelled on SIGTERM would tear the connection down before the final
+	// flush could use it.
+	telemetryProvider, err := telemetry.Setup(context.Background(), telemetry.Config{
+		ServiceName:      serviceName,
+		ServiceVersion:   version,
+		TraceSampleRatio: defaultTraceSampleRatio,
+		// Bridge controller-runtime's own Prometheus registry into the OTLP
+		// pipeline. This is what carries controller_runtime_*, workqueue_*,
+		// rest_client_*, go_* and process_* to the Collector, which is why
+		// --metrics-bind-address can stay disabled: there is nothing left for
+		// a scrape endpoint to serve that is not already being pushed.
+		//
+		// Two known bridge limitations, neither of which affects this metric
+		// set: Prometheus Summary metrics are dropped, and Prometheus
+		// histograms arrive as fixed-bucket OTel histograms.
+		MetricProducer: prometheusbridge.NewMetricProducer(
+			prometheusbridge.WithGatherer(ctrlmetrics.Registry),
+		),
+		Logger: ctrl.Log.WithName("telemetry"),
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to set up telemetry")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -181,13 +241,18 @@ func main() {
 		})
 	}
 
+	// Taken by address because ctrl.Options expects a *time.Duration; see the
+	// budget comment on managerGracefulShutdownTimeout.
+	gracefulShutdownTimeout := managerGracefulShutdownTimeout
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "6dc1af3d.dataverse.redhat.com",
+		Scheme:                  scheme,
+		Metrics:                 metricsServerOptions,
+		WebhookServer:           webhookServer,
+		HealthProbeBindAddress:  probeAddr,
+		LeaderElection:          enableLeaderElection,
+		LeaderElectionID:        "6dc1af3d.dataverse.redhat.com",
+		GracefulShutdownTimeout: &gracefulShutdownTimeout,
 		Cache: cache.Options{
 			DefaultNamespaces: map[string]cache.Config{
 				watchNamespace: {},
@@ -290,8 +355,29 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	startErr := mgr.Start(ctrl.SetupSignalHandler())
+
+	// Flush from here rather than from a manager.Runnable. mgr.Start returns
+	// only once controller-runtime has drained every runnable group, so this
+	// is the first point at which no reconciler can still be recording. A
+	// Runnable would be wrong whichever way it was written: one reporting
+	// NeedLeaderElection() == false lands in the Others group, which is
+	// stopped *before* the reconcilers, and a plain RunnableFunc does not
+	// implement LeaderElectionRunnable at all, so it is treated as leader
+	// election work and never runs on a standby replica.
+	//
+	// The context must be a fresh one. The signal context is already
+	// cancelled by now, and the SDK's flush returns immediately on a
+	// cancelled context, silently dropping precisely the telemetry that
+	// would explain the shutdown.
+	flushCtx, cancelFlush := context.WithTimeout(context.Background(), telemetryFlushTimeout)
+	if err := telemetryProvider.Shutdown(flushCtx); err != nil {
+		setupLog.Error(err, "failed to flush telemetry")
+	}
+	cancelFlush()
+
+	if startErr != nil {
+		setupLog.Error(startErr, "problem running manager")
 		os.Exit(1)
 	}
 }

@@ -1,0 +1,42 @@
+---
+# Local development OpenTelemetry Collector.
+#
+# This is NOT the production configuration. It terminates OTLP and prints
+# everything it receives, so a developer or reviewer can confirm that the
+# binaries actually export what they claim to. The real deployment forwards to
+# the observability backends instead and is owned by the platform.
+#
+# Start it with `make otel-dev-up`.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Small batches and a short timeout so output appears promptly while
+  # watching the logs, rather than being tuned for throughput.
+  batch:
+    timeout: 2s
+
+exporters:
+  debug:
+    verbosity: detailed
+    sampling_initial: 100
+    sampling_thereafter: 100
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

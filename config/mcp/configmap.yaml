@@ -19,3 +19,12 @@ data:
   EMBEDDING_ENDPOINT: "<YOUR_EMBEDDING_ENDPOINT>"
   # TODO: Replace with your embedding model name
   EMBEDDING_MODEL_NAME: "<YOUR_EMBEDDING_MODEL_NAME>"
+  # OpenTelemetry. The deployment already consumes this ConfigMap via envFrom,
+  # so uncommenting a key here is all it takes. Telemetry stays off until
+  # OTEL_EXPORTER_OTLP_ENDPOINT points at a Collector.
+  # OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc:4317"
+  # OTEL_EXPORTER_OTLP_INSECURE: "true"
+  # OTEL_RESOURCE_ATTRIBUTES: "deployment.environment.name=dev"
+  # Unlike the controller, every tool call is traced by default. Set
+  # OTEL_TRACES_SAMPLER=parentbased_traceidratio with OTEL_TRACES_SAMPLER_ARG
+  # to sample down if volume ever becomes a problem.
