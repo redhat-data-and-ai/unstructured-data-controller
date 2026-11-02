@@ -20,7 +20,7 @@ import "context"
 
 const (
 	DefaultPageSize = 100
-	MCPMaxResults   = 300
+	MCPDefaultLimit = 300
 )
 
 type StatusQuerierType string

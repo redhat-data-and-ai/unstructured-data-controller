@@ -117,12 +117,15 @@ func buildFileStatusQuery(qc filestatus.QueryConfig, params filestatus.FileStatu
 	return query, args
 }
 
+// Number of fixed columns before per-stage error columns: FILE_ID, FILE_PATH, FILE_NAME, FILE_URL, SOURCE_TYPE.
+const fileStatusFixedCols = 5
+
 // scanFileStatusRows scans dynamically-columned rows into FileStatusResult.
 // Column order: FILE_ID, FILE_PATH, FILE_NAME, FILE_URL, SOURCE_TYPE,
 // ERROR_0..ERROR_{N-1}, TOTAL_COUNT, FAILED_COUNT
 func scanFileStatusRows(rows *sql.Rows, stages []filestatus.StageMV) (*filestatus.FileStatusResult, error) {
 	numStages := len(stages)
-	numCols := 5 + numStages + 2
+	numCols := fileStatusFixedCols + numStages + 2
 
 	result := &filestatus.FileStatusResult{
 		Files: make([]filestatus.FileStatus, 0),
@@ -142,21 +145,25 @@ func scanFileStatusRows(rows *sql.Rows, stages []filestatus.StageMV) (*filestatu
 			result.SourceType = values[4].String
 		}
 		if result.TotalFiles == 0 {
-			if count, err := strconv.Atoi(values[5+numStages].String); err == nil {
-				result.TotalFiles = count
+			count, err := strconv.Atoi(values[fileStatusFixedCols+numStages].String)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse total_count: %w", err)
 			}
+			result.TotalFiles = count
 		}
 		if result.FailedFiles == 0 {
-			if count, err := strconv.Atoi(values[5+numStages+1].String); err == nil {
-				result.FailedFiles = count
+			count, err := strconv.Atoi(values[fileStatusFixedCols+numStages+1].String)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse failed_count: %w", err)
 			}
+			result.FailedFiles = count
 		}
 
 		stageStatuses := make([]filestatus.StageStatus, numStages)
 		for i, stage := range stages {
 			stageStatuses[i] = filestatus.StageStatus{
 				Name:  stage.Name,
-				Error: values[5+i].String,
+				Error: values[fileStatusFixedCols+i].String,
 			}
 		}
 
@@ -185,7 +192,7 @@ func (*SnowflakeQuerier) ListPipelineFiles(
 	}
 
 	if limit <= 0 {
-		limit = filestatus.MCPMaxResults
+		limit = filestatus.MCPDefaultLimit
 	}
 	query := fmt.Sprintf(
 		`SELECT FILE_ID, FILE_PATH, FILE_NAME, FILE_URL FROM %s.%s.%s ORDER BY FILE_ID LIMIT %d`,
