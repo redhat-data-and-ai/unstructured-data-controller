@@ -386,7 +386,7 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 				logger.Error(metaErr, "failed to read raw file metadata for failed conversion", "filePath", job.FilePath)
 				rawMeta = &unstructured.RawFileMetadata{UID: job.FileIdentifier}
 			}
-			r.writeFailedConversionResult(ctx, job.FilePath, rawMeta,
+			writeFailedConversionResult(ctx, job.FilePath, rawMeta,
 				fmt.Sprintf("max conversion attempts (%d) reached", maxDoclingConversionAttempts),
 				documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath, fs)
 			if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
@@ -446,7 +446,7 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 			return nil
 		}
 		logger.Error(err, "failed to convert file")
-		r.writeFailedConversionResult(ctx, rawFilePath, rawMeta, err.Error(),
+		writeFailedConversionResult(ctx, rawFilePath, rawMeta, err.Error(),
 			documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig, inputPath, outputPath, fs)
 		return err
 	}
@@ -719,7 +719,7 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *DocumentProcessorReconciler) writeFailedConversionResult(ctx context.Context, rawFilePath string, rawMeta *unstructured.RawFileMetadata, errMsg string, doclingConfig operatorv1alpha1.DoclingConfig, inputPath, outputPath string, fs *filestore.FileStore) {
+func writeFailedConversionResult(ctx context.Context, rawFilePath string, rawMeta *unstructured.RawFileMetadata, errMsg string, doclingConfig operatorv1alpha1.DoclingConfig, inputPath, outputPath string, fs *filestore.FileStore) {
 	logger := log.FromContext(ctx)
 	failedFile := unstructured.ConvertedFile{
 		ConvertedDocument: &unstructured.ConvertedDocument{

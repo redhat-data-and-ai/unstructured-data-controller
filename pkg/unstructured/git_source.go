@@ -72,7 +72,7 @@ func (g *GitSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.File
 			FilePath:   path.Join(g.RepoSlug, entry.Path),
 			UID:        entry.Hash,
 			FileName:   path.Base(entry.Path),
-			FileURL:    g.RepoURL + "/-/blob/" + g.Revision + "/" + entry.Path,
+			FileURL:    fmt.Sprintf("%s/-/blob/%s/%s", g.RepoURL, g.Revision, entry.Path),
 			SourceType: "git",
 		}
 

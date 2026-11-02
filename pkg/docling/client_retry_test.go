@@ -92,6 +92,7 @@ func TestGetConvertedFileMapsOnlyAPoll404ToTaskNotFound(t *testing.T) {
 
 			client := NewClientFromURL(&ClientConfig{URL: server.URL, MaxConcurrentRequests: 1, RetryPolicy: &noRetry})
 			require.True(t, client.ClientConfig.sem.TryAcquire(1), "taking the slot the submit would hold")
+			client.acquiredTasks.Store("task-1", true)
 
 			_, _, err := client.GetConvertedFile(context.Background(), "task-1")
 			require.Error(t, err)
