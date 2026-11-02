@@ -142,11 +142,11 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			if readErr != nil {
 				logger.Error(readErr, "failed to retrieve converted file for error metadata", "file", convertedFilePath)
 			} else {
-				var cf unstructured.ConvertedFile
-				if unmarshalErr := json.Unmarshal(raw, &cf); unmarshalErr != nil {
+				var convertedFile unstructured.ConvertedFile
+				if unmarshalErr := json.Unmarshal(raw, &convertedFile); unmarshalErr != nil {
 					logger.Error(unmarshalErr, "failed to unmarshal converted file for error metadata", "file", convertedFilePath)
-				} else if cf.ConvertedDocument != nil {
-					convertedFileMetadata = cf.ConvertedDocument.Metadata
+				} else if convertedFile.ConvertedDocument != nil {
+					convertedFileMetadata = convertedFile.ConvertedDocument.Metadata
 				}
 			}
 			failedChunks := unstructured.ChunksFile{

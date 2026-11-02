@@ -97,7 +97,7 @@ func RegisterGetPipelineProcessingStatus(s *mcp.Server, k8sClient *k8sclient.Cli
 
 		limit := args.Limit
 		if limit <= 0 {
-			limit = filestatus.MCPMaxResults
+			limit = filestatus.MCPDefaultLimit
 		}
 
 		log.Info("querying file processing status",

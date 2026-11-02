@@ -123,20 +123,24 @@ func (c *Client) GetFileStatusQueryConfig(
 		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
 	}
 
+	if len(pipeline.Spec.Stages) == 0 {
+		return nil, fmt.Errorf("pipeline %q has no stages configured", name)
+	}
+
 	cfg := &filestatus.QueryConfig{}
 	for _, stage := range pipeline.Spec.Stages {
 		if stage.QueryConfig == nil || stage.QueryConfig.Snowflake == nil {
 			continue
 		}
-		sq := stage.QueryConfig.Snowflake
+		snowflakeQuery := stage.QueryConfig.Snowflake
 		if cfg.Database == "" {
-			cfg.Database = sq.Database
-			cfg.Schema = sq.Schema
+			cfg.Database = snowflakeQuery.Database
+			cfg.Schema = snowflakeQuery.Schema
 			cfg.ProviderType = filestatus.StatusQuerierType(stage.QueryConfig.Type)
 		}
 		cfg.Stages = append(cfg.Stages, filestatus.StageMV{
 			Name:  stage.Name,
-			Table: sq.Table,
+			Table: snowflakeQuery.Table,
 		})
 	}
 

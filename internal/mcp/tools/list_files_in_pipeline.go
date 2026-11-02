@@ -97,7 +97,7 @@ func RegisterListFilesInPipeline(s *mcp.Server, k8sClient *k8sclient.Client, new
 
 		limit := args.Limit
 		if limit <= 0 {
-			limit = filestatus.MCPMaxResults
+			limit = filestatus.MCPDefaultLimit
 		}
 
 		log.Info("querying pipeline files", "database", database, "schema", schema, "table", table, "limit", limit)
