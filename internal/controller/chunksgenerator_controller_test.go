@@ -2,11 +2,13 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/langchain"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
+	"github.com/tmc/langchaingo/textsplitter"
 )
 
 // recordingStructuredChunker stands in for a block-aware chunker so a test can
@@ -26,6 +28,34 @@ func (c *recordingStructuredChunker) ChunkDocument(
 func TestTextChunkerFor(t *testing.T) {
 	splitterClient := langchain.NewClient(langchain.ClientConfig{MaxConcurrentRequests: 1})
 
+	// Every sub-config is filled with a distinct value, so a field read from
+	// the wrong sub-config shows up as a mismatch rather than two zeroes
+	// comparing equal.
+	config := &operatorv1alpha1.ChunksGeneratorConfig{
+		RecursiveCharacterSplitterConfig: operatorv1alpha1.RecursiveCharacterSplitterConfig{
+			Separators:    []string{"\n\n", "\n"},
+			ChunkSize:     111,
+			ChunkOverlap:  11,
+			KeepSeparator: true,
+		},
+		MarkdownSplitterConfig: operatorv1alpha1.MarkdownSplitterConfig{
+			ChunkSize:        222,
+			ChunkOverlap:     22,
+			CodeBlocks:       true,
+			ReferenceLinks:   true,
+			HeadingHierarchy: true,
+			JoinTableRows:    false,
+		},
+		TokenSplitterConfig: operatorv1alpha1.TokenSplitterConfig{
+			ChunkSize:         333,
+			ChunkOverlap:      33,
+			ModelName:         "a-model",
+			EncodingName:      "an-encoding",
+			AllowedSpecial:    []string{"allowed"},
+			DisallowedSpecial: []string{"disallowed"},
+		},
+	}
+
 	tests := map[string]struct {
 		strategy operatorv1alpha1.ChunkingStrategy
 		want     unstructured.Chunker
@@ -33,15 +63,43 @@ func TestTextChunkerFor(t *testing.T) {
 	}{
 		"recursive character": {
 			strategy: operatorv1alpha1.ChunkingStrategyRecursiveCharacter,
-			want:     &unstructured.RecursiveCharacterSplitter{},
+			want: &unstructured.RecursiveCharacterSplitter{
+				LangchainClient: splitterClient,
+				Config: &textsplitter.Options{
+					Separators:    []string{"\n\n", "\n"},
+					ChunkSize:     111,
+					ChunkOverlap:  11,
+					KeepSeparator: true,
+				},
+			},
 		},
 		"markdown": {
 			strategy: operatorv1alpha1.ChunkingStrategyMarkdown,
-			want:     &unstructured.MarkdownSplitter{},
+			want: &unstructured.MarkdownSplitter{
+				LangchainClient: splitterClient,
+				Config: &textsplitter.Options{
+					ChunkSize:            222,
+					ChunkOverlap:         22,
+					CodeBlocks:           true,
+					ReferenceLinks:       true,
+					KeepHeadingHierarchy: true,
+					JoinTableRows:        false,
+				},
+			},
 		},
 		"token": {
 			strategy: operatorv1alpha1.ChunkingStrategyToken,
-			want:     &unstructured.TokenSplitter{},
+			want: &unstructured.TokenSplitter{
+				LangchainClient: splitterClient,
+				Config: &textsplitter.Options{
+					ChunkSize:         333,
+					ChunkOverlap:      33,
+					ModelName:         "a-model",
+					EncodingName:      "an-encoding",
+					AllowedSpecial:    []string{"allowed"},
+					DisallowedSpecial: []string{"disallowed"},
+				},
+			},
 		},
 		"unknown strategy is an error": {
 			strategy: operatorv1alpha1.ChunkingStrategy("no-such-strategy"),
@@ -51,9 +109,10 @@ func TestTextChunkerFor(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			config := &operatorv1alpha1.ChunksGeneratorConfig{Strategy: test.strategy}
+			strategyConfig := *config
+			strategyConfig.Strategy = test.strategy
 
-			got, err := textChunkerFor(splitterClient, config)
+			got, err := textChunkerFor(splitterClient, &strategyConfig)
 			if test.wantErr {
 				if err == nil {
 					t.Fatalf("textChunkerFor(%q) returned no error, want one", test.strategy)
@@ -63,24 +122,22 @@ func TestTextChunkerFor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("textChunkerFor(%q) returned %v, want no error", test.strategy, err)
 			}
-			if gotType, wantType := typeName(got), typeName(test.want); gotType != wantType {
-				t.Errorf("textChunkerFor(%q) = %s, want %s", test.strategy, gotType, wantType)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Errorf("textChunkerFor(%q) = %T%+v, want %T%+v",
+					test.strategy, got, splitterOptions(got), test.want, splitterOptions(test.want))
 			}
 		})
 	}
 }
 
-func typeName(chunker unstructured.Chunker) string {
-	switch chunker.(type) {
-	case *unstructured.RecursiveCharacterSplitter:
-		return "RecursiveCharacterSplitter"
-	case *unstructured.MarkdownSplitter:
-		return "MarkdownSplitter"
-	case *unstructured.TokenSplitter:
-		return "TokenSplitter"
-	default:
-		return "unknown"
+// splitterOptions reads the Config field every splitter type has, so a failed
+// comparison prints the options that differ instead of a pointer address.
+func splitterOptions(chunker unstructured.Chunker) any {
+	config := reflect.Indirect(reflect.ValueOf(chunker)).FieldByName("Config")
+	if !config.IsValid() || config.IsNil() {
+		return nil
 	}
+	return config.Elem().Interface()
 }
 
 func TestDocumentChunkerFallsBackToTheConfiguredTextSplitter(t *testing.T) {
@@ -105,7 +162,7 @@ func TestDocumentChunkerFallsBackToTheConfiguredTextSplitter(t *testing.T) {
 		t.Fatalf("adapter wraps %T, want *unstructured.RecursiveCharacterSplitter", adapter.Chunker)
 	}
 
-	// The markdown path still produces the same flat list of strings.
+	// The text splitter path still produces the same flat list of strings.
 	doc := &unstructured.ConvertedDocument{
 		Content: &unstructured.Content{Markdown: "some text to split"},
 	}
@@ -120,8 +177,6 @@ func TestDocumentChunkerFallsBackToTheConfiguredTextSplitter(t *testing.T) {
 }
 
 func TestDocumentChunkerPrefersTheStructuredChunker(t *testing.T) {
-	withLangchainClient(t)
-
 	structured := &recordingStructuredChunker{
 		chunks: []unstructured.DocumentChunk{
 			{Text: "a chunk", BlockIDs: []string{"#/texts/7"}},
@@ -152,6 +207,26 @@ func TestDocumentChunkerPrefersTheStructuredChunker(t *testing.T) {
 	}
 	if len(chunks) != 1 || len(chunks[0].BlockIDs) != 1 {
 		t.Fatalf("ChunkDocument() = %#v, want one chunk carrying one block id", chunks)
+	}
+}
+
+func TestDocumentChunkerRejectsAnUnknownStrategy(t *testing.T) {
+	withLangchainClient(t)
+
+	// With no structured chunker there is nothing to fall back to, so an
+	// unrecognised strategy has to surface as an error rather than silently
+	// picking a splitter.
+	reconciler := &ChunksGeneratorReconciler{}
+	config := &operatorv1alpha1.ChunksGeneratorConfig{
+		Strategy: operatorv1alpha1.ChunkingStrategy("no-such-strategy"),
+	}
+
+	chunker, err := reconciler.documentChunker(config)
+	if err == nil {
+		t.Fatalf("documentChunker() = %#v, want an error", chunker)
+	}
+	if chunker != nil {
+		t.Errorf("documentChunker() = %#v, want nil alongside the error", chunker)
 	}
 }
 
