@@ -51,6 +51,17 @@ type ChunksGeneratorReconciler struct {
 	client.Client
 	Scheme    *runtime.Scheme
 	fileStore *filestore.FileStore
+
+	// structuredChunker chunks the converted document itself, so the chunks it
+	// produces can still name the document blocks they came from. It is unset
+	// unless a block-aware chunker has been configured, and while it is unset
+	// the text splitter named in the CR is used instead.
+	//
+	// Whoever sets this must also give it its own ChunkingTool value. The
+	// chunks artifact records the tool that produced it and needsChunking
+	// compares that value, so a chunker swap that leaves the tool reading
+	// "langchain" looks like no change at all and nothing is re-chunked.
+	structuredChunker unstructured.StructuredChunker
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators,verbs=get;list;watch;create;update;patch;delete
@@ -297,51 +308,18 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 		return nil, err
 	}
 
-	var chunker unstructured.Chunker
-	switch chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy {
-	case operatorv1alpha1.ChunkingStrategyRecursiveCharacter:
-		chunker = &unstructured.RecursiveCharacterSplitter{
-			LangchainClient: langchainClient,
-			Config: &textsplitter.Options{
-				Separators:    chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.Separators,
-				ChunkSize:     chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.ChunkSize,
-				ChunkOverlap:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.ChunkOverlap,
-				KeepSeparator: chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.KeepSeparator,
-			},
-		}
-	case operatorv1alpha1.ChunkingStrategyMarkdown:
-		chunker = &unstructured.MarkdownSplitter{
-			LangchainClient: langchainClient,
-			Config: &textsplitter.Options{
-				ChunkSize:            chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.ChunkSize,
-				ChunkOverlap:         chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.ChunkOverlap,
-				CodeBlocks:           chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.CodeBlocks,
-				ReferenceLinks:       chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.ReferenceLinks,
-				KeepHeadingHierarchy: chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.HeadingHierarchy,
-				JoinTableRows:        chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.JoinTableRows,
-			},
-		}
-	case operatorv1alpha1.ChunkingStrategyToken:
-		chunker = &unstructured.TokenSplitter{
-			LangchainClient: langchainClient,
-			Config: &textsplitter.Options{
-				ChunkSize:         chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.ChunkSize,
-				ChunkOverlap:      chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.ChunkOverlap,
-				ModelName:         chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.ModelName,
-				EncodingName:      chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.EncodingName,
-				AllowedSpecial:    chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.AllowedSpecial,
-				DisallowedSpecial: chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.DisallowedSpecial,
-			},
-		}
-	default:
-		return nil, fmt.Errorf("invalid strategy: %s", chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy)
+	chunker, err := r.documentChunker(&chunksGeneratorCR.Spec.ChunksGeneratorConfig)
+	if err != nil {
+		return nil, fmt.Errorf("choosing a chunker for %s: %w", convertedFilePath, err)
 	}
 
 	content := convertedFile.ConvertedDocument.Content.Markdown
-	chunks, err := chunker.Chunk(content)
+	chunks, err := chunker.ChunkDocument(ctx, convertedFile.ConvertedDocument)
 	if err != nil {
 		return nil, err
 	}
+
+	texts := unstructured.ChunkTexts(chunks)
 
 	// A parser that returns a document and no usable text chunks to nothing
 	// while every stage reports success, so the only place this can be caught
@@ -353,8 +331,8 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 	// Unlike every other chunking failure, this one recurs identically on each
 	// reconcile: the input and the config are unchanged and the stage has no
 	// attempt limit.
-	if err := unstructured.ValidateChunks(content, chunks); err != nil {
-		return nil, fmt.Errorf("chunking %s: %w", convertedFilePath, err)
+	if err := unstructured.ValidateChunks(content, texts); err != nil {
+		return nil, fmt.Errorf("%w: %s", err, convertedFilePath)
 	}
 
 	return &unstructured.ChunksFile{
@@ -366,10 +344,76 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
 			},
 			Chunks: &unstructured.Chunks{
-				Text: chunks,
+				// The artifact carries a flat list of strings, so any block
+				// identifiers a chunker produced are not written out yet.
+				Text: texts,
 			},
 		},
 	}, nil
+}
+
+// documentChunker picks the chunker to use for a ChunksGenerator.
+//
+// A structured chunker is preferred when one is configured, because its chunks
+// can name the document blocks they came from. With none configured the
+// document's markdown goes through the text splitter named in the CR, which is
+// what every pipeline does today.
+func (r *ChunksGeneratorReconciler) documentChunker(
+	config *operatorv1alpha1.ChunksGeneratorConfig,
+) (unstructured.StructuredChunker, error) {
+	if r.structuredChunker != nil {
+		return r.structuredChunker, nil
+	}
+
+	textChunker, err := textChunkerFor(langchainClient, config)
+	if err != nil {
+		return nil, err
+	}
+	return &unstructured.TextChunkerAdapter{Chunker: textChunker}, nil
+}
+
+// textChunkerFor builds the text splitter named by the chunking strategy.
+func textChunkerFor(
+	splitterClient *langchain.Client, config *operatorv1alpha1.ChunksGeneratorConfig,
+) (unstructured.Chunker, error) {
+	switch config.Strategy {
+	case operatorv1alpha1.ChunkingStrategyRecursiveCharacter:
+		return &unstructured.RecursiveCharacterSplitter{
+			LangchainClient: splitterClient,
+			Config: &textsplitter.Options{
+				Separators:    config.RecursiveCharacterSplitterConfig.Separators,
+				ChunkSize:     config.RecursiveCharacterSplitterConfig.ChunkSize,
+				ChunkOverlap:  config.RecursiveCharacterSplitterConfig.ChunkOverlap,
+				KeepSeparator: config.RecursiveCharacterSplitterConfig.KeepSeparator,
+			},
+		}, nil
+	case operatorv1alpha1.ChunkingStrategyMarkdown:
+		return &unstructured.MarkdownSplitter{
+			LangchainClient: splitterClient,
+			Config: &textsplitter.Options{
+				ChunkSize:            config.MarkdownSplitterConfig.ChunkSize,
+				ChunkOverlap:         config.MarkdownSplitterConfig.ChunkOverlap,
+				CodeBlocks:           config.MarkdownSplitterConfig.CodeBlocks,
+				ReferenceLinks:       config.MarkdownSplitterConfig.ReferenceLinks,
+				KeepHeadingHierarchy: config.MarkdownSplitterConfig.HeadingHierarchy,
+				JoinTableRows:        config.MarkdownSplitterConfig.JoinTableRows,
+			},
+		}, nil
+	case operatorv1alpha1.ChunkingStrategyToken:
+		return &unstructured.TokenSplitter{
+			LangchainClient: splitterClient,
+			Config: &textsplitter.Options{
+				ChunkSize:         config.TokenSplitterConfig.ChunkSize,
+				ChunkOverlap:      config.TokenSplitterConfig.ChunkOverlap,
+				ModelName:         config.TokenSplitterConfig.ModelName,
+				EncodingName:      config.TokenSplitterConfig.EncodingName,
+				AllowedSpecial:    config.TokenSplitterConfig.AllowedSpecial,
+				DisallowedSpecial: config.TokenSplitterConfig.DisallowedSpecial,
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("invalid strategy: %s", config.Strategy)
+	}
 }
 
 func (r *ChunksGeneratorReconciler) findDependents(ctx context.Context, obj client.Object) []reconcile.Request {
