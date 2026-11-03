@@ -138,3 +138,87 @@ func TestDoclingConfig_SetDefaults_DoesNotAliasGlobalSlice(t *testing.T) {
 		t.Error("SetDefaults aliased the global defaultFromFormats slice")
 	}
 }
+
+func TestNemotronConfig_SetDefaults_EmptyConfig(t *testing.T) {
+	c := NemotronConfig{}
+	c.SetDefaults()
+
+	if c.Mode != DefaultNemotronMode {
+		t.Errorf("expected mode %q, got %q", DefaultNemotronMode, c.Mode)
+	}
+	if c.DPI != DefaultNemotronDPI {
+		t.Errorf("expected dpi %d, got %d", DefaultNemotronDPI, c.DPI)
+	}
+	if c.IncludePageImages == nil || *c.IncludePageImages {
+		t.Error("expected page images to default to off")
+	}
+	if len(c.CropSkipClasses) != 3 {
+		t.Errorf("expected 3 default crop skip classes, got %v", c.CropSkipClasses)
+	}
+}
+
+func TestNemotronConfig_SetDefaults_PreservesExplicitValues(t *testing.T) {
+	includePageImages := true
+	c := NemotronConfig{
+		Mode:              "single",
+		DPI:               300,
+		IncludePageImages: &includePageImages,
+		CropSkipClasses:   []string{"Picture"},
+	}
+	c.SetDefaults()
+
+	if c.Mode != "single" {
+		t.Errorf("expected mode to be preserved, got %q", c.Mode)
+	}
+	if c.DPI != 300 {
+		t.Errorf("expected dpi to be preserved, got %d", c.DPI)
+	}
+	if c.IncludePageImages == nil || !*c.IncludePageImages {
+		t.Error("expected explicit page images setting to be preserved")
+	}
+	if len(c.CropSkipClasses) != 1 || c.CropSkipClasses[0] != "Picture" {
+		t.Errorf("expected explicit crop skip classes to be preserved, got %v", c.CropSkipClasses)
+	}
+}
+
+func TestNemotronConfig_SetDefaults_DoesNotAliasGlobalSlice(t *testing.T) {
+	first := NemotronConfig{}
+	first.SetDefaults()
+	first.CropSkipClasses[0] = "mutated"
+
+	second := NemotronConfig{}
+	second.SetDefaults()
+
+	if second.CropSkipClasses[0] == "mutated" {
+		t.Error("defaults alias the package-level slice; one config mutated another")
+	}
+}
+
+func TestDocumentProcessorConfig_SetDefaults_NemotronDoesNotDefaultDocling(t *testing.T) {
+	// A nemotron pipeline must not carry a fully populated docling config:
+	// it would take part in the Equal() comparison that drives reprocessing.
+	c := DocumentProcessorConfig{Type: DocumentProcessorTypeNemotron}
+	c.SetDefaults()
+
+	if c.NemotronConfig == nil {
+		t.Fatal("expected a nemotron config to be created")
+	}
+	if c.NemotronConfig.Mode != DefaultNemotronMode {
+		t.Errorf("expected nemotron defaults to be applied, got mode %q", c.NemotronConfig.Mode)
+	}
+	if len(c.DoclingConfig.FromFormats) != 0 {
+		t.Errorf("expected docling config to be left alone, got %v", c.DoclingConfig.FromFormats)
+	}
+}
+
+func TestDocumentProcessorConfig_SetDefaults_DoclingDoesNotCreateNemotronConfig(t *testing.T) {
+	c := DocumentProcessorConfig{}
+	c.SetDefaults()
+
+	if c.NemotronConfig != nil {
+		t.Error("expected no nemotron config on a docling pipeline")
+	}
+	if len(c.DoclingConfig.FromFormats) == 0 {
+		t.Error("expected docling defaults to be applied")
+	}
+}

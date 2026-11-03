@@ -143,7 +143,47 @@ spec:
                           type: string
                         type: array
                     type: object
+                  nemotronConfig:
+                    description: NemotronConfig configures the Nemotron Parse sidecar.
+                    properties:
+                      cropSkipClasses:
+                        description: |-
+                          CropSkipClasses lists block classes that get no crop image. Defaults to
+                          page furniture, matching the classes the block chunker also drops.
+                        items:
+                          type: string
+                        type: array
+                      dpi:
+                        description: |-
+                          DPI for rasterizing PDF pages before parsing. Rasterization memory grows
+                          with the square of DPI, so this is bounded.
+                        maximum: 600
+                        minimum: 50
+                        type: integer
+                      includePageImages:
+                        description: |-
+                          IncludePageImages stores a full-page image per page in addition to the
+                          per-block crops. Off by default: the crops are what citations need, and
+                          page images are large.
+                        type: boolean
+                      mode:
+                        description: |-
+                          Mode controls how many model calls each page costs.
+                          single: one call per page.
+                          double: full page, then a re-parse of every detected Table/Chart region,
+                          which is 1+N calls per page but materially better on complex tables.
+                          triple: adds a separate detection pass before the crops.
+                        enum:
+                        - single
+                        - double
+                        - triple
+                        type: string
+                    type: object
                   type:
+                    description: Type selects the parser. Defaults to docling.
+                    enum:
+                    - docling
+                    - nemotron
                     type: string
                 type: object
               dataProduct:
@@ -330,6 +370,45 @@ spec:
                       type: string
                     filePath:
                       type: string
+                    nemotronConfig:
+                      description: |-
+                        Pointer so a docling job does not carry an empty nemotron block. Jobs
+                        live in CR status, one per in-flight file, so the schema cost is paid
+                        per job rather than once.
+                      properties:
+                        cropSkipClasses:
+                          description: |-
+                            CropSkipClasses lists block classes that get no crop image. Defaults to
+                            page furniture, matching the classes the block chunker also drops.
+                          items:
+                            type: string
+                          type: array
+                        dpi:
+                          description: |-
+                            DPI for rasterizing PDF pages before parsing. Rasterization memory grows
+                            with the square of DPI, so this is bounded.
+                          maximum: 600
+                          minimum: 50
+                          type: integer
+                        includePageImages:
+                          description: |-
+                            IncludePageImages stores a full-page image per page in addition to the
+                            per-block crops. Off by default: the crops are what citations need, and
+                            page images are large.
+                          type: boolean
+                        mode:
+                          description: |-
+                            Mode controls how many model calls each page costs.
+                            single: one call per page.
+                            double: full page, then a re-parse of every detected Table/Chart region,
+                            which is 1+N calls per page but materially better on complex tables.
+                            triple: adds a separate detection pass before the crops.
+                          enum:
+                          - single
+                          - double
+                          - triple
+                          type: string
+                      type: object
                     status:
                       type: string
                     taskID:

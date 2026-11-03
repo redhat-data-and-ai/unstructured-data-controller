@@ -61,10 +61,20 @@ import (
 const (
 	DocumentProcessorCondition   = "DocumentProcessorReady"
 	DefaultDocumentProcessorType = "docling"
-	DefaultOCRPreset             = "auto"
-	DefaultPDFBackend            = "docling_parse"
-	DefaultPipeline              = "standard"
-	DefaultTableMode             = "accurate"
+
+	// Parser selectors for DocumentProcessorConfig.Type.
+	DocumentProcessorTypeDocling  = DefaultDocumentProcessorType
+	DocumentProcessorTypeNemotron = "nemotron"
+
+	// Nemotron defaults. Double mode costs 1+N model calls per page but is
+	// materially better on tables, which is the reason for adopting this parser.
+	DefaultNemotronMode = "double"
+	DefaultNemotronDPI  = 200
+
+	DefaultOCRPreset  = "auto"
+	DefaultPDFBackend = "docling_parse"
+	DefaultPipeline   = "standard"
+	DefaultTableMode  = "accurate"
 	// "placeholder" prevents raw base64 image data from leaking into markdown content
 	// that flows into chunking and embedding stages.
 	DefaultImageExportMode        = "placeholder"
@@ -92,6 +102,11 @@ const (
 
 var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
 
+// defaultCropSkipClasses mirrors SKIP_CLASSES in the reference implementation
+// (nemotron_rag/models.py). These classes never become chunks, so cropping
+// them would produce images nothing references.
+var defaultCropSkipClasses = []string{"Page-header", "Page-footer", "Picture"}
+
 func boolPtr(b bool) *bool { return &b }
 
 // DocumentProcessorSpec defines the desired state of DocumentProcessor
@@ -118,10 +133,14 @@ type Job struct {
 	FileIdentifier    string        `json:"fileIdentifier,omitempty"`
 	DocumentConverter string        `json:"documentConverter,omitempty"`
 	DoclingConfig     DoclingConfig `json:"doclingConfig,omitempty"`
-	TaskID            string        `json:"taskID,omitempty"`
-	Status            string        `json:"status,omitempty"`
-	CreatedOn         string        `json:"createdOn,omitempty"`
-	Attempts          int           `json:"attempts,omitempty"`
+	// Pointer so a docling job does not carry an empty nemotron block. Jobs
+	// live in CR status, one per in-flight file, so the schema cost is paid
+	// per job rather than once.
+	NemotronConfig *NemotronConfig `json:"nemotronConfig,omitempty"`
+	TaskID         string          `json:"taskID,omitempty"`
+	Status         string          `json:"status,omitempty"`
+	CreatedOn      string          `json:"createdOn,omitempty"`
+	Attempts       int             `json:"attempts,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -236,8 +255,41 @@ func (d *DocumentProcessor) UpdateStatus(message string, err error) {
 }
 
 type DocumentProcessorConfig struct {
-	Type          string        `json:"type,omitempty"`
-	DoclingConfig DoclingConfig `json:"doclingConfig,omitempty"`
+	// Type selects the parser. Defaults to docling.
+	// +kubebuilder:validation:Enum=docling;nemotron
+	Type           string          `json:"type,omitempty"`
+	DoclingConfig  DoclingConfig   `json:"doclingConfig,omitempty"`
+	NemotronConfig *NemotronConfig `json:"nemotronConfig,omitempty"`
+}
+
+// NemotronConfig configures the Nemotron Parse sidecar.
+type NemotronConfig struct {
+	// Mode controls how many model calls each page costs.
+	// single: one call per page.
+	// double: full page, then a re-parse of every detected Table/Chart region,
+	// which is 1+N calls per page but materially better on complex tables.
+	// triple: adds a separate detection pass before the crops.
+	// +kubebuilder:validation:Enum=single;double;triple
+	// +optional
+	Mode string `json:"mode,omitempty"`
+
+	// DPI for rasterizing PDF pages before parsing. Rasterization memory grows
+	// with the square of DPI, so this is bounded.
+	// +kubebuilder:validation:Minimum=50
+	// +kubebuilder:validation:Maximum=600
+	// +optional
+	DPI int `json:"dpi,omitempty"`
+
+	// IncludePageImages stores a full-page image per page in addition to the
+	// per-block crops. Off by default: the crops are what citations need, and
+	// page images are large.
+	// +optional
+	IncludePageImages *bool `json:"includePageImages,omitempty"`
+
+	// CropSkipClasses lists block classes that get no crop image. Defaults to
+	// page furniture, matching the classes the block chunker also drops.
+	// +optional
+	CropSkipClasses []string `json:"cropSkipClasses,omitempty"`
 }
 
 type PictureDescriptionAPIParams struct {
@@ -305,11 +357,41 @@ type DoclingConfig struct {
 }
 
 // SetDefaults fills in sane defaults for any unset fields.
+//
+// Only the selected parser's config is defaulted. Defaulting both would write
+// a fully populated docling config into a nemotron pipeline's metadata, where
+// it would then take part in the Equal() comparison that drives reprocessing.
 func (c *DocumentProcessorConfig) SetDefaults() {
 	if c.Type == "" {
 		c.Type = DefaultDocumentProcessorType
 	}
-	c.DoclingConfig.SetDefaults()
+	switch c.Type {
+	case DocumentProcessorTypeNemotron:
+		if c.NemotronConfig == nil {
+			c.NemotronConfig = &NemotronConfig{}
+		}
+		c.NemotronConfig.SetDefaults()
+	default:
+		c.DoclingConfig.SetDefaults()
+	}
+}
+
+// SetDefaults fills in sane defaults for any unset NemotronConfig fields.
+func (c *NemotronConfig) SetDefaults() {
+	if c.Mode == "" {
+		c.Mode = DefaultNemotronMode
+	}
+	if c.DPI == 0 {
+		c.DPI = DefaultNemotronDPI
+	}
+	if c.IncludePageImages == nil {
+		c.IncludePageImages = boolPtr(false)
+	}
+	if len(c.CropSkipClasses) == 0 {
+		// Copy rather than alias: the caller may mutate the returned slice and
+		// must not reach the package-level default through it.
+		c.CropSkipClasses = append([]string{}, defaultCropSkipClasses...)
+	}
 }
 
 // SetDefaults fills in sane defaults for any unset DoclingConfig fields.

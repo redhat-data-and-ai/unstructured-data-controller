@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestore"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/nemotron"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
 
@@ -85,11 +87,26 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	documentProcessorCR = documentProcessorCR.DeepCopy()
 
-	applyVLMDefaults(documentProcessorCR)
+	converterType := documentProcessorCR.Spec.DocumentProcessorConfig.Type
+	if converterType == "" {
+		converterType = operatorv1alpha1.DefaultDocumentProcessorType
+	}
+
+	// VLM picture description is a docling feature; its defaults and
+	// validation must not run for another parser.
+	if converterType == operatorv1alpha1.DocumentProcessorTypeDocling {
+		applyVLMDefaults(documentProcessorCR)
+	}
 	documentProcessorCR.Spec.DocumentProcessorConfig.SetDefaults()
 
-	if err := injectAndValidateVLMConfig(documentProcessorCR); err != nil {
-		return r.handleError(ctx, documentProcessorCR, err)
+	if converterType == operatorv1alpha1.DocumentProcessorTypeDocling {
+		if err := injectAndValidateVLMConfig(documentProcessorCR); err != nil {
+			return r.handleError(ctx, documentProcessorCR, err)
+		}
+	}
+
+	if converterType == operatorv1alpha1.DocumentProcessorTypeNemotron && nemotronClient == nil {
+		return r.handleError(ctx, documentProcessorCR, errNemotronNotConfigured)
 	}
 
 	// set status to waiting
@@ -100,6 +117,34 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	// Only the selected parser's wire config is built. The docling block
+	// dereferences pointers that SetDefaults fills for docling alone, so
+	// building it unconditionally would panic on a nemotron pipeline.
+	var doclingCfg *docling.DoclingConfig
+	if converterType == operatorv1alpha1.DocumentProcessorTypeDocling {
+		doclingCfg = r.buildDoclingWireConfig(documentProcessorCR)
+	}
+
+	fs, err := filestore.New(ctx, dataStorageDirectory, dataStorageBucket)
+	if err != nil {
+		if IsAWSClientNotInitializedError(err) {
+			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		logger.Error(err, "failed to create filestore")
+		return r.handleError(ctx, documentProcessorCR, err)
+	}
+	r.fileStore = fs
+
+	return r.reconcileStage(ctx, documentProcessorCR, doclingCfg)
+}
+
+// buildDoclingWireConfig maps the CR's docling config onto the docling-serve
+// wire format and injects the VLM credential, which lives only on the wire and
+// never in stored metadata.
+func (r *DocumentProcessorReconciler) buildDoclingWireConfig(
+	documentProcessorCR *operatorv1alpha1.DocumentProcessor,
+) *docling.DoclingConfig {
 	cfg := documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig
 	doclingCfg := &docling.DoclingConfig{
 		FromFormats:                     cfg.FromFormats,
@@ -137,16 +182,17 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		doclingCfg.PictureDescriptionAPI.Headers["Authorization"] = "Bearer " + vlmAPIKey
 	}
 
-	fs, err := filestore.New(ctx, dataStorageDirectory, dataStorageBucket)
-	if err != nil {
-		if IsAWSClientNotInitializedError(err) {
-			logger.Info("ControllerConfig has not initialized AWS clients yet, will try again in a bit ...")
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-		}
-		logger.Error(err, "failed to create filestore")
-		return r.handleError(ctx, documentProcessorCR, err)
-	}
-	r.fileStore = fs
+	return doclingCfg
+}
+
+// reconcileStage polls in-flight conversions, then submits any document that
+// still needs converting.
+func (r *DocumentProcessorReconciler) reconcileStage(
+	ctx context.Context,
+	documentProcessorCR *operatorv1alpha1.DocumentProcessor,
+	doclingCfg *docling.DoclingConfig,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 
 	// read from upstream stage directory, write to own stage directory
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(documentProcessorCR)
@@ -207,54 +253,26 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (err error) {
+func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) error {
 	logger := log.FromContext(ctx)
-	// recover from panic semaphore panic
-	defer func() {
-		if panicErr := recover(); panicErr != nil {
-			logger.Info("recovered from panic in processJob, likely stale job from previous session", "panic", panicErr, "taskID", job.TaskID, "filePath", job.FilePath)
-			if panicMessage, ok := panicErr.(string); ok && strings.Contains(panicMessage, docling.SemaphorePanicError) {
-				logger.Info("semaphore panic detected, removing stale job", "taskID", job.TaskID)
-				if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
-					documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-				}); updateErr != nil {
-					logger.Error(updateErr, "failed to delete stale job after panic", "filePath", job.FilePath)
-					err = updateErr
-					return
-				}
 
-				logger.Info("successfully removed stale job after semaphore panic", "filePath", job.FilePath)
-				err = fmt.Errorf("reconcileJob() function exited with panic: %v", panicErr)
-				return
-			}
-			// we don't want to recover from other types of panic
-			panic(panicErr)
-		}
-	}()
-
-	doclingTaskStatus, doclingResponse, err := doclingClient.GetConvertedFile(ctx, job.TaskID)
+	// Poll whichever parser owns this job, not whichever the CR is configured
+	// for now: a pipeline switched mid-flight still has to drain its old jobs.
+	taskStatus, convertedFile, err := r.pollConversion(ctx, job, documentProcessorCR, outputPath)
 	if err != nil {
 		return err
 	}
+	if taskStatus == taskStatusStale {
+		logger.Info("stale job detected, removing", "taskID", job.TaskID, "filePath", job.FilePath)
+		return controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
+		})
+	}
 
-	switch doclingTaskStatus {
+	switch taskStatus {
 	case docling.TaskStatusSuccess, docling.TaskStatusPartialSuccess:
-		logger.Info("docling task has been completed successfully, storing the converted file in the filestore", "taskID", job.TaskID, "filePath", job.FilePath)
-		// store the converted file in the filestore
-		convertedFileMetadata := unstructured.ConvertedFileMetadata{
-			RawFilePath:       job.FilePath,
-			FileIdentifier:    job.FileIdentifier,
-			DocumentConverter: unstructured.DocumentConverterDocling,
-			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
-		}
-		convertedFile := unstructured.ConvertedFile{
-			ConvertedDocument: &unstructured.ConvertedDocument{
-				Metadata: &convertedFileMetadata,
-				Content: &unstructured.Content{
-					Markdown: doclingResponse.Document.MDContent,
-				},
-			},
-		}
+		logger.Info("conversion task has completed, storing the converted file in the filestore",
+			"converter", job.DocumentConverter, "taskID", job.TaskID, "filePath", job.FilePath)
 
 		convertedFileBytes, err := json.Marshal(convertedFile)
 		if err != nil {
@@ -277,10 +295,19 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		logger.Info("successfully removed job from status as it has completed successfully", "filePath", job.FilePath)
 
 	case docling.TaskStatusFailure, docling.TaskStatusSkipped:
-		logger.Info("docling task has failed or skipped, will be retried", "taskID", job.TaskID, "filePath", job.FilePath)
+		logger.Info("conversion task has failed or skipped, will be retried",
+			"converter", job.DocumentConverter, "taskID", job.TaskID, "filePath", job.FilePath)
 		// if the attempts > max attempts, remove the job from the status
 		if job.Attempts >= maxDoclingConversionAttempts {
 			logger.Error(fmt.Errorf("failed to convert file, max attempts reached for file: %s", job.FilePath), "failed to convert file, max attempts reached")
+			rawMeta, metaErr := r.getRawFileMetadata(ctx, job.FilePath)
+			if metaErr != nil {
+				logger.Error(metaErr, "failed to read raw file metadata for failed conversion", "filePath", job.FilePath)
+				rawMeta = &unstructured.RawFileMetadata{UID: job.FileIdentifier}
+			}
+			r.writeFailedConversionResult(ctx, job.FilePath, rawMeta,
+				fmt.Sprintf("max conversion attempts (%d) reached", maxDoclingConversionAttempts),
+				documentProcessorCR.Spec.DocumentProcessorConfig, inputPath, outputPath)
 			if updateErr := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 				documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
 				documentProcessorCR.DeleteJobByFilePath(job.FilePath)
@@ -293,14 +320,117 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 
 	case docling.TaskStatusPending, docling.TaskStatusStarted:
 		// nothing needs to be done for this job
-		logger.Info("job is still pending or started", "task id", job.TaskID, "status", doclingTaskStatus, "file", job.FilePath)
+		logger.Info("job is still pending or started", "task id", job.TaskID, "status", taskStatus, "file", job.FilePath)
 
 	default:
 		// invalid task status
-		return fmt.Errorf("invalid task status received for task id: %s, status: %s, file: %s", job.TaskID, doclingTaskStatus, job.FilePath)
+		return fmt.Errorf("invalid task status received for task id: %s, status: %s, file: %s", job.TaskID, taskStatus, job.FilePath)
 	}
 
 	return nil
+}
+
+// taskStatusStale marks a job this process did not submit, which can only
+// happen after an operator restart. It is not a parser status.
+const taskStatusStale docling.TaskStatus = "stale"
+
+// desiredConversionIdentity builds the metadata that decides whether a
+// document already matches the CR's current parser configuration.
+//
+// Only the fields compared by ConvertedFileMetadata.Equal are set: the rest
+// describe the source file and have no bearing on whether reconversion is
+// needed.
+func desiredConversionIdentity(
+	documentProcessorCR *operatorv1alpha1.DocumentProcessor, rawFilePath, fileUID string,
+) unstructured.ConvertedFileMetadata {
+	config := documentProcessorCR.Spec.DocumentProcessorConfig
+	return unstructured.ConvertedFileMetadata{
+		RawFilePath:       rawFilePath,
+		FileIdentifier:    fileUID,
+		DocumentConverter: unstructured.DocumentConverter(config.Type),
+		DoclingConfig:     config.DoclingConfig,
+		NemotronConfig:    config.NemotronConfig,
+	}
+}
+
+// pollConversion asks the parser that owns this job for its status, and on
+// success assembles the converted-file envelope.
+//
+// Statuses are normalised onto docling.TaskStatus because both parsers speak
+// the same vocabulary; the sidecar was built that way so this dispatch stays a
+// branch rather than a second state machine.
+func (r *DocumentProcessorReconciler) pollConversion(
+	ctx context.Context,
+	job operatorv1alpha1.Job,
+	documentProcessorCR *operatorv1alpha1.DocumentProcessor,
+	outputPath string,
+) (docling.TaskStatus, *unstructured.ConvertedFile, error) {
+	switch job.DocumentConverter {
+	case operatorv1alpha1.DocumentProcessorTypeNemotron:
+		if nemotronClient == nil {
+			return "", nil, errNemotronNotConfigured
+		}
+		if !nemotronClient.IsAcquiredTask(job.TaskID) {
+			return taskStatusStale, nil, nil
+		}
+
+		status, result, err := nemotronClient.GetConvertedFile(ctx, job.TaskID)
+		if err != nil {
+			return "", nil, err
+		}
+		if result == nil {
+			return docling.TaskStatus(status), nil, nil
+		}
+
+		rawMeta, err := r.getRawFileMetadata(ctx, job.FilePath)
+		if err != nil {
+			return "", nil, err
+		}
+		convertedFile, err := r.collectNemotronResult(ctx, job, result, documentProcessorCR, rawMeta, outputPath)
+		if err != nil {
+			return "", nil, err
+		}
+		// Assets are safely in the filestore now, so the sidecar's copy can go.
+		r.releaseNemotronTask(ctx, job.TaskID)
+
+		return docling.TaskStatus(status), convertedFile, nil
+
+	default:
+		if !doclingClient.IsAcquiredTask(job.TaskID) {
+			return taskStatusStale, nil, nil
+		}
+
+		status, response, err := doclingClient.GetConvertedFile(ctx, job.TaskID)
+		if err != nil {
+			return "", nil, err
+		}
+		if status != docling.TaskStatusSuccess && status != docling.TaskStatusPartialSuccess {
+			return status, nil, nil
+		}
+
+		rawMeta, err := r.getRawFileMetadata(ctx, job.FilePath)
+		if err != nil {
+			return "", nil, err
+		}
+
+		return status, &unstructured.ConvertedFile{
+			ConvertedDocument: &unstructured.ConvertedDocument{
+				Metadata: &unstructured.ConvertedFileMetadata{
+					RawFilePath:       job.FilePath,
+					FileIdentifier:    job.FileIdentifier,
+					FilePath:          rawMeta.FilePath,
+					FileName:          rawMeta.FileName,
+					FileURL:           rawMeta.FileURL,
+					SourceType:        rawMeta.SourceType,
+					DocumentConverter: unstructured.DocumentConverterDocling,
+					DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
+				},
+				Content: &unstructured.Content{
+					Markdown: response.Document.MDContent,
+				},
+			},
+		}, nil
+	}
 }
 
 func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor, doclingCfg *docling.DoclingConfig, inputPath, outputPath string) error {
@@ -318,10 +448,10 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		return nil
 	}
 
-	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	// fetch the raw file metadata
+	rawMeta, err := r.getRawFileMetadata(ctx, rawFilePath)
 	if err != nil {
-		logger.Error(err, "Failed to get file UID")
+		logger.Error(err, "Failed to get raw file metadata")
 		return err
 	}
 
@@ -331,17 +461,47 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 		logger.Error(err, "failed to get file URL")
 		return err
 	}
-	response, err := doclingClient.ConvertFile(ctx, fileURL, *doclingCfg)
-	if err != nil {
-		logger.Error(err, "failed to convert file")
-		if strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
-			logger.Error(err, "failed to convert file, semaphore acquire error, will try again later")
-			return nil // no error, just skip the conversion this time
+	converterType := documentProcessorCR.Spec.DocumentProcessorConfig.Type
+	nemotronCfg := documentProcessorCR.Spec.DocumentProcessorConfig.NemotronConfig
+
+	var taskID, taskStatus string
+	switch converterType {
+	case operatorv1alpha1.DocumentProcessorTypeNemotron:
+		response, submitErr := nemotronClient.ConvertFile(ctx, fileURL, nemotronParseOptions(nemotronCfg))
+		if submitErr != nil {
+			// Both sentinels mean "no capacity right now", locally or on the
+			// sidecar. Neither is a conversion failure, so the document is
+			// left alone and retried on the next reconcile.
+			if strings.Contains(submitErr.Error(), nemotron.SemaphoreAcquireError) ||
+				strings.Contains(submitErr.Error(), nemotron.SidecarAtCapacityError) {
+				logger.Info("nemotron capacity reached, will try again later",
+					"filePath", rawFilePath, "reason", submitErr.Error())
+				return nil
+			}
+			logger.Error(submitErr, "failed to submit file to nemotron")
+			r.writeFailedConversionResult(ctx, rawFilePath, rawMeta, submitErr.Error(),
+				documentProcessorCR.Spec.DocumentProcessorConfig, inputPath, outputPath)
+			return submitErr
 		}
-		return err
+		taskID, taskStatus = response.TaskID, string(response.TaskStatus)
+
+	default:
+		response, submitErr := doclingClient.ConvertFile(ctx, fileURL, *doclingCfg)
+		if submitErr != nil {
+			if strings.Contains(submitErr.Error(), docling.SemaphoreAcquireError) {
+				logger.Info("semaphore full, will try again later", "filePath", rawFilePath)
+				return nil
+			}
+			logger.Error(submitErr, "failed to convert file")
+			r.writeFailedConversionResult(ctx, rawFilePath, rawMeta, submitErr.Error(),
+				documentProcessorCR.Spec.DocumentProcessorConfig, inputPath, outputPath)
+			return submitErr
+		}
+		taskID, taskStatus = response.TaskID, response.TaskStatus
 	}
 
-	logger.Info("docling task has been accepted, adding job to status", "taskID", response.TaskID, "filePath", rawFilePath)
+	logger.Info("conversion task has been accepted, adding job to status",
+		"converter", converterType, "taskID", taskID, "filePath", rawFilePath)
 
 	// if the job already exists, then get the conversion attempt count else set to 1
 	conversionAttempt := 1
@@ -353,11 +513,12 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 		documentProcessorCR.AddOrUpdateJob(operatorv1alpha1.Job{
 			FilePath:          rawFilePath,
-			FileIdentifier:    fileUID,
-			DocumentConverter: string(unstructured.DocumentConverterDocling),
+			FileIdentifier:    rawMeta.UID,
+			DocumentConverter: converterType,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
-			TaskID:            response.TaskID,
-			Status:            response.TaskStatus,
+			NemotronConfig:    nemotronCfg,
+			TaskID:            taskID,
+			Status:            taskStatus,
 			CreatedOn:         time.Now().Format(time.RFC3339),
 			Attempts:          conversionAttempt,
 		})
@@ -395,11 +556,18 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		return false, nil
 	}
 
-	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	// fetch the raw file metadata
+	rawMeta, err := r.getRawFileMetadata(ctx, rawFilePath)
 	if err != nil {
-		logger.Error(err, "Failed to get file UID")
+		logger.Error(err, "Failed to get raw file metadata")
 		return false, err
+	}
+	fileUID := rawMeta.UID
+
+	// let's check if the file exists in the permanently failing files list
+	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
+		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
+		return false, nil
 	}
 
 	// does the converted file exist in the output directory?
@@ -422,11 +590,11 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		}
 		currentConvertedFileMetadata := convertedFile.ConvertedDocument.Metadata
 
-		fileToConvertMetadata := unstructured.ConvertedFileMetadata{
-			RawFilePath:       rawFilePath,
-			FileIdentifier:    fileUID,
-			DocumentConverter: unstructured.DocumentConverterDocling,
-			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
+		fileToConvertMetadata := desiredConversionIdentity(documentProcessorCR, rawFilePath, fileUID)
+
+		if convertedFile.ConvertedDocument.Content == nil {
+			logger.Info("converted file exists but has no content (previous failure), re-converting", "filePath", rawFilePath)
+			return true, nil
 		}
 
 		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
@@ -435,28 +603,18 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		}
 	}
 
-	// let's check if the file exists in the permanently failing files list
-	if documentProcessorCR.IsFilePermanentlyFailing(rawFilePath) {
-		logger.Info("file is permanently failing, no conversion needed", "filePath", rawFilePath)
-		return false, nil
-	}
-
 	// now let's check if the job exists in status for this file
 	job := documentProcessorCR.GetJobByFilePath(rawFilePath)
 	if job != nil {
 		// job already exists for this document
 		logger.Info("job already exists for the file, checking if it's the same configuration ...", "filePath", rawFilePath)
-		fileToConvert := unstructured.ConvertedFileMetadata{
-			RawFilePath:       rawFilePath,
-			FileIdentifier:    fileUID,
-			DocumentConverter: unstructured.DocumentConverterDocling,
-			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
-		}
+		fileToConvert := desiredConversionIdentity(documentProcessorCR, rawFilePath, fileUID)
 		fileInJob := unstructured.ConvertedFileMetadata{
 			RawFilePath:       job.FilePath,
 			FileIdentifier:    job.FileIdentifier,
 			DocumentConverter: unstructured.DocumentConverter(job.DocumentConverter),
 			DoclingConfig:     job.DoclingConfig,
+			NemotronConfig:    job.NemotronConfig,
 		}
 
 		// first, we will check if the current job is still valid (same configuration)
@@ -490,22 +648,22 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	return true, nil
 }
 
-func (r *DocumentProcessorReconciler) getFileUID(ctx context.Context, rawFilePath string) (string, error) {
+func (r *DocumentProcessorReconciler) getRawFileMetadata(ctx context.Context, rawFilePath string) (*unstructured.RawFileMetadata, error) {
 	logger := log.FromContext(ctx)
 	metaDataFileRaw, err := r.fileStore.Retrieve(ctx, unstructured.MetadataPath(rawFilePath))
 	if err != nil {
 		logger.Error(err, "Failed to retrieve metadata file")
-		return "", err
+		return nil, err
 	}
 
-	metaDataFile := unstructured.RawFileMetadata{}
-	err = json.Unmarshal(metaDataFileRaw, &metaDataFile)
+	metaDataFile := &unstructured.RawFileMetadata{}
+	err = json.Unmarshal(metaDataFileRaw, metaDataFile)
 	if err != nil {
 		logger.Error(err, "Failed to unmarshal metadata file")
-		return "", err
+		return nil, err
 	}
 
-	return metaDataFile.UID, nil
+	return metaDataFile, nil
 }
 
 func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -544,6 +702,35 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&operatorv1alpha1.DestinationSyncer{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Named("documentprocessor").
 		Complete(r)
+}
+
+// writeFailedConversionResult records a conversion failure as a converted-file
+// envelope with no content. needsConversion treats a nil Content as retryable,
+// so this marks the document without hiding it from a later retry.
+func (r *DocumentProcessorReconciler) writeFailedConversionResult(ctx context.Context, rawFilePath string, rawMeta *unstructured.RawFileMetadata, errMsg string, config operatorv1alpha1.DocumentProcessorConfig, inputPath, outputPath string) {
+	logger := log.FromContext(ctx)
+	failedFile := unstructured.ConvertedFile{
+		ConvertedDocument: &unstructured.ConvertedDocument{
+			Metadata: &unstructured.ConvertedFileMetadata{
+				RawFilePath:       rawFilePath,
+				FileIdentifier:    rawMeta.UID,
+				FilePath:          rawMeta.FilePath,
+				FileName:          rawMeta.FileName,
+				FileURL:           rawMeta.FileURL,
+				SourceType:        rawMeta.SourceType,
+				DocumentConverter: unstructured.DocumentConverter(config.Type),
+				DoclingConfig:     config.DoclingConfig,
+				NemotronConfig:    config.NemotronConfig,
+				Error:             errMsg,
+			},
+		},
+	}
+	if failedBytes, marshalErr := json.Marshal(failedFile); marshalErr == nil {
+		failedPath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+		if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+			logger.Error(storeErr, "failed to store failed conversion result", "filePath", rawFilePath)
+		}
+	}
 }
 
 func (r *DocumentProcessorReconciler) handleError(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, err error) (ctrl.Result, error) {
@@ -632,4 +819,148 @@ func parseFloat64Ptr(s string) *float64 {
 		return nil
 	}
 	return &v
+}
+
+// errNemotronNotConfigured is returned when a pipeline selects the nemotron
+// parser but no sidecar URL is set on the ControllerConfig. Failing loudly
+// beats silently converting nothing.
+var errNemotronNotConfigured = errors.New(
+	"document processor is configured for the nemotron parser but ControllerConfig has no nemotronServeURL")
+
+// nemotronParseOptions maps the CR's parser config onto the sidecar wire
+// format. SetDefaults has already run, so the config is fully populated.
+func nemotronParseOptions(config *operatorv1alpha1.NemotronConfig) nemotron.ParseOptions {
+	if config == nil {
+		return nemotron.ParseOptions{}
+	}
+	options := nemotron.ParseOptions{
+		Mode:            config.Mode,
+		DPI:             config.DPI,
+		CropSkipClasses: config.CropSkipClasses,
+	}
+	if config.IncludePageImages != nil {
+		options.IncludePageImages = *config.IncludePageImages
+	}
+	return options
+}
+
+// collectNemotronResult turns a finished sidecar task into a converted-file
+// envelope, storing each block's crop image in the filestore on the way.
+//
+// Assets are fetched one at a time. On a large document this dominates the
+// cost of collecting a result; a bulk asset endpoint on the sidecar is the fix
+// if it shows up in reconcile timings.
+func (r *DocumentProcessorReconciler) collectNemotronResult(
+	ctx context.Context,
+	job operatorv1alpha1.Job,
+	result *nemotron.ResultResponse,
+	documentProcessorCR *operatorv1alpha1.DocumentProcessor,
+	rawMeta *unstructured.RawFileMetadata,
+	outputPath string,
+) (*unstructured.ConvertedFile, error) {
+	logger := log.FromContext(ctx)
+
+	assetDir := unstructured.AssetDir(outputPath, job.FileIdentifier)
+	pages := make([]unstructured.Page, 0, len(result.Document.Pages))
+
+	for _, page := range result.Document.Pages {
+		blocks := make([]unstructured.Block, 0, len(page.Blocks))
+		for _, block := range page.Blocks {
+			converted := unstructured.Block{
+				Index:      block.Index,
+				Class:      block.Class,
+				Text:       block.Text,
+				Content:    block.Content,
+				BBox:       block.BBox,
+				BBoxPixels: block.BBoxPixels,
+			}
+
+			if block.Crop != "" {
+				cropURI, err := r.storeNemotronAsset(ctx, job.TaskID, assetDir, block.Crop)
+				if err != nil {
+					return nil, err
+				}
+				converted.CropURI = cropURI
+			}
+			blocks = append(blocks, converted)
+		}
+
+		convertedPage := unstructured.Page{
+			PageNumber: page.PageNumber,
+			Markdown:   page.Markdown,
+			Blocks:     blocks,
+			Warnings:   page.Warnings,
+		}
+		if page.PageImage != "" {
+			pageImageURI, err := r.storeNemotronAsset(ctx, job.TaskID, assetDir, page.PageImage)
+			if err != nil {
+				return nil, err
+			}
+			convertedPage.PageImageURI = pageImageURI
+		}
+		pages = append(pages, convertedPage)
+	}
+
+	// A partially parsed document is kept, with the gap recorded. Dropping it
+	// would throw away the pages that did parse, and nothing downstream could
+	// tell the difference from the envelope alone.
+	conversionError := ""
+	if len(result.Errors) > 0 {
+		conversionError = fmt.Sprintf("parsed %d of %d pages: %s",
+			len(result.Document.Pages), result.Document.PageCount,
+			strings.Join(result.Errors, "; "))
+		logger.Info("nemotron document parsed with gaps",
+			"filePath", job.FilePath,
+			"pagesParsed", len(result.Document.Pages),
+			"pagesInSource", result.Document.PageCount,
+			"errorCount", len(result.Errors))
+	}
+
+	return &unstructured.ConvertedFile{
+		ConvertedDocument: &unstructured.ConvertedDocument{
+			Metadata: &unstructured.ConvertedFileMetadata{
+				RawFilePath:       job.FilePath,
+				FileIdentifier:    job.FileIdentifier,
+				FilePath:          rawMeta.FilePath,
+				FileName:          rawMeta.FileName,
+				FileURL:           rawMeta.FileURL,
+				SourceType:        rawMeta.SourceType,
+				DocumentConverter: unstructured.DocumentConverterNemotron,
+				NemotronConfig:    documentProcessorCR.Spec.DocumentProcessorConfig.NemotronConfig,
+				Error:             conversionError,
+			},
+			Content: &unstructured.Content{
+				Markdown: result.Document.Markdown,
+				Pages:    pages,
+			},
+		},
+	}, nil
+}
+
+// storeNemotronAsset copies one sidecar asset into the filestore and returns
+// the stored path, which becomes the block's cropURI.
+func (r *DocumentProcessorReconciler) storeNemotronAsset(
+	ctx context.Context, taskID, assetDir, name string,
+) (string, error) {
+	asset, err := nemotronClient.FetchAsset(ctx, taskID, name)
+	if err != nil {
+		return "", fmt.Errorf("fetching asset %s for task %s: %w", name, taskID, err)
+	}
+
+	assetPath := path.Join(assetDir, name)
+	if err := r.fileStore.Store(ctx, assetPath, asset); err != nil {
+		return "", fmt.Errorf("storing asset %s: %w", assetPath, err)
+	}
+	return assetPath, nil
+}
+
+// releaseNemotronTask frees the sidecar's scratch directory. Best effort: the
+// sidecar evicts on its own TTL, so a failure here costs disk rather than
+// correctness and must not fail a conversion that already succeeded.
+func (r *DocumentProcessorReconciler) releaseNemotronTask(ctx context.Context, taskID string) {
+	logger := log.FromContext(ctx)
+	if err := nemotronClient.Release(ctx, taskID); err != nil {
+		logger.Info("could not release nemotron task, it will expire on its own",
+			"taskID", taskID, "reason", err.Error())
+	}
 }

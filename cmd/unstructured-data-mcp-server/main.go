@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,11 +29,15 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	mcproutes "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/routes"
 	mcptools "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/tools"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -80,9 +85,18 @@ func main() {
 		ModelName:  os.Getenv("EMBEDDING_MODEL_NAME"),
 	})
 
+	// Crop images live in object storage rather than Snowflake, so serving
+	// them needs credentials the other tools do not. When unset, get_crop
+	// reports that image retrieval is unavailable instead of failing per call.
+	cropStore := newCropStore(context.Background())
+
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
 	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient)
+	mcptools.RegisterGetChunk(mcpServer, k8sClient)
+	mcptools.RegisterGetCrop(mcpServer, k8sClient, cropStore)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
+	mcptools.RegisterGetPipelineProcessingStatus(mcpServer, k8sClient, newStatusQuerier)
+	mcptools.RegisterListFilesInPipeline(mcpServer, k8sClient, newStatusQuerier)
 
 	oauthStore := auth.NewOAuthStore()
 	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection)
@@ -109,6 +123,10 @@ func main() {
 	mux.HandleFunc("/auth/callback/oidc", oauthServer.HandleCallback)
 	mux.HandleFunc("/auth/complete/{token}", oauthServer.HandleComplete)
 	mux.HandleFunc("/auth/token", oauthServer.HandleToken)
+
+	// REST API endpoints (OAuth-protected)
+	fileStatusHandler := mcproutes.NewFileStatusHandler(k8sClient, newStatusQuerier)
+	mux.Handle("/api/v1/pipelines/{pipeline_name}/files", oauthMiddleware.Authenticate(fileStatusHandler))
 
 	mux.HandleFunc("/healthz", healthHandler)
 	mux.HandleFunc("/readyz", healthHandler)
@@ -158,6 +176,47 @@ func main() {
 	oauthMiddleware.Close()
 	oauthStore.Close()
 	slog.Info("MCP server stopped")
+}
+
+func newStatusQuerier(t filestatus.StatusQuerierType) (filestatus.StatusQuerier, error) {
+	switch t {
+	case filestatus.StatusQuerierTypeSnowflake:
+		return &snowflake.SnowflakeQuerier{}, nil
+	default:
+		return nil, fmt.Errorf("unsupported status provider %q", t)
+	}
+}
+
+// newCropStore builds the object-storage reader behind get_crop.
+//
+// Crop images are written to the same bucket the operator uses as its
+// filestore, and the crop_uri recorded in Snowflake is a key in that bucket,
+// so the paths need no translation here.
+//
+// Returns nil when unconfigured, which disables get_crop rather than failing
+// the server: every other tool reaches Snowflake with the caller's own token
+// and needs no AWS credentials at all.
+func newCropStore(ctx context.Context) *mcptools.CropStore {
+	bucket := os.Getenv("DATA_STORAGE_BUCKET")
+	if bucket == "" {
+		slog.Info("DATA_STORAGE_BUCKET not set, get_crop will be unavailable")
+		return nil
+	}
+
+	s3Client, err := awsclienthandler.NewS3Client(ctx, &awsclienthandler.AWSConfig{
+		Region:          os.Getenv("FILE_STORE_AWS_REGION"),
+		AccessKeyID:     os.Getenv("FILE_STORE_AWS_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("FILE_STORE_AWS_SECRET_ACCESS_KEY"),
+		Endpoint:        os.Getenv("FILE_STORE_AWS_ENDPOINT"),
+	})
+	if err != nil {
+		// Not fatal: the server is still useful without visual citations.
+		slog.Error("failed to create S3 client, get_crop will be unavailable", "error", err)
+		return nil
+	}
+
+	slog.Info("crop store initialized", "bucket", bucket)
+	return &mcptools.CropStore{Client: s3Client, Bucket: bucket}
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {

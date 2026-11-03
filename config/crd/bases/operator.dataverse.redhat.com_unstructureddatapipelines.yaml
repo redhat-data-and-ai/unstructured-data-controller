@@ -81,6 +81,24 @@ spec:
                             referenceLinks:
                               type: boolean
                           type: object
+                        maxChunkChars:
+                          description: |-
+                            MaxChunkChars caps a single block chunk, splitting anything larger
+                            across several chunks that each keep the block's metadata.
+
+                            Block-based chunking produces chunks as large as the block, and a
+                            full-page table can be tens of kilobytes of HTML. The limit here is the
+                            EMBEDDING model, not the parser: nomic-embed-text-v1.5 as deployed
+                            accepts 2048 tokens and rejects an oversized input with HTTP 400 rather
+                            than truncating it.
+
+                            The default is deliberately conservative. HTML tables tokenize far
+                            worse than prose (every tag is several tokens), so the usual
+                            four-characters-per-token rule does not hold, and the metadata prefix
+                            in embedText is counted too.
+
+                            Only applies to block-based chunking. Zero disables splitting.
+                          type: integer
                         recursiveCharacterSplitterConfig:
                           properties:
                             chunkOverlap:
@@ -244,7 +262,48 @@ spec:
                                 type: string
                               type: array
                           type: object
+                        nemotronConfig:
+                          description: NemotronConfig configures the Nemotron Parse
+                            sidecar.
+                          properties:
+                            cropSkipClasses:
+                              description: |-
+                                CropSkipClasses lists block classes that get no crop image. Defaults to
+                                page furniture, matching the classes the block chunker also drops.
+                              items:
+                                type: string
+                              type: array
+                            dpi:
+                              description: |-
+                                DPI for rasterizing PDF pages before parsing. Rasterization memory grows
+                                with the square of DPI, so this is bounded.
+                              maximum: 600
+                              minimum: 50
+                              type: integer
+                            includePageImages:
+                              description: |-
+                                IncludePageImages stores a full-page image per page in addition to the
+                                per-block crops. Off by default: the crops are what citations need, and
+                                page images are large.
+                              type: boolean
+                            mode:
+                              description: |-
+                                Mode controls how many model calls each page costs.
+                                single: one call per page.
+                                double: full page, then a re-parse of every detected Table/Chart region,
+                                which is 1+N calls per page but materially better on complex tables.
+                                triple: adds a separate detection pass before the crops.
+                              enum:
+                              - single
+                              - double
+                              - triple
+                              type: string
+                          type: object
                         type:
+                          description: Type selects the parser. Defaults to docling.
+                          enum:
+                          - docling
+                          - nemotron
                           type: string
                       type: object
                     name:

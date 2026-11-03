@@ -71,6 +71,19 @@ type ControllerConfigSpec struct {
 	// +optional
 	DoclingHTTPTimeout *int `json:"doclingHTTPTimeout,omitempty"`
 
+	// nemotron
+	// NemotronServeURL is the Nemotron Parse sidecar base URL. When empty, the
+	// nemotron parser is unavailable and a DocumentProcessor configured to use
+	// it will report an error rather than silently falling back to docling.
+	// +optional
+	NemotronServeURL string `json:"nemotronServeURL,omitempty"`
+	// +optional
+	MaxConcurrentNemotronTasks int `json:"maxConcurrentNemotronTasks,omitempty"`
+	// NemotronHTTPTimeout bounds individual sidecar calls (submit, poll,
+	// result, asset), not the parse itself, which is asynchronous.
+	// +optional
+	NemotronHTTPTimeout *int `json:"nemotronHTTPTimeout,omitempty"`
+
 	// vlm
 	// +optional
 	VLMAPIURL string `json:"vlmAPIURL,omitempty"`

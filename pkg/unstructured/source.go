@@ -45,6 +45,7 @@ type DataSource interface {
 type S3BucketSource struct {
 	S3Client  *s3.Client
 	Bucket    string
+	Region    string
 	Prefix    string
 	OutputDir string
 }
@@ -73,8 +74,11 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 			continue
 		}
 		file := RawFileMetadata{
-			FilePath: s.filestorePath(*object.Key),
-			UID:      *object.ETag,
+			FilePath:   s.filestorePath(*object.Key),
+			UID:        *object.ETag,
+			FileName:   path.Base(*object.Key),
+			FileURL:    fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", s.Bucket, s.Region, *object.Key),
+			SourceType: "s3",
 		}
 		logger.Info("storing file", "file", file.FilePath)
 		sourceFileMap[file.FilePath] = true
@@ -299,6 +303,19 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 		}
 		for _, record := range r.result.Records {
 			if record.Status != "successful" {
+				if record.MimeType != "application/vnd.google-apps.folder" {
+					failedMeta := RawFileMetadata{
+						FilePath:   path.Join(g.OutputDir, record.FileID+path.Ext(record.FileName)),
+						UID:        record.FileID + ":" + record.UpdatedAt,
+						FileName:   record.FileName,
+						FileURL:    fmt.Sprintf("https://drive.google.com/file/d/%s/view", record.FileID),
+						SourceType: "google_drive",
+						Error:      record.Reason,
+					}
+					if metaBytes, marshalErr := json.Marshal(failedMeta); marshalErr == nil {
+						_ = fs.Store(ctx, MetadataPath(failedMeta.FilePath), metaBytes)
+					}
+				}
 				continue
 			}
 			if record.MimeType == "application/vnd.google-apps.folder" {
@@ -346,28 +363,40 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 			filestorePath := path.Join(g.OutputDir, record.FileID+ext)
 			uid := record.FileID + ":" + record.UpdatedAt
 			file := RawFileMetadata{
-				FilePath: filestorePath,
-				UID:      uid,
+				FilePath:   filestorePath,
+				UID:        uid,
+				FileName:   record.FileName,
+				FileURL:    fmt.Sprintf("https://drive.google.com/file/d/%s/view", record.FileID),
+				SourceType: "google_drive",
 			}
 
 			stored, err := g.storeFile(ctx, fs, &file, record.FileID)
 			if err != nil {
 				logger.Error(err, "failed to store gdrive file",
 					"fileID", record.FileID, "fileName", record.FileName)
+				file.Error = err.Error()
+				if statusBytes, marshalErr := json.Marshal(file); marshalErr == nil {
+					_ = fs.Store(ctx, MetadataPath(filestorePath), statusBytes)
+				}
 				mu.Lock()
 				errorList[record.FileID] = err
 				mu.Unlock()
 				return nil
 			}
+			// Only files actually written are counted, matching the S3
+			// source. The caller adds len(storedFiles) to
+			// Status.FilesProcessed, which FilesProcessedChangedPredicate
+			// watches: counting every file seen would change the status on
+			// every pass, waking every downstream stage, whose own status
+			// updates wake this crawler again. Garbage collection is driven
+			// by currentFiles, not this list, so it is unaffected.
 			if stored {
 				logger.Info("stored gdrive file",
 					"fileID", record.FileID, "fileName", record.FileName)
+				mu.Lock()
+				storedFiles = append(storedFiles, file)
+				mu.Unlock()
 			}
-
-			// still append the file to the storedFiles list,
-			mu.Lock()
-			storedFiles = append(storedFiles, file)
-			mu.Unlock()
 
 			return nil
 		})

@@ -36,9 +36,36 @@ func RemapToOutputDir(filePath, inputDir, outputDir string) string {
 	return filepath.Join(outputDir, rel)
 }
 
+// AssetDir returns the directory holding a document's binary assets, such as
+// block crop images.
+//
+// Assets live inside the stage directory because DestinationSyncer only walks
+// "stages/<name>/", so anything outside it never reaches the destination
+// bucket. They live under a nested "assets/" prefix so stage file listings can
+// tell them apart from stage output documents.
+//
+// e.g. ("pipelines/p/stages/convert/", "abc123") => "pipelines/p/stages/convert/assets/abc123/"
+func AssetDir(stageOutputDir, fileIdentifier string) string {
+	return path.Join(stageOutputDir, "assets", fileIdentifier) + "/"
+}
+
+// IsStageDocument reports whether a key is a stage output document rather than
+// a binary asset.
+//
+// ListFilesInPath is a raw prefix listing with no extension filter, so every
+// consumer that iterates a stage directory must exclude assets itself or it
+// will try to parse a PNG as JSON.
+func IsStageDocument(filePath string) bool {
+	return strings.HasSuffix(filePath, ".json")
+}
+
 type RawFileMetadata struct {
-	FilePath string `json:"filePath,omitempty"`
-	UID      string `json:"uid,omitempty"`
+	FilePath   string `json:"filePath,omitempty"`
+	UID        string `json:"uid,omitempty"`
+	FileName   string `json:"fileName,omitempty"`
+	FileURL    string `json:"fileURL,omitempty"`
+	SourceType string `json:"sourceType,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 func MetadataPath(rawFilePath string) string {

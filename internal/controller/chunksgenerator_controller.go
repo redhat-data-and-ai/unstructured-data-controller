@@ -127,6 +127,13 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	var filesProcessed int64
 
 	for _, convertedFilePath := range filePaths {
+		// The upstream stage directory also holds binary assets such as block
+		// crop images, and ListFilesInPath returns every key under the prefix.
+		// Without this they would be handed to a JSON unmarshal, fail, and
+		// leave the stage permanently unhealthy.
+		if !unstructured.IsStageDocument(convertedFilePath) {
+			continue
+		}
 		logger.Info("processing converted file", "file", convertedFilePath)
 		processed, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR, inputPath, outputPath)
 		if err != nil {
@@ -137,6 +144,37 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			}
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to process converted file", "file", convertedFilePath)
+			var convertedFileMetadata *unstructured.ConvertedFileMetadata
+			raw, readErr := r.fileStore.Retrieve(ctx, convertedFilePath)
+			if readErr != nil {
+				logger.Error(readErr, "failed to retrieve converted file for error metadata", "file", convertedFilePath)
+			} else {
+				var cf unstructured.ConvertedFile
+				if unmarshalErr := json.Unmarshal(raw, &cf); unmarshalErr != nil {
+					logger.Error(unmarshalErr, "failed to unmarshal converted file for error metadata", "file", convertedFilePath)
+				} else if cf.ConvertedDocument != nil {
+					convertedFileMetadata = cf.ConvertedDocument.Metadata
+				}
+			}
+			failedChunks := unstructured.ChunksFile{
+				ChunksDocument: &unstructured.ChunksDocument{
+					Metadata: &unstructured.ChunksFileMetadata{
+						ConvertedFileMetadata: convertedFileMetadata,
+						ChunkingTool:          unstructured.LangchainChunkingTool,
+						ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
+						Error:                 err.Error(),
+					},
+				},
+			}
+			failedBytes, marshalErr := json.Marshal(failedChunks)
+			if marshalErr != nil {
+				logger.Error(marshalErr, "failed to marshal failed chunking status", "file", convertedFilePath)
+				continue
+			}
+			failedPath := unstructured.RemapToOutputDir(convertedFilePath, inputPath, outputPath)
+			if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+				logger.Error(storeErr, "failed to store failed chunking status", "file", convertedFilePath)
+			}
 			continue
 		}
 		if processed {
@@ -228,6 +266,11 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		return false, err
 	}
 
+	if convertedFile.ConvertedDocument.Content == nil {
+		logger.Info("converted file has no content (upstream failure), skipping chunking", "file", convertedFilePath)
+		return false, nil
+	}
+
 	convertedFileMetadata := convertedFile.ConvertedDocument.Metadata
 
 	// check if the chunked file does not exist in the filestore then return true
@@ -257,6 +300,11 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 		ChunkingTool:          unstructured.LangchainChunkingTool,
 		ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
 	}
+	if chunksFile.ChunksDocument.Chunks == nil {
+		logger.Info("chunks file exists but has no chunks (previous failure), re-chunking", "file", convertedFilePath)
+		return true, nil
+	}
+
 	if !chunksFile.ChunksDocument.Metadata.Equal(&newChunksFileMetadata) {
 		logger.Info("chunks file config has changed, re-chunking needed", "file", convertedFilePath)
 		return true, nil
@@ -321,24 +369,65 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 		return nil, fmt.Errorf("invalid strategy: %s", chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy)
 	}
 
-	chunks, err := chunker.Chunk(convertedFile.ConvertedDocument.Content.Markdown)
-	if err != nil {
-		return nil, err
+	// A block-aware parser gives us semantic boundaries, so one block becomes
+	// one chunk. Without pages there is only flat markdown, so fall back to
+	// splitting it.
+	chunkingTool := unstructured.LangchainChunkingTool
+	chunks := &unstructured.Chunks{}
+
+	if len(convertedFile.ConvertedDocument.Content.Pages) > 0 {
+		metadata := convertedFile.ConvertedDocument.Metadata
+		blocks, err := unstructured.ChunksFromPages(
+			convertedFile.ConvertedDocument.Content.Pages,
+			unstructured.BlockChunkOptions{
+				DocID:    metadata.FileIdentifier,
+				DocTitle: documentTitle(metadata),
+				// A block can be far larger than the embedding model's
+				// context. Oversized blocks are split across several chunks
+				// that keep the block's metadata, reusing the splitter the
+				// CR already configures.
+				MaxChunkChars: chunksGeneratorCR.Spec.ChunksGeneratorConfig.MaxChunkChars,
+				Splitter:      chunker,
+			})
+		if err != nil {
+			return nil, err
+		}
+		chunkingTool = unstructured.BlockChunkingTool
+		chunks.Blocks = blocks
+		// Text stays populated so the chunks materialized view and any
+		// consumer written against the original schema keep working.
+		chunks.Text = unstructured.ChunkTexts(blocks)
+		logger.Info("chunked document by block",
+			"file", convertedFilePath, "pages", len(convertedFile.ConvertedDocument.Content.Pages),
+			"chunks", len(blocks))
+	} else {
+		text, err := chunker.Chunk(convertedFile.ConvertedDocument.Content.Markdown)
+		if err != nil {
+			return nil, err
+		}
+		chunks.Text = text
 	}
 
 	return &unstructured.ChunksFile{
 		ConvertedDocument: convertedFile.ConvertedDocument,
 		ChunksDocument: &unstructured.ChunksDocument{
 			Metadata: &unstructured.ChunksFileMetadata{
-				ChunkingTool:          unstructured.LangchainChunkingTool,
+				ChunkingTool:          chunkingTool,
 				ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
 				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
 			},
-			Chunks: &unstructured.Chunks{
-				Text: chunks,
-			},
+			Chunks: chunks,
 		},
 	}, nil
+}
+
+// documentTitle is the human-readable name used in the embedding prefix,
+// falling back to the stored path when the crawler recorded no file name.
+func documentTitle(metadata *unstructured.ConvertedFileMetadata) string {
+	if metadata.FileName != "" {
+		return metadata.FileName
+	}
+	return metadata.RawFilePath
 }
 
 func (r *ChunksGeneratorReconciler) findDependents(ctx context.Context, obj client.Object) []reconcile.Request {

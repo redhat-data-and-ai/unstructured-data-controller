@@ -125,6 +125,20 @@ spec:
                 type: integer
               maxConcurrentLangchainTasks:
                 type: integer
+              maxConcurrentNemotronTasks:
+                type: integer
+              nemotronHTTPTimeout:
+                description: |-
+                  NemotronHTTPTimeout bounds individual sidecar calls (submit, poll,
+                  result, asset), not the parse itself, which is asynchronous.
+                type: integer
+              nemotronServeURL:
+                description: |-
+                  nemotron
+                  NemotronServeURL is the Nemotron Parse sidecar base URL. When empty, the
+                  nemotron parser is unavailable and a DocumentProcessor configured to use
+                  it will report an error rather than silently falling back to docling.
+                type: string
               nomicEndpoint:
                 description: nomic
                 type: string

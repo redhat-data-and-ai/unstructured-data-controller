@@ -46,8 +46,15 @@ func (d *S3Destination) s3Key(filePath string) string {
 	return key
 }
 
+// SyncFilesToDestination mirrors a stage directory into the destination
+// bucket and returns the number of objects actually written.
+//
+// The count is uploads, not candidates. The caller adds it to
+// Status.FilesProcessed, which is watched by FilesProcessedChangedPredicate:
+// reporting every listed file would change the status on every pass, waking
+// every watching controller, whose own status updates wake this one again.
 func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestore.FileStore,
-	chunksFilePaths []string) error {
+	chunksFilePaths []string) (int64, error) {
 	logger := log.FromContext(ctx)
 	destPrefix := filepath.Join(d.Prefix, "stages", d.StageName) + "/"
 	if filepath.Separator != '/' {
@@ -57,6 +64,7 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 		"bucket", d.Bucket, "prefix", destPrefix, "filePaths", chunksFilePaths)
 
 	s3Client := d.S3Client
+	var uploaded int64
 
 	keysInDestination := make(map[string]bool)
 	paginator := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{
@@ -66,7 +74,7 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("list objects s3://%s prefix %q: %w", d.Bucket, destPrefix, err)
+			return uploaded, fmt.Errorf("list objects s3://%s prefix %q: %w", d.Bucket, destPrefix, err)
 		}
 		for _, obj := range page.Contents {
 			if obj.Key != nil {
@@ -75,15 +83,34 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 		}
 	}
 
+	skippedImmutable := 0
 	for _, chunksFilePath := range chunksFilePaths {
+		key := d.s3Key(chunksFilePath)
+		alreadyInDestination := keysInDestination[key]
+		delete(keysInDestination, key)
+
+		// Binary assets are immutable: they live under a directory keyed by
+		// fileIdentifier, which embeds the source modification time, so a
+		// changed document yields a new path rather than new bytes at the old
+		// one. If the key is already present it cannot have changed, and the
+		// listing above already told us that.
+		//
+		// Stage documents are not immutable: reprocessing rewrites
+		// convert.json at the same key, so those still need a checksum.
+		//
+		// This matters at scale. A document produces hundreds of crops, and
+		// checksumming each one means downloading every PNG and issuing a
+		// HeadObject on every reconcile.
+		if alreadyInDestination && !IsStageDocument(chunksFilePath) {
+			skippedImmutable++
+			continue
+		}
+
 		data, err := fs.Retrieve(ctx, chunksFilePath)
 		if err != nil {
 			logger.Error(err, "failed to retrieve file from filestore", "file", chunksFilePath)
-			return fmt.Errorf("retrieve %s: %w", chunksFilePath, err)
+			return uploaded, fmt.Errorf("retrieve %s: %w", chunksFilePath, err)
 		}
-
-		key := d.s3Key(chunksFilePath)
-		delete(keysInDestination, key)
 
 		// Calculate SHA256 of local file
 		hash := sha256.Sum256(data)
@@ -101,12 +128,12 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 			if notFoundErr.ErrorCode() != "NotFound" {
 				logger.Info("error while fetching the object",
 					"key", key, "error", err.Error())
-				return err
+				return uploaded, err
 			}
 		}
 
 		if err == nil && headResp.ChecksumSHA256 != nil && *headResp.ChecksumSHA256 == localSHA256 {
-			logger.Info("file unchanged, skipping upload",
+			logger.V(1).Info("file unchanged, skipping upload",
 				"file", chunksFilePath, "key", key)
 			continue
 		}
@@ -120,8 +147,9 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 		})
 		if err != nil {
 			logger.Error(err, "failed to upload file to S3", "bucket", d.Bucket, "key", key)
-			return fmt.Errorf("put object s3://%s/%s: %w", d.Bucket, key, err)
+			return uploaded, fmt.Errorf("put object s3://%s/%s: %w", d.Bucket, key, err)
 		}
+		uploaded++
 		logger.Info("uploaded file to S3 destination", "key", key)
 	}
 
@@ -134,9 +162,14 @@ func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestor
 		})
 		if err != nil {
 			logger.Error(err, "failed to delete file from S3 destination", "key", key)
-			return fmt.Errorf("delete object s3://%s/%s: %w", d.Bucket, key, err)
+			return uploaded, fmt.Errorf("delete object s3://%s/%s: %w", d.Bucket, key, err)
 		}
 	}
 
-	return nil
+	if skippedImmutable > 0 {
+		logger.Info("skipped assets already present in destination",
+			"count", skippedImmutable, "prefix", destPrefix)
+	}
+
+	return uploaded, nil
 }

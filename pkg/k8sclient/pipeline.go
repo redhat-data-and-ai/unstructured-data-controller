@@ -22,6 +22,7 @@ import (
 	"os"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/filestatus"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -108,4 +109,39 @@ func (c *Client) GetPipelineQueryConfig(
 		return nil, fmt.Errorf("pipeline %q has no Snowflake query config for stage type %q", name, stageType)
 	}
 	return qc, nil
+}
+
+func (c *Client) GetFileStatusQueryConfig(
+	ctx context.Context, name string,
+) (*filestatus.QueryConfig, error) {
+	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
+	err := c.client.Get(ctx, client.ObjectKey{
+		Namespace: pipelineNamespace(),
+		Name:      name,
+	}, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
+	}
+
+	cfg := &filestatus.QueryConfig{}
+	for _, stage := range pipeline.Spec.Stages {
+		if stage.QueryConfig == nil || stage.QueryConfig.Snowflake == nil {
+			continue
+		}
+		sq := stage.QueryConfig.Snowflake
+		if cfg.Database == "" {
+			cfg.Database = sq.Database
+			cfg.Schema = sq.Schema
+			cfg.ProviderType = filestatus.StatusQuerierType(stage.QueryConfig.Type)
+		}
+		cfg.Stages = append(cfg.Stages, filestatus.StageMV{
+			Name:  stage.Name,
+			Table: sq.Table,
+		})
+	}
+
+	if len(cfg.Stages) == 0 {
+		return nil, fmt.Errorf("pipeline %q has no Snowflake query config on any stage", name)
+	}
+	return cfg, nil
 }

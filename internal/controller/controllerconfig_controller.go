@@ -39,7 +39,13 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/ldap"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/langchain"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/nemotron"
 )
+
+// defaultMaxConcurrentNemotronTasks bounds in-flight sidecar conversions when
+// the ControllerConfig does not say. Each one costs the sidecar a scratch
+// directory and, in double mode, several model calls per page.
+const defaultMaxConcurrentNemotronTasks int64 = 4
 
 type Model string
 
@@ -61,6 +67,7 @@ var modelMap = map[Model]ModelCredentials{
 
 var (
 	doclingClient                          *docling.Client
+	nemotronClient                         *nemotron.Client
 	langchainClient                        *langchain.Client
 	embeddingModelCredentials              = map[Model]ModelCredentials{}
 	vlmAPIKey                              string
@@ -123,6 +130,33 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		doclingConfig.Key = doclingKey
 	}
 	doclingClient = docling.NewClientFromURL(doclingConfig)
+
+	// initialize nemotron sidecar client. Left nil when no URL is configured,
+	// so a pipeline that asks for the nemotron parser fails loudly instead of
+	// quietly producing nothing.
+	if config.Spec.NemotronServeURL != "" {
+		nemotronHTTPTimeout := 60 * time.Second
+		if config.Spec.NemotronHTTPTimeout != nil {
+			nemotronHTTPTimeout = time.Duration(*config.Spec.NemotronHTTPTimeout) * time.Second
+		}
+		// A zero weight would make the semaphore reject every submission, so
+		// an unset concurrency becomes a usable default rather than a deadlock.
+		maxConcurrentNemotronTasks := int64(config.Spec.MaxConcurrentNemotronTasks)
+		if maxConcurrentNemotronTasks <= 0 {
+			maxConcurrentNemotronTasks = defaultMaxConcurrentNemotronTasks
+		}
+		nemotronConfig := &nemotron.ClientConfig{
+			URL:                   config.Spec.NemotronServeURL,
+			MaxConcurrentRequests: maxConcurrentNemotronTasks,
+			HTTPTimeout:           nemotronHTTPTimeout,
+		}
+		if nemotronKey := string(secret.Data["NEMOTRON_USER_KEY"]); nemotronKey != "" {
+			nemotronConfig.Key = nemotronKey
+		}
+		nemotronClient = nemotron.NewClientFromURL(nemotronConfig)
+		logger.Info("nemotron sidecar client initialized", "url", config.Spec.NemotronServeURL,
+			"maxConcurrentTasks", config.Spec.MaxConcurrentNemotronTasks)
+	}
 
 	// initialize langchain client
 	langchainClient = langchain.NewClient(langchain.ClientConfig{

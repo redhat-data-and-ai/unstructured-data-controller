@@ -42,6 +42,22 @@ const (
 	DefaultChunkingStrategy  = ChunkingStrategyRecursiveCharacter
 	DefaultChunkSize         = 1000
 	DefaultChunkOverlap      = 200
+
+	// DefaultMaxChunkChars caps the text sent to the embedding model, sized
+	// for nomic-embed-text-v1.5's 2048-token context.
+	//
+	// Measured, not estimated: a 3,943 character chunk of HTML table markup
+	// exceeded 2048 tokens, so the worst case here is under 1.9 characters
+	// per token. Tags like `<th colspan="1" rowspan="1">` are mostly
+	// punctuation, which tokenizes far denser than prose.
+	//
+	// 2500 characters is about 1,300 tokens at that ratio, leaving headroom
+	// for markup denser still. The cost of being wrong is asymmetric:
+	// over-splitting fragments a table, while under-splitting is an HTTP 400
+	// that fails the whole document.
+	//
+	// Raise it only alongside an embedding model with a larger context.
+	DefaultMaxChunkChars = 2500
 )
 
 // ChunksGeneratorSpec defines the desired state of ChunksGenerator
@@ -136,6 +152,24 @@ type ChunksGeneratorConfig struct {
 	RecursiveCharacterSplitterConfig RecursiveCharacterSplitterConfig `json:"recursiveCharacterSplitterConfig,omitempty"`
 	MarkdownSplitterConfig           MarkdownSplitterConfig           `json:"markdownSplitterConfig,omitempty"`
 	TokenSplitterConfig              TokenSplitterConfig              `json:"tokenSplitterConfig,omitempty"`
+
+	// MaxChunkChars caps a single block chunk, splitting anything larger
+	// across several chunks that each keep the block's metadata.
+	//
+	// Block-based chunking produces chunks as large as the block, and a
+	// full-page table can be tens of kilobytes of HTML. The limit here is the
+	// EMBEDDING model, not the parser: nomic-embed-text-v1.5 as deployed
+	// accepts 2048 tokens and rejects an oversized input with HTTP 400 rather
+	// than truncating it.
+	//
+	// The default is deliberately conservative. HTML tables tokenize far
+	// worse than prose (every tag is several tokens), so the usual
+	// four-characters-per-token rule does not hold, and the metadata prefix
+	// in embedText is counted too.
+	//
+	// Only applies to block-based chunking. Zero disables splitting.
+	// +optional
+	MaxChunkChars int `json:"maxChunkChars,omitempty"`
 }
 
 type RecursiveCharacterSplitterConfig struct {
@@ -167,6 +201,9 @@ type TokenSplitterConfig struct {
 func (c *ChunksGeneratorConfig) SetDefaults() {
 	if c.Strategy == "" {
 		c.Strategy = DefaultChunkingStrategy
+	}
+	if c.MaxChunkChars == 0 {
+		c.MaxChunkChars = DefaultMaxChunkChars
 	}
 
 	switch c.Strategy {

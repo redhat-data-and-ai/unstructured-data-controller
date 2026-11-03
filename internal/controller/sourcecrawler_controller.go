@@ -124,6 +124,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		source = &unstructured.S3BucketSource{
 			S3Client:  sourceS3Client,
 			Bucket:    sourceCrawlerConfig.S3Config.Bucket,
+			Region:    sourceAWSConfig.Region,
 			Prefix:    sourceCrawlerConfig.S3Config.Prefix,
 			OutputDir: outputDir,
 		}
@@ -459,6 +460,9 @@ func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
 			FileFormats: repo.FileFormats,
 			OutputDir:   repoOutputDir,
 			CommitSHA:   currentHash,
+			RepoURL:     repo.Repo,
+			RepoSlug:    slug,
+			Revision:    revision,
 		}
 
 		storedFiles, syncErr := gitSource.SyncFilesToFilestore(ctx, r.fileStore)

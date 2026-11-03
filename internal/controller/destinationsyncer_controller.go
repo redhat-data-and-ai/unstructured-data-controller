@@ -127,12 +127,17 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		logger.Info("files to ingest to destination", "stage", dep.Name, "count", len(filePaths))
 
-		if err := destination.SyncFilesToDestination(ctx, r.fileStore, filePaths); err != nil {
+		uploaded, err := destination.SyncFilesToDestination(ctx, r.fileStore, filePaths)
+		if err != nil {
 			logger.Error(err, "failed to ingest files to destination", "stage", dep.Name)
 			return r.handleError(ctx, destinationSyncCR, err)
 		}
-		totalFilesSynced += int64(len(filePaths))
-		logger.Info("successfully ingested files to destination", "stage", dep.Name)
+		// Only count what was actually written. Counting every candidate
+		// would change FilesProcessed on every reconcile, and the predicate
+		// watching it would schedule another one, indefinitely.
+		totalFilesSynced += uploaded
+		logger.Info("successfully ingested files to destination",
+			"stage", dep.Name, "candidates", len(filePaths), "uploaded", uploaded)
 	}
 
 	successMessage := fmt.Sprintf("successfully reconciled destination sync: %s", destinationSyncCR.Name)
