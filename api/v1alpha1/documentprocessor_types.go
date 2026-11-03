@@ -121,6 +121,18 @@ const (
 
 var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
 
+// defaultToFormats asks docling for two renditions of every document.
+//
+// "md" is what every current consumer reads. "json" is the DoclingDocument:
+// the block tree, the per-block bounding boxes and the page dimensions. Docling
+// only populates json_content when "json" is listed here, so leaving it out
+// means the structure is simply never returned.
+//
+// Asking for both makes the response substantially larger, because the
+// DoclingDocument repeats the full text of the document alongside the markdown
+// and adds geometry for every element.
+var defaultToFormats = []string{"md", "json"}
+
 // vlmModelDefaults carries the settings that belong to a model rather than to
 // a pipeline, so that selecting a model is the only choice anyone has to make.
 //
@@ -470,7 +482,7 @@ func (c *DoclingConfig) SetDefaults() {
 		c.FromFormats = append([]string{}, defaultFromFormats...)
 	}
 	if len(c.ToFormats) == 0 {
-		c.ToFormats = []string{"md"}
+		c.ToFormats = append([]string{}, defaultToFormats...)
 	}
 	if c.ImageExportMode == "" {
 		c.ImageExportMode = DefaultImageExportMode

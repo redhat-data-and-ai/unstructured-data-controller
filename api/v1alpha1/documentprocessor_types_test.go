@@ -17,13 +17,14 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"slices"
 	"testing"
 )
 
-// mutatedPrompt is the sentinel the aliasing test writes into a value it got
+// mutated is the sentinel the aliasing test writes into a value it got
 // back from SetDefaults. Finding it in a package-level default means the
 // default was handed out by reference.
-const mutatedPrompt = "mutated"
+const mutated = "mutated"
 
 func TestDocumentProcessorConfig_SetDefaults_EmptyConfig(t *testing.T) {
 	c := DocumentProcessorConfig{}
@@ -50,8 +51,8 @@ func TestDoclingConfig_SetDefaults_EmptyConfig(t *testing.T) {
 	if len(c.FromFormats) != len(defaultFromFormats) {
 		t.Errorf("expected %d from_formats, got %d", len(defaultFromFormats), len(c.FromFormats))
 	}
-	if c.ToFormats[0] != "md" {
-		t.Errorf("expected to_formats [md], got %v", c.ToFormats)
+	if !slices.Equal(c.ToFormats, defaultToFormats) {
+		t.Errorf("expected to_formats %v, got %v", defaultToFormats, c.ToFormats)
 	}
 	if c.ImageExportMode != DefaultImageExportMode {
 		t.Errorf("expected image_export_mode %q, got %q", DefaultImageExportMode, c.ImageExportMode)
@@ -137,9 +138,9 @@ func TestDoclingConfig_SetDefaults_PreservesExplicitValues(t *testing.T) {
 func TestDoclingConfig_SetDefaults_DoesNotAliasGlobalSlice(t *testing.T) {
 	c := DoclingConfig{}
 	c.SetDefaults()
-	c.FromFormats[0] = "mutated"
+	c.FromFormats[0] = mutated
 
-	if defaultFromFormats[0] == "mutated" {
+	if defaultFromFormats[0] == mutated {
 		t.Error("SetDefaults aliased the global defaultFromFormats slice")
 	}
 }
@@ -241,9 +242,66 @@ func TestDoclingConfig_SetDefaults_VLMPipelineUnknownModelFillsNothing(t *testin
 func TestVLMPipelineCustomConfig_SetDefaults_DoesNotAliasTheModelTable(t *testing.T) {
 	c := VLMPipelineCustomConfig{}
 	c.SetDefaults()
-	c.Prompt = mutatedPrompt
+	c.Prompt = mutated
 
-	if vlmModelDefaults[DefaultVLMPipelineModel].Prompt == mutatedPrompt {
+	if vlmModelDefaults[DefaultVLMPipelineModel].Prompt == mutated {
 		t.Error("SetDefaults aliased the package-level vlmModelDefaults entry")
+	}
+}
+
+// TestDoclingConfig_SetDefaults_ToFormats pins the exact list that reaches
+// docling. Docling populates json_content only when "json" is in to_formats,
+// and it reports no error when it is missing, so losing it here fails
+// silently: conversions keep succeeding and the structure is never returned.
+func TestDoclingConfig_SetDefaults_ToFormats(t *testing.T) {
+	tests := []struct {
+		name  string
+		given []string
+		want  []string
+	}{
+		{
+			name:  "unset asks for markdown and the docling document",
+			given: nil,
+			want:  []string{"md", "json"},
+		},
+		{
+			name:  "an empty slice counts as unset",
+			given: []string{},
+			want:  []string{"md", "json"},
+		},
+		{
+			name:  "an explicit list is kept even when it drops json",
+			given: []string{"md"},
+			want:  []string{"md"},
+		},
+		{
+			name:  "an explicit list is kept even when it drops md",
+			given: []string{"json"},
+			want:  []string{"json"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := DoclingConfig{ToFormats: tt.given}
+			c.SetDefaults()
+
+			if !slices.Equal(c.ToFormats, tt.want) {
+				t.Errorf("expected to_formats %v, got %v", tt.want, c.ToFormats)
+			}
+		})
+	}
+}
+
+// TestDoclingConfig_SetDefaults_ToFormatsDoesNotAliasGlobalSlice guards the
+// same thing the from_formats test does. A caller mutating what it got back
+// must not reach the package-level default through it.
+func TestDoclingConfig_SetDefaults_ToFormatsDoesNotAliasGlobalSlice(t *testing.T) {
+	c := DoclingConfig{}
+	c.SetDefaults()
+	c.ToFormats[0] = mutated
+
+	if slices.Contains(defaultToFormats, mutated) {
+		t.Error("SetDefaults aliased the global defaultToFormats slice")
 	}
 }

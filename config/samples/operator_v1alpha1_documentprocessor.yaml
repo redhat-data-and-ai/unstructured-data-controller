@@ -13,7 +13,7 @@ spec:
     type: docling
     doclingConfig:
       from_formats: [docx, pptx, html, image, pdf, asciidoc, md, csv, xlsx]
-      to_formats: [md]
+      to_formats: [md, json]
       image_export_mode: embedded
       do_ocr: true
       ocr_preset: auto
