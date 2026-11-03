@@ -23,6 +23,7 @@ import (
 
 type ChunkResult struct {
 	FileID     string `json:"file_id" db:"file_id"`
+	FilePath   string `json:"file_path" db:"file_path"`
 	ChunkIndex string `json:"chunk_index" db:"chunk_index"`
 	ChunkText  string `json:"chunk_text" db:"chunk_text"`
 	Score      string `json:"score" db:"score"`
@@ -32,7 +33,8 @@ func SearchChunks(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral string, limit int,
 ) ([]ChunkResult, error) {
 	query := fmt.Sprintf(
-		`SELECT FILE_ID, CHUNK_INDEX, CHUNK_TEXT, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
+		`SELECT FILE_ID, FILE_PATH, CHUNK_INDEX, CHUNK_TEXT, `+
+			`VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
 			`FROM %s.%s.%s ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)
@@ -40,13 +42,14 @@ func SearchChunks(
 	return queryRows[ChunkResult](ctx, oauthToken, query)
 }
 
-// SearchChunksWithFileFilter performs vector similarity search scoped to files matching the given pattern.
+// SearchChunksWithFileFilter performs vector similarity search scoped to files matching the given path pattern.
 func SearchChunksWithFileFilter(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral, filePattern string, limit int,
 ) ([]ChunkResult, error) {
 	query := fmt.Sprintf(
-		`SELECT FILE_ID, CHUNK_INDEX, CHUNK_TEXT, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
-			`FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\' ORDER BY score DESC LIMIT %d`,
+		`SELECT FILE_ID, FILE_PATH, CHUNK_INDEX, CHUNK_TEXT, `+
+			`VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
+			`FROM %s.%s.%s WHERE FILE_PATH LIKE ? ESCAPE '\\' ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)
 

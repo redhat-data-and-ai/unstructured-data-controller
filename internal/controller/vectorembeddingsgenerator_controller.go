@@ -123,6 +123,36 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		if err != nil {
 			embeddingErrors = append(embeddingErrors, err)
 			logger.Error(err, "failed to process chunked file", "file", chunksFilePath)
+			vegConfig := vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig
+			var convertedFileMetadata *unstructured.ConvertedFileMetadata
+			var chunkFileMetadata *unstructured.ChunksFileMetadata
+			if raw, readErr := r.fileStore.Retrieve(ctx, chunksFilePath); readErr == nil {
+				var cf unstructured.ChunksFile
+				if json.Unmarshal(raw, &cf) == nil && cf.ChunksDocument != nil {
+					chunkFileMetadata = cf.ChunksDocument.Metadata
+					if cf.ConvertedDocument != nil {
+						convertedFileMetadata = cf.ConvertedDocument.Metadata
+					}
+				}
+			}
+			failedEmbed := unstructured.EmbeddingsFile{
+				EmbeddingDocument: &unstructured.EmbeddingDocument{
+					Metadata: &unstructured.EmbeddingFileMetadata{
+						ConvertedFileMetadata:   convertedFileMetadata,
+						ChunkFileMetadata:       chunkFileMetadata,
+						ModelName:               vegConfig.ModelName,
+						NomicEmbedTextV15Config: vegConfig.NomicEmbedTextV15Config,
+						GeminiEmbedding2Config:  vegConfig.GeminiEmbedding2Config,
+						Error:                   err.Error(),
+					},
+				},
+			}
+			if failedBytes, marshalErr := json.Marshal(failedEmbed); marshalErr == nil {
+				failedPath := unstructured.RemapToOutputDir(chunksFilePath, inputPath, outputPath)
+				if storeErr := r.fileStore.Store(ctx, failedPath, failedBytes); storeErr != nil {
+					logger.Error(storeErr, "failed to store failed embedding status", "file", chunksFilePath)
+				}
+			}
 			continue
 		}
 		if processed {
@@ -312,6 +342,11 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 		return false, err
 	}
 
+	if chunkedFile.ChunksDocument.Chunks == nil {
+		logger.Info("chunks file has no chunks (upstream failure), skipping embedding", "file", chunksFilePath)
+		return false, nil
+	}
+
 	embeddingsFilePath := unstructured.RemapToOutputDir(chunksFilePath, inputPath, outputPath)
 	logger.Info("embeddings file path", "embeddingsFilePath", embeddingsFilePath)
 	embeddingsFileExists, err := r.fileStore.Exists(ctx, embeddingsFilePath)
@@ -343,6 +378,11 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 			ModelName:               vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.ModelName,
 			NomicEmbedTextV15Config: vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.NomicEmbedTextV15Config,
 			GeminiEmbedding2Config:  vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.GeminiEmbedding2Config,
+		}
+
+		if currentEmbeddedFile.EmbeddingDocument.Embeddings == nil {
+			logger.Info("embeddings file exists but has no embeddings (previous failure), re-embedding", "file", chunksFilePath)
+			return true, nil
 		}
 
 		if currentEmbeddedFile.EmbeddingDocument.Metadata.Equal(fileToEmbedMetadata) {

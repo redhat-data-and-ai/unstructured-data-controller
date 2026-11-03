@@ -24,6 +24,7 @@ import (
 
 type ProcessedDocumentResult struct {
 	FileID          string `json:"file_id" db:"file_id"`
+	FilePath        string `json:"file_path" db:"file_path"`
 	MarkdownContent string `json:"markdown_content" db:"markdown_content"`
 }
 
@@ -31,7 +32,7 @@ func GetProcessedDocument(
 	ctx context.Context, oauthToken, database, schema, table, fileID string,
 ) (*ProcessedDocumentResult, error) {
 	query := fmt.Sprintf(
-		`SELECT FILE_ID, MARKDOWN_CONTENT FROM %s.%s.%s WHERE FILE_ID = ? LIMIT 1`,
+		`SELECT FILE_ID, FILE_PATH, MARKDOWN_CONTENT FROM %s.%s.%s WHERE FILE_ID = ? LIMIT 1`,
 		database, schema, table,
 	)
 
@@ -50,7 +51,7 @@ func CountProcessedDocumentsByFilePath(
 	ctx context.Context, oauthToken, database, schema, table, filePattern string,
 ) (int, error) {
 	query := fmt.Sprintf(
-		`SELECT COUNT(*) AS count FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\'`,
+		`SELECT COUNT(*) AS count FROM %s.%s.%s WHERE FILE_PATH LIKE ? ESCAPE '\\'`,
 		database, schema, table,
 	)
 	type countResult struct {
@@ -66,26 +67,26 @@ func CountProcessedDocumentsByFilePath(
 	return strconv.Atoi(results[0].Count)
 }
 
-// ListFileIDsByFilePath returns just the file_id values matching the given LIKE pattern.
-func ListFileIDsByFilePath(
+// ListFilePathsByPattern returns the file_path values matching the given LIKE pattern.
+func ListFilePathsByPattern(
 	ctx context.Context, oauthToken, database, schema, table, filePattern string,
 ) ([]string, error) {
 	query := fmt.Sprintf(
-		`SELECT FILE_ID FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\'`,
+		`SELECT FILE_PATH FROM %s.%s.%s WHERE FILE_PATH LIKE ? ESCAPE '\\'`,
 		database, schema, table,
 	)
-	type fileIDResult struct {
-		FileID string `db:"file_id"`
+	type filePathResult struct {
+		FilePath string `db:"file_path"`
 	}
-	results, err := queryRows[fileIDResult](ctx, oauthToken, query, filePattern)
+	results, err := queryRows[filePathResult](ctx, oauthToken, query, filePattern)
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, len(results))
+	paths := make([]string, len(results))
 	for i, r := range results {
-		ids[i] = r.FileID
+		paths[i] = r.FilePath
 	}
-	return ids, nil
+	return paths, nil
 }
 
 // GetProcessedDocumentsByFilePath retrieves processed documents matching
@@ -94,7 +95,7 @@ func GetProcessedDocumentsByFilePath(
 	ctx context.Context, oauthToken, database, schema, table, filePattern string, limit int,
 ) ([]ProcessedDocumentResult, error) {
 	query := fmt.Sprintf(
-		`SELECT FILE_ID, MARKDOWN_CONTENT FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\' LIMIT %d`,
+		`SELECT FILE_ID, FILE_PATH, MARKDOWN_CONTENT FROM %s.%s.%s WHERE FILE_PATH LIKE ? ESCAPE '\\' LIMIT %d`,
 		database, schema, table, limit,
 	)
 

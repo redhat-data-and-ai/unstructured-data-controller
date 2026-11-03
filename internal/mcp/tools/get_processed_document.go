@@ -146,17 +146,17 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			}
 
 			if count > maxDocuments {
-				log.Info("pattern matched too many documents, returning file IDs only", "count", count, "max", maxDocuments)
-				fileIDs, listErr := snowflake.ListFileIDsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern)
+				log.Info("pattern matched too many documents, returning file paths only", "count", count, "max", maxDocuments)
+				filePaths, listErr := snowflake.ListFilePathsByPattern(ctx, oauthToken, databaseName, schemaName, tableName, filePattern)
 				if listErr != nil {
-					log.Error("failed to list matching file IDs", "error", listErr)
+					log.Error("failed to list matching file paths", "error", listErr)
 					return &mcp.CallToolResult{
 						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve processed documents matching %q.", args.FilePathFilter)}},
 						IsError: true,
 					}, nil, nil
 				}
-				result = fileIDs
-				responseMsg = fmt.Sprintf("Pattern %q matched %d documents in pipeline %q, which exceeds the limit of %d. Narrow your pattern or use file_id with one of these paths", args.FilePathFilter, count, args.PipelineName, maxDocuments)
+				result = filePaths
+				responseMsg = fmt.Sprintf("Pattern %q matched %d documents in pipeline %q, which exceeds the limit of %d. Narrow your file_path_filter pattern to reduce the number of matches", args.FilePathFilter, count, args.PipelineName, maxDocuments)
 			} else {
 				docs, queryErr := snowflake.GetProcessedDocumentsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern, maxDocuments)
 				if queryErr != nil {
