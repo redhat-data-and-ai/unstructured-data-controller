@@ -247,12 +247,23 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
+		content := &unstructured.Content{
+			Markdown: doclingResponse.Document.MDContent,
+		}
+		if rendition := doclingResponse.Document.JSONDocument(); rendition != nil {
+			if extractErr := content.ExtractDoclingDocument(rendition); extractErr != nil {
+				// Markdown is intact and is what every consumer reads today,
+				// so store the file rather than failing the conversion and
+				// retrying it until the attempt limit is reached.
+				logger.Error(extractErr, "could not read the structured document, storing markdown only",
+					"taskID", job.TaskID, "filePath", job.FilePath)
+			}
+		}
+
 		convertedFile := unstructured.ConvertedFile{
 			ConvertedDocument: &unstructured.ConvertedDocument{
 				Metadata: &convertedFileMetadata,
-				Content: &unstructured.Content{
-					Markdown: doclingResponse.Document.MDContent,
-				},
+				Content:  content,
 			},
 		}
 

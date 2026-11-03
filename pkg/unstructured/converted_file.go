@@ -17,6 +17,7 @@ limitations under the License.
 package unstructured
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -39,8 +40,84 @@ const (
 	DocumentConverterDocling DocumentConverter = "docling"
 )
 
+// BlockClass names what kind of element a Block holds.
+//
+// The values are currently the parser's own labels, so for docling they are
+// "text", "section_header", "table" and the rest of its vocabulary. Different
+// parsers name the same things differently, so these will later be mapped onto
+// one vocabulary of our own; the named type is here so that mapping is a change
+// to the values and not to the shape of the artifact.
+type BlockClass string
+
+// Block is one semantic element of a document: a paragraph, a heading, a
+// table, a caption. It is what a citation points at.
+type Block struct {
+	// ID is the element's address inside the document stored in
+	// Content.DoclingDocument, for example "#/texts/59". It is the parser's
+	// own self-reference copied verbatim, because nothing can resolve a
+	// reference we invented ourselves. It is an address and not an index, and
+	// it is only valid against that exact document: the same file converted
+	// twice does not produce the same addresses.
+	ID string `json:"id"`
+
+	Class BlockClass `json:"class"`
+
+	// Text is the element as the parser read it. It is empty for tables and
+	// pictures, which hold no text of their own, and for the wrapper elements
+	// described on ExtractDoclingDocument.
+	Text string `json:"text"`
+
+	// PageNo is 1-based, and 0 when the parser gave this element no placement:
+	// either it could not place it, or the input format has no pages at all.
+	PageNo int `json:"pageNo"`
+
+	// BBox is the element's rectangle as [left, top, right, bottom], in the
+	// units and the coordinate origin the parser used. Docling reports PDF
+	// points, usually with a bottom-left origin, so these are not yet
+	// comparable across parsers and are not yet drawable without knowing which
+	// parser produced them. It is the zero rectangle when PageNo is 0.
+	BBox [4]float64 `json:"bbox"`
+}
+
+// Page records a page's extent so a bounding box on that page can be turned
+// into a position on a rendering of it at any resolution.
+type Page struct {
+	PageNo int `json:"pageNo"`
+
+	// Width and Height are in PDF points, the same units as Block.BBox.
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// ParserInfo records what produced the blocks. Without it a silent change of
+// parser on the conversion service alters output while every stored document
+// still looks valid, and there is no way afterwards to tell which half of a
+// corpus came from which.
+type ParserInfo struct {
+	Name string `json:"name"`
+
+	// Version says what shape the output is in. For docling it is the
+	// DoclingDocument schema version, which is the only version string the
+	// convert response carries. It is not the docling release that ran.
+	Version string `json:"version"`
+}
+
 type Content struct {
+	// Markdown is what every current consumer reads. Everything below it is
+	// additive and optional.
 	Markdown string `json:"markdown"`
+
+	Blocks []Block     `json:"blocks,omitempty"`
+	Pages  []Page      `json:"pages,omitempty"`
+	Parser *ParserInfo `json:"parser,omitempty"`
+
+	// DoclingDocument is the parser's own output, stored exactly as it
+	// arrived, for two reasons. Block.ID only resolves against this document,
+	// and re-encoding a decoded copy is not guaranteed to produce the same
+	// addresses. It also lets a later stage work from the parsed document
+	// instead of converting the file a second time, which is both slower and
+	// not guaranteed to give the same answer.
+	DoclingDocument json.RawMessage `json:"doclingDocument,omitempty"`
 }
 
 type ConvertedFileMetadata struct {
