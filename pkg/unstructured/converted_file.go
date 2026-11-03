@@ -17,9 +17,21 @@ limitations under the License.
 package unstructured
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
+
+// ErrNotAConvertedFile reports JSON that unmarshalled without error but is not
+// a converted file. Every field of ConvertedFile is a pointer, so unrelated
+// JSON decodes into a value whose pointers are all nil rather than failing,
+// and dereferencing it panics.
+//
+// Callers should skip such a file rather than treat it as a failure: it will
+// never become chunkable, so retrying cannot help.
+var ErrNotAConvertedFile = errors.New("not a converted file")
 
 type DocumentConverter string
 
@@ -45,6 +57,22 @@ type ConvertedDocument struct {
 
 type ConvertedFile struct {
 	ConvertedDocument *ConvertedDocument `json:"convertedDocument"`
+}
+
+// Validate reports whether the file carries the document, metadata and
+// content that consumers dereference. It returns ErrNotAConvertedFile when any
+// of them is missing.
+func (c *ConvertedFile) Validate() error {
+	switch {
+	case c == nil, c.ConvertedDocument == nil:
+		return fmt.Errorf("%w: no convertedDocument", ErrNotAConvertedFile)
+	case c.ConvertedDocument.Metadata == nil:
+		return fmt.Errorf("%w: no convertedDocument.metadata", ErrNotAConvertedFile)
+	case c.ConvertedDocument.Content == nil:
+		return fmt.Errorf("%w: no convertedDocument.content", ErrNotAConvertedFile)
+	}
+
+	return nil
 }
 
 func (c *ConvertedFileMetadata) Equal(other *ConvertedFileMetadata) bool {
