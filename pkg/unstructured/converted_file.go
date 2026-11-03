@@ -62,9 +62,12 @@ type Block struct {
 
 	Class BlockClass `json:"class"`
 
-	// Text is the element as the parser read it. It is empty for tables and
-	// pictures, which hold no text of their own, and for the wrapper elements
-	// described on ExtractDoclingDocument.
+	// Text is the element as the parser read it.
+	//
+	// It is empty for a table or a picture, whose words are not on the
+	// element itself: a table's live in its cells and a picture's in its
+	// annotations, both inside Content.DoclingDocument. It is also empty for
+	// the wrapper elements described on ExtractDoclingDocument.
 	Text string `json:"text"`
 
 	// PageNo is 1-based, and 0 when the parser gave this element no placement:
@@ -73,9 +76,16 @@ type Block struct {
 
 	// BBox is the element's rectangle as [left, top, right, bottom], in the
 	// units and the coordinate origin the parser used. Docling reports PDF
-	// points, usually with a bottom-left origin, so these are not yet
-	// comparable across parsers and are not yet drawable without knowing which
-	// parser produced them. It is the zero rectangle when PageNo is 0.
+	// points, and its PDF backends measure from the bottom left while other
+	// paths measure from the top left. Which one applies is recorded per
+	// rectangle inside Content.DoclingDocument and not here, so these values
+	// are not yet drawable and not yet comparable between documents.
+	// Converting them to one convention is a separate piece of work.
+	//
+	// It is the zero rectangle when the parser reported no placement. It can
+	// also be zero alongside a real PageNo, when the parser named a page but
+	// gave no rectangle on it, so it is not a reliable test for "this block
+	// has geometry".
 	BBox [4]float64 `json:"bbox"`
 }
 
@@ -111,12 +121,16 @@ type Content struct {
 	Pages  []Page      `json:"pages,omitempty"`
 	Parser *ParserInfo `json:"parser,omitempty"`
 
-	// DoclingDocument is the parser's own output, stored exactly as it
-	// arrived, for two reasons. Block.ID only resolves against this document,
-	// and re-encoding a decoded copy is not guaranteed to produce the same
-	// addresses. It also lets a later stage work from the parsed document
-	// instead of converting the file a second time, which is both slower and
-	// not guaranteed to give the same answer.
+	// DoclingDocument is the parser's own output, carried through rather than
+	// decoded into types of ours and built again, for two reasons. Block.ID
+	// only resolves against this document, so dropping a field or reordering
+	// an array would break the blocks above it. And it lets a later stage work
+	// from the parsed document instead of converting the file a second time,
+	// which is both slower and not guaranteed to give the same answer.
+	//
+	// Writing it out still runs it through the JSON encoder, which strips
+	// insignificant whitespace and escapes <, > and & inside strings. That
+	// leaves an equivalent document rather than the identical bytes.
 	DoclingDocument json.RawMessage `json:"doclingDocument,omitempty"`
 }
 

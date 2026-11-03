@@ -125,9 +125,12 @@ type DoclingResponseDocument struct {
 	MDContent string `json:"md_content"`
 	// JSONContent is the DoclingDocument rendition, returned only when
 	// to_formats includes "json". Unlike its siblings it is a JSON object and
-	// not a string, so it is kept verbatim: addresses into the document such as
-	// "#/texts/59" only resolve against these exact bytes, and re-encoding a
-	// decoded copy is not guaranteed to preserve them.
+	// not a string, so it is carried through as bytes rather than decoded
+	// into types of ours and built again. A round trip through our own types
+	// would silently drop every field they do not name, and addresses into
+	// the document such as "#/texts/59" index into its arrays, so losing or
+	// reordering anything moves them. Not decoding it is also the cheaper
+	// path for a payload this size.
 	//
 	// Prefer JSONDocument() over reading this field directly.
 	JSONContent    json.RawMessage `json:"json_content"`

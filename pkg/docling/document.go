@@ -31,10 +31,19 @@ type Document struct {
 	// anything else whose content is a run of text.
 	Texts []TextItem `json:"texts"`
 
-	// Tables and Pictures are separate collections in the same document, and
-	// neither carries text of its own.
-	Tables   []DocItem `json:"tables"`
-	Pictures []DocItem `json:"pictures"`
+	// Tables, Pictures, KeyValueItems and FormItems are separate collections
+	// in the same document. None of them carries text of its own: a table's
+	// words live in its cells, a picture's in its annotations, and the last
+	// two hold the regions a form or an invoice produces. All four can carry
+	// a placement.
+	Tables        []DocItem `json:"tables"`
+	Pictures      []DocItem `json:"pictures"`
+	KeyValueItems []DocItem `json:"key_value_items"`
+	FormItems     []DocItem `json:"form_items"`
+
+	// Groups are deliberately absent. They are the tree's branch nodes and
+	// carry neither text nor a placement, so reading them would add an entry
+	// for every one and place none of them.
 
 	// Pages is keyed by the page number written as a string, because the wire
 	// format serialises the integer keys of a map as JSON object keys.
@@ -59,10 +68,15 @@ type DocItem struct {
 }
 
 // TextItem is a DocItem that also carries text.
+//
+// There are two fields for it and they are usually the same. Several parser
+// paths fill only Orig, so both have to be read. See doclingText in the
+// unstructured package for which of them wins.
 type TextItem struct {
 	DocItem
 
 	Text string `json:"text"`
+	Orig string `json:"orig"`
 }
 
 // Provenance is one placement of an element: which page, and where on it.
