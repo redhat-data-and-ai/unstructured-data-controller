@@ -46,8 +46,7 @@ const (
 // DestinationSyncerReconciler reconciles a DestinationSyncer object
 type DestinationSyncerReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=destinationsyncers,verbs=get;list;watch;create;update;patch;delete
@@ -92,7 +91,6 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, destinationSyncCR, err)
 	}
-	r.fileStore = fs
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(destinationSyncCR)
 	if err != nil {
 		return r.handleError(ctx, destinationSyncCR, err)
@@ -120,14 +118,14 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 
 		inputPath := unstructured.StagePath(pipelineName, dep.Name)
-		filePaths, err := r.fileStore.ListFilesInPath(ctx, inputPath)
+		filePaths, err := fs.ListFilesInPath(ctx, inputPath)
 		if err != nil {
 			logger.Error(err, "failed to list files in path", "stage", dep.Name)
 			return r.handleError(ctx, destinationSyncCR, err)
 		}
 		logger.Info("files to ingest to destination", "stage", dep.Name, "count", len(filePaths))
 
-		if err := destination.SyncFilesToDestination(ctx, r.fileStore, filePaths); err != nil {
+		if err := destination.SyncFilesToDestination(ctx, fs, filePaths); err != nil {
 			logger.Error(err, "failed to ingest files to destination", "stage", dep.Name)
 			return r.handleError(ctx, destinationSyncCR, err)
 		}
@@ -173,7 +171,7 @@ func (r *DestinationSyncerReconciler) findDependents(ctx context.Context, obj cl
 			continue
 		}
 		for _, dep := range item.Spec.DependsOn {
-			if pipelineName+"-"+dep.Name == changedName {
+			if controllerutils.StageCRName(pipelineName, dep.Name) == changedName {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: item.Name, Namespace: item.Namespace},
 				})

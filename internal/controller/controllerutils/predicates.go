@@ -40,3 +40,9 @@ func (FilesProcessedChangedPredicate) Update(e event.UpdateEvent) bool {
 	}
 	return oldObj.GetFilesProcessed() != newObj.GetFilesProcessed()
 }
+
+// StageCRName returns the Kubernetes resource name for a stage CR within a pipeline.
+// All stage CRs follow the convention: pipelineName-stageName.
+func StageCRName(pipelineName, stageName string) string {
+	return pipelineName + "-" + stageName
+}

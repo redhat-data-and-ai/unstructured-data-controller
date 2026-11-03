@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -56,11 +57,13 @@ type HTTPClient struct {
 	Config *HTTPClientConfig
 }
 
+// NewHTTPClient creates an embedding HTTP client with automatic retry on
+// transient errors (429, 5xx). Retries are safe because embedding generation
+// is idempotent (same input always produces the same output), though retries
+// may increase API costs if the provider charges per-call.
 func NewHTTPClient(config *HTTPClientConfig) *HTTPClient {
 	return &HTTPClient{
-		Client: &http.Client{
-			Timeout: HTTPClientTimeout,
-		},
+		Client: httpclient.NewWithRetry(HTTPClientTimeout),
 		Config: config,
 	}
 }
@@ -103,20 +106,20 @@ func (c *HTTPClient) GenerateEmbeddings(
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
 	}
 
-	// TODO: Add a better log statement
 	logger.Info("sending embedding request")
 	req, err := c.createHTTPRequest(ctx, http.MethodPost, c.Config.Endpoint, payload)
 	if err != nil {
 		return nil, err
 	}
 
+	// Retry is handled transparently by go-retryablehttp via the HTTP client.
 	resp, err := c.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send embedding request: %w", err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			logger.Error(err, "failed to close response body")
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Error(closeErr, "failed to close embedding response body")
 		}
 	}()
 

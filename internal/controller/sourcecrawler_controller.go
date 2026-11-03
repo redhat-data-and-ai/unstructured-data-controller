@@ -57,8 +57,7 @@ const (
 // SourceCrawlerReconciler reconciles a SourceCrawler object
 type SourceCrawlerReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=sourcecrawlers,verbs=get;list;watch;create;update;patch;delete
@@ -101,8 +100,6 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to create filestore: %w", err))
 	}
-	r.fileStore = fs
-
 	parentPipeline, err := controllerutils.ParentPipelineNameFromOwnerReference(sourceCrawlerCR)
 	if err != nil {
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, err)
@@ -140,7 +137,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		source = gdriveSource
 
 	case operatorv1alpha1.TypeGit:
-		storedFiles, repoStatus, err := r.buildAndSyncGitRepos(ctx, sourceCrawlerCR, sourceCrawlerConfig.GitConfig, outputDir)
+		storedFiles, repoStatus, err := r.buildAndSyncGitRepos(ctx, sourceCrawlerCR, sourceCrawlerConfig.GitConfig, outputDir, fs)
 		if err != nil {
 			if patchErr := controllerutils.StatusPatch(ctx, r.Client, sourceCrawlerCR, func() {
 				sourceCrawlerCR.Status.GitRepoStatus = repoStatus
@@ -173,7 +170,7 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("unsupported source type: %s", sourceCrawlerConfig.Type))
 	}
 
-	storedFiles, err := source.SyncFilesToFilestore(ctx, r.fileStore)
+	storedFiles, err := source.SyncFilesToFilestore(ctx, fs)
 	storedCount := int64(len(storedFiles))
 
 	var gdriveStatus []operatorv1alpha1.GDriveFolderStatus
@@ -368,6 +365,7 @@ func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
 	sourceCrawlerCR *operatorv1alpha1.SourceCrawler,
 	gitConfig *operatorv1alpha1.GitConfig,
 	outputDir string,
+	fs *filestore.FileStore,
 ) ([]unstructured.RawFileMetadata, []operatorv1alpha1.GitRepoStatus, error) {
 	logger := log.FromContext(ctx)
 
@@ -425,7 +423,7 @@ func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
 		configHash := gitRepoConfigHash(repo)
 		prevRepo := prevStatusMap[repo.Repo]
 		if currentHash == prevRepo.CommitSHA && configHash == prevRepo.ConfigHash {
-			files, listErr := r.fileStore.ListFilesInPath(ctx, repoOutputDir)
+			files, listErr := fs.ListFilesInPath(ctx, repoOutputDir)
 			if listErr == nil && len(files) > 0 {
 				logger.Info("git HEAD and config unchanged, skipping clone", "repo", repo.Repo, "revision", revision, "hash", currentHash)
 				repoStatus = append(repoStatus, operatorv1alpha1.GitRepoStatus{
@@ -461,7 +459,7 @@ func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
 			CommitSHA:   currentHash,
 		}
 
-		storedFiles, syncErr := gitSource.SyncFilesToFilestore(ctx, r.fileStore)
+		storedFiles, syncErr := gitSource.SyncFilesToFilestore(ctx, fs)
 		allStoredFiles = append(allStoredFiles, storedFiles...)
 		if syncErr != nil {
 			logger.Error(syncErr, "partial sync failure for git repo", "repo", repo.Repo, "filesStored", len(storedFiles))
@@ -550,7 +548,7 @@ func (r *SourceCrawlerReconciler) findDependents(ctx context.Context, obj client
 			continue
 		}
 		for _, dep := range item.Spec.DependsOn {
-			if pipelineName+"-"+dep.Name == changedName {
+			if controllerutils.StageCRName(pipelineName, dep.Name) == changedName {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: item.Name, Namespace: item.Namespace},
 				})
