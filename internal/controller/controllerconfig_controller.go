@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -60,12 +61,17 @@ var modelMap = map[Model]ModelCredentials{
 }
 
 var (
-	doclingClient                          *docling.Client
-	langchainClient                        *langchain.Client
-	embeddingModelCredentials              = map[Model]ModelCredentials{}
-	vlmAPIKey                              string
-	vlmAPIURL                              string
-	vlmModelID                             string
+	doclingClient             *docling.Client
+	langchainClient           *langchain.Client
+	embeddingModelCredentials = map[Model]ModelCredentials{}
+	vlmAPIKey                 string
+	vlmAPIURL                 string
+	vlmModelID                string
+	// Published as one whole value rather than field by field: the document
+	// processor reads it from another goroutine, and a piecemeal update could
+	// hand it a credential from one revision paired with an endpoint from
+	// another.
+	vlmPipelineCfg                         atomic.Pointer[vlmPipelineSettings]
 	UnstructuredDataPipelineResyncInterval *int
 	LDAPClient                             ldap.Client
 	CacheClient                            pkgcache.Cache
@@ -74,6 +80,44 @@ var (
 	controllerConfigSecretRef              string
 	controllerConfigNamespace              string
 )
+
+// vlmPipelineAPIKeySecretKey is the Secret entry holding the credential for
+// the model the vlm pipeline parses with. Named rather than inlined so the
+// Secret and the reader cannot drift apart: a key the controller never finds
+// reads as "this endpoint needs no credential", and the request goes out
+// unauthenticated. It must match config/samples/unstructured-secret.yaml.
+const vlmPipelineAPIKeySecretKey = "VLM_PIPELINE_API_KEY"
+
+// vlmPipelineSettings is where the vlm pipeline's model is reached. Which
+// model it is, and what to ask it for, are spec fields on the
+// DocumentProcessor instead, because those change what the parse returns and
+// so have to reach the conversion cache key. An address does not.
+//
+// apiKey deliberately has no CRD field at all: DoclingConfig is copied
+// verbatim into ConvertedFileMetadata and shipped to the destination bucket
+// and the warehouse, so a credential on a CR would be persisted into every
+// converted artifact.
+type vlmPipelineSettings struct {
+	apiKey string
+	apiURL string
+}
+
+// configured reports whether the model can be reached. Only the endpoint is
+// required: a model served without authentication is an ordinary deployment,
+// and a credential that turns out to be needed fails loudly at the gateway. A
+// missing endpoint cannot fail loudly, because docling then runs its own
+// bundled model and answers 200.
+func (s *vlmPipelineSettings) configured() bool {
+	return s != nil && s.apiURL != ""
+}
+
+// stringValue reads an optional API field, which is nil when unset.
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
 
 // ControllerConfigReconciler reconciles a ControllerConfig object
 type ControllerConfigReconciler struct {
@@ -160,6 +204,13 @@ func (r *ControllerConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	vlmAPIKey = strings.TrimSpace(string(secret.Data["VLM_API_KEY"]))
 	vlmAPIURL = strings.TrimSpace(config.Spec.VLMAPIURL)
 	vlmModelID = strings.TrimSpace(config.Spec.VLMModelID)
+
+	// Where the vlm pipeline's model is served. Stored as one complete value so
+	// no reader can observe a half-applied update.
+	vlmPipelineCfg.Store(&vlmPipelineSettings{
+		apiKey: strings.TrimSpace(string(secret.Data[vlmPipelineAPIKeySecretKey])),
+		apiURL: stringValue(config.Spec.VLMPipelineAPIURL),
+	})
 
 	// initialize LDAP client and cache if configured
 	if config.Spec.LDAPConfig != nil && config.Spec.LDAPConfig.Server != "" {

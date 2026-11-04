@@ -337,9 +337,24 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 		return nil, fmt.Errorf("invalid strategy: %s", chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy)
 	}
 
-	chunks, err := chunker.Chunk(convertedFile.ConvertedDocument.Content.Markdown)
+	content := convertedFile.ConvertedDocument.Content.Markdown
+	chunks, err := chunker.Chunk(content)
 	if err != nil {
 		return nil, err
+	}
+
+	// A parser that returns a document and no usable text chunks to nothing
+	// while every stage reports success, so the only place this can be caught
+	// is here, before the empty artifact is written. Observed against a
+	// vision-language parser on whole slide decks, which is why it is a hard
+	// failure rather than a warning: a deck missing from retrieval looks
+	// exactly like a deck nobody asked about.
+	//
+	// Unlike every other chunking failure, this one recurs identically on each
+	// reconcile: the input and the config are unchanged and the stage has no
+	// attempt limit.
+	if err := unstructured.ValidateChunks(content, chunks); err != nil {
+		return nil, fmt.Errorf("chunking %s: %w", convertedFilePath, err)
 	}
 
 	return &unstructured.ChunksFile{
