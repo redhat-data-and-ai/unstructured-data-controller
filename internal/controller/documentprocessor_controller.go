@@ -250,8 +250,8 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		content := &unstructured.Content{
 			Markdown: doclingResponse.Document.MDContent,
 		}
-		if rendition := doclingResponse.Document.JSONDocument(); rendition != nil {
-			if extractErr := content.ExtractDoclingDocument(rendition); extractErr != nil {
+		if doclingDocument := doclingResponse.Document.JSONDocument(); doclingDocument != nil {
+			if extractErr := content.ExtractDoclingDocument(doclingDocument); extractErr != nil {
 				// Markdown is intact and is what every consumer reads today,
 				// so store the file rather than failing the conversion and
 				// retrying it until the attempt limit is reached.

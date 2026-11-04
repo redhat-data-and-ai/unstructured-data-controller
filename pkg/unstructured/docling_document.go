@@ -27,6 +27,84 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 )
 
+// This file reads docling's DoclingDocument rendition. Below is a real one,
+// abridged, so the shape is visible without opening a conversion response.
+//
+// It is the output of converting a one page document reading "Quarterly
+// Widget Report", a "Summary" heading and two lines of regional sales, with
+// to_formats ["json"]. Everything shown is verbatim, including the OCR of the
+// page dimensions. Only repetition is cut, marked with an ellipsis.
+//
+//	{
+//	  "schema_name": "DoclingDocument",
+//	  "version": "1.10.0",
+//	  "name": "report",
+//	  "origin": { ... },
+//	  "furniture": { ... },          // running headers and footers
+//	  "body": {
+//	    "self_ref": "#/body",
+//	    "parent": null,
+//	    "children": [ {"$ref": "#/texts/0"}, {"$ref": "#/texts/1"}, ... ]
+//	  },
+//	  "groups": [],                  // branch nodes, no text and no prov
+//	  "texts": [
+//	    {
+//	      "self_ref": "#/texts/0",
+//	      "parent": {"$ref": "#/body"},
+//	      "children": [],
+//	      "content_layer": "body",
+//	      "label": "text",
+//	      "prov": [
+//	        {
+//	          "page_no": 1,
+//	          "bbox": {
+//	            "l": 65.0, "t": 644.6666666666666,
+//	            "r": 187.0, "b": 623.0,
+//	            "coord_origin": "BOTTOMLEFT"
+//	          },
+//	          "charspan": [0, 23]
+//	        }
+//	      ],
+//	      "orig": "Quarterly Widget Report",
+//	      "text": "Quarterly Widget Report",
+//	      "formatting": null,
+//	      "hyperlink": null
+//	    },
+//	    ...                          // 5 more
+//	  ],
+//	  "pictures": [],
+//	  "tables": [],
+//	  "key_value_items": [],
+//	  "form_items": [],
+//	  "pages": {
+//	    "1": {
+//	      "size": {"width": 1240.0, "height": 700.0},
+//	      "image": null,
+//	      "page_no": 1
+//	    }
+//	  }
+//	}
+//
+// Four things in there drive the code below.
+//
+// An element is addressed by "self_ref" and never by position, so the order
+// of the collections carries no meaning.
+//
+// "pages" is an object keyed by the page number as a string, not an array,
+// because JSON object keys are always strings.
+//
+// "prov" is a list, and empty on an element docling could not place. Every
+// element in this sample has one because the input was an image, so all six
+// were laid out. On a richer document roughly half of "texts" arrives with
+// none, and takes its placement from an ancestor instead.
+//
+// "orig" and "text" agree here and do not always. Several paths place an
+// element, leave "text" empty, and put the content in "orig".
+//
+// "coord_origin" says which corner the rectangle is measured from. It is
+// BOTTOMLEFT on this path and TOPLEFT on the VLM one, so the values are not
+// comparable between documents until something converts them.
+
 // ErrNoDoclingDocument means the conversion carried no structured document,
 // so there was nothing to read. It is not a parse failure.
 var ErrNoDoclingDocument = errors.New("the response carried no structured document")
@@ -74,18 +152,18 @@ var ErrNoDoclingDocument = errors.New("the response carried no structured docume
 // one. The caller should carry on with markdown: nothing reads the structured
 // fields yet, and failing a conversion that produced perfectly good markdown
 // helps nobody.
-func (c *Content) ExtractDoclingDocument(rendition json.RawMessage) error {
+func (c *Content) ExtractDoclingDocument(rawDoclingDocument json.RawMessage) error {
 	// Unmarshalling the JSON literal null into a struct succeeds and leaves
 	// every field zero, so without this the artifact would record a document
 	// that merely happened to be empty, and store the four bytes "null" as
 	// the rendition. omitempty does not drop those, because there are four
 	// of them.
-	if trimmed := bytes.TrimSpace(rendition); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+	if trimmed := bytes.TrimSpace(rawDoclingDocument); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return ErrNoDoclingDocument
 	}
 
 	var doc docling.Document
-	if err := json.Unmarshal(rendition, &doc); err != nil {
+	if err := json.Unmarshal(rawDoclingDocument, &doc); err != nil {
 		return fmt.Errorf("reading the structured document: %w", err)
 	}
 
@@ -99,7 +177,7 @@ func (c *Content) ExtractDoclingDocument(rendition json.RawMessage) error {
 	// caller hands over a slice it has finished with, so a defensive copy
 	// would double the peak memory per document in flight to guard against
 	// a caller that does not exist.
-	c.DoclingDocument = rendition
+	c.DoclingDocument = rawDoclingDocument
 
 	return nil
 }
