@@ -297,3 +297,38 @@ func TestChunksGenerator_AddPermanentlyFailingFile_IsNotRecordedTwice(t *testing
 		t.Errorf("expected one entry, got %v", generator.Status.PermanentlyFailingFiles)
 	}
 }
+
+// Chunking usually fails for the whole corpus at once, on configuration
+// rather than on the file. An unreachable tokenizer gives up on every file,
+// so fixing it has to recover them or the only way back is editing status.
+func TestChunksGenerator_ResetPermanentlyFailingFiles_OnASpecEdit(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.Generation = 4
+	generator.AddPermanentlyFailingFile("a.json")
+
+	if generator.ResetPermanentlyFailingFiles() {
+		t.Error("expected no reset while the spec is unchanged")
+	}
+
+	generator.Generation = 5
+	if !generator.ResetPermanentlyFailingFiles() {
+		t.Error("expected the edited spec to clear the list")
+	}
+	if generator.Status.PermanentlyFailingFiles != nil {
+		t.Errorf("expected the list to be cleared, got %v", generator.Status.PermanentlyFailingFiles)
+	}
+	if generator.IsFilePermanentlyFailing("a.json") {
+		t.Error("expected the file to be eligible again")
+	}
+}
+
+// It reports whether it changed anything, because the caller patches status
+// on the answer and an empty patch on every reconcile is pure noise.
+func TestChunksGenerator_ResetPermanentlyFailingFiles_NothingToReset(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.Generation = 7
+
+	if generator.ResetPermanentlyFailingFiles() {
+		t.Error("expected no reset when no file has been given up on")
+	}
+}

@@ -55,6 +55,14 @@ const (
 	// the chunker cannot read fails the same way every time, so an unbounded
 	// retry takes a slot on every pass and chunks nothing.
 	maxDoclingChunkingAttempts = 3
+
+	// maxChunkTaskAge is how long a task may stay in flight before a job
+	// that cannot be collected is counted as a failed attempt rather than
+	// waited on.
+	//
+	// Generous on purpose. Chunking a 143 page document measured under 20
+	// seconds end to end, so anything near this is not slow, it is gone.
+	maxChunkTaskAge = 30 * time.Minute
 )
 
 // ChunksGeneratorReconciler reconciles a ChunksGenerator object
@@ -105,6 +113,16 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// set status to waiting
 	if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
+		// Inside the patch, not before it: StatusPatch diffs against a copy
+		// taken when it is called, so a change made earlier is already in
+		// the base and produces an empty patch.
+		//
+		// An edit to the spec gives up-on files another chance. Chunking
+		// usually fails for a whole corpus at once, on configuration rather
+		// than on the file, so without this the fix for it recovers nothing.
+		if chunksGeneratorCR.ResetPermanentlyFailingFiles() {
+			logger.Info("spec changed, retrying files that chunking had given up on")
+		}
 		chunksGeneratorCR.SetWaiting()
 	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status")
@@ -165,11 +183,13 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		processed, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR, inputPath, outputPath)
 		if err != nil {
 			// Both chunking paths refuse work when their client is already at
-			// capacity, rather than queueing behind it, so the file waits for
-			// the next pass instead of failing the stage. The two clients
-			// report it in their own words.
-			if strings.Contains(err.Error(), langchain.SemaphoreAcquireError) ||
-				strings.Contains(err.Error(), docling.SemaphoreAcquireError) {
+			// capacity rather than queueing behind it, so the file waits for
+			// the next pass instead of failing the stage. The langchain match
+			// is on text because that client offers nothing else; the docling
+			// one is a sentinel, so a file whose own path contains the phrase
+			// cannot be mistaken for a busy client.
+			if errors.Is(err, docling.ErrSemaphoreUnavailable) ||
+				strings.Contains(err.Error(), langchain.SemaphoreAcquireError) {
 				logger.Error(err, "failed to process converted file, semaphore acquire error, will try again later", "file", convertedFilePath)
 				skippedFiles = append(skippedFiles, convertedFilePath)
 				continue
@@ -183,6 +203,21 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				logger.Error(err, "skipping file that is not a converted file", "file", convertedFilePath)
 				continue
 			}
+			if errors.Is(err, unstructured.ErrNoStructuredDocument) {
+				// A chunker that splits on structure cannot do anything with
+				// a file converted before the structured document was asked
+				// for, and the file will not change on its own. Failing the
+				// stage would retry it on every reconcile forever, with no
+				// attempt limit to stop it: the limit only covers failures
+				// that happen after a task id exists, and this one happens
+				// before the request is even sent. Skipped instead, so the
+				// rest of the corpus is still chunked. Not requeued either:
+				// nothing here changes it, and the file being converted
+				// again writes a new converted file, which wakes this stage
+				// on its own.
+				logger.Error(err, "skipping file with no structured document to chunk", "file", convertedFilePath)
+				continue
+			}
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to process converted file", "file", convertedFilePath)
 			continue
@@ -191,6 +226,20 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			filesProcessed++
 		}
 		logger.Info("successfully processed converted file", "file", convertedFilePath)
+	}
+
+	// Recorded here rather than in the success patch below, because every
+	// return between the two skips that patch and the count is lost for good:
+	// the files are chunked, so the next pass finds their artifacts current
+	// and never counts them. A completed task counts itself inside the patch
+	// that forgets its job, so it is not in this total.
+	if filesProcessed > 0 {
+		if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
+			chunksGeneratorCR.Status.FilesProcessed += filesProcessed
+		}); err != nil {
+			logger.Error(err, "failed to record processed files on ChunksGenerator CR status")
+			return r.handleError(ctx, chunksGeneratorCR, err)
+		}
 	}
 
 	if len(chunkingErrors) > 0 {
@@ -219,7 +268,6 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
-		chunksGeneratorCR.Status.FilesProcessed += filesProcessed
 		chunksGeneratorCR.UpdateStatus(successMessage, nil)
 	}); err != nil {
 		logger.Error(err, "failed to update ChunksGenerator CR status", "namespace", chunksGeneratorCR.Namespace, "name", chunksGeneratorCR.Name)
@@ -364,15 +412,15 @@ func (r *ChunksGeneratorReconciler) retrieveConvertedFile(
 ) (*unstructured.ConvertedFile, error) {
 	raw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading converted file %s: %w", convertedFilePath, err)
 	}
 
 	convertedFile := &unstructured.ConvertedFile{}
 	if err := json.Unmarshal(raw, convertedFile); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decoding converted file %s: %w", convertedFilePath, err)
 	}
 	if err := convertedFile.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("checking converted file %s: %w", convertedFilePath, err)
 	}
 
 	return convertedFile, nil
@@ -513,15 +561,16 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 	// limit rather than by the size of the corpus.
 	convertedFile, err := r.retrieveConvertedFile(ctx, job.FilePath)
 	if err != nil {
-		return err
+		return r.failStuckChunkJob(ctx, job, chunksGeneratorCR, err)
 	}
 
 	result, err := collector.Collect(ctx, job.TaskID, convertedFile.ConvertedDocument)
 	switch {
 	case err != nil && !errors.Is(err, docling.ErrChunkTaskEnded):
-		// The task is alive and still holds its slot, so the next pass
-		// collects the same id rather than starting again.
-		return fmt.Errorf("collecting the chunking task for %s: %w", job.FilePath, err)
+		// As far as we can tell the task is alive and still holds its slot,
+		// so the next pass collects the same id rather than starting again.
+		return r.failStuckChunkJob(ctx, job, chunksGeneratorCR,
+			fmt.Errorf("collecting the chunking task for %s: %w", job.FilePath, err))
 
 	case err != nil:
 		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
@@ -547,6 +596,31 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 		chunksGeneratorCR.DeleteJobByFilePath(job.FilePath)
 		chunksGeneratorCR.Status.FilesProcessed++
 	})
+}
+
+// failStuckChunkJob counts an attempt against a job that cannot even be
+// asked about, once it is too old to be waiting on anything real.
+//
+// Without it a job can be pinned forever. Nothing here touches the job, so
+// its attempt count never moves and the file is skipped as already in
+// flight, which is correct while the task is running and wrong once it is
+// not. The service restarting is enough: the task id then polls as missing
+// on every pass and the stage stays red with no way out.
+//
+// Giving up on the id may abandon a task that really is still running, and
+// its slot with it. That is the lesser cost: the slot returns when the
+// process restarts, and the alternative is a file that is never chunked.
+func (r *ChunksGeneratorReconciler) failStuckChunkJob(ctx context.Context, job operatorv1alpha1.ChunkJob,
+	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, cause error) error {
+	created, err := time.Parse(time.RFC3339, job.CreatedOn)
+	// An unparseable timestamp is treated as old. It can only come from a
+	// job this controller did not write, and leaving it pinned is worse.
+	if err == nil && time.Since(created) < maxChunkTaskAge {
+		return cause
+	}
+
+	return r.failChunkJob(ctx, job, chunksGeneratorCR,
+		fmt.Errorf("chunking task unreachable for over %s: %w", maxChunkTaskAge, cause))
 }
 
 // failChunkJob gives a file another attempt, or gives up on it.

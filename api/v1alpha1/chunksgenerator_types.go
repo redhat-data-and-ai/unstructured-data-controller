@@ -100,6 +100,9 @@ type ChunksGeneratorStatus struct {
 	Jobs []ChunkJob `json:"jobs,omitempty"`
 	// PermanentlyFailingFiles are files that will not be retried.
 	PermanentlyFailingFiles []string `json:"permanentlyFailingFiles,omitempty"`
+	// PermanentlyFailingGeneration is the spec generation those files were
+	// given up on under, so editing the spec can give them another chance.
+	PermanentlyFailingGeneration int64 `json:"permanentlyFailingGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -185,16 +188,36 @@ func (c *ChunksGenerator) DeleteJobByFilePath(filePath string) {
 	c.Status.Jobs = remaining
 }
 
-// AddPermanentlyFailingFile records a file that will not be tried again.
+// AddPermanentlyFailingFile records a file that will not be tried again
+// under the current spec.
 //
 // Without it a file that fails every attempt is resubmitted forever, because
 // the only other record of the attempts is the job, and giving up means
 // removing that job.
 func (c *ChunksGenerator) AddPermanentlyFailingFile(filePath string) {
+	c.Status.PermanentlyFailingGeneration = c.Generation
 	if slices.Contains(c.Status.PermanentlyFailingFiles, filePath) {
 		return
 	}
 	c.Status.PermanentlyFailingFiles = append(c.Status.PermanentlyFailingFiles, filePath)
+}
+
+// ResetPermanentlyFailingFiles forgets every file given up on under an older
+// spec, and reports whether it changed anything.
+//
+// The usual cause of giving up is the configuration rather than the file. An
+// unreachable tokenizer returns success with no chunks for every file in the
+// corpus, so without this, fixing the tokenizer recovers nothing and the only
+// way back is editing status by hand.
+func (c *ChunksGenerator) ResetPermanentlyFailingFiles() bool {
+	if len(c.Status.PermanentlyFailingFiles) == 0 ||
+		c.Status.PermanentlyFailingGeneration == c.Generation {
+		return false
+	}
+
+	c.Status.PermanentlyFailingFiles = nil
+	c.Status.PermanentlyFailingGeneration = 0
+	return true
 }
 
 func (c *ChunksGenerator) IsFilePermanentlyFailing(filePath string) bool {

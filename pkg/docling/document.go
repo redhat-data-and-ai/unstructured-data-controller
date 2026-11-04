@@ -25,55 +25,13 @@ import (
 )
 
 // A chunk says which elements it was built from and nothing about where they
-// are. This file turns those addresses into rectangles on a page, by looking
-// them up in the document the chunk came from.
+// are. This file turns those addresses into rectangles on a page.
 //
-// Below is a real DoclingDocument, abridged, so the shape these types
-// describe is visible without fetching a conversion response.
-//
-//	{
-//	  "schema_name": "DoclingDocument",
-//	  "version": "1.10.0",
-//	  "body":   { "self_ref": "#/body", "children": [ {"$ref": "#/texts/0"} ] },
-//	  "groups": [ {"self_ref": "#/groups/0", "parent": {"$ref": "#/body"},
-//	               "label": "list"} ],
-//	  "texts": [
-//	    {
-//	      "self_ref": "#/texts/0",
-//	      "parent": {"$ref": "#/body"},
-//	      "label": "text",
-//	      "prov": [
-//	        {
-//	          "page_no": 1,
-//	          "bbox": {"l": 65.0, "t": 644.7, "r": 187.0, "b": 623.0,
-//	                   "coord_origin": "BOTTOMLEFT"},
-//	          "charspan": [0, 23]
-//	        }
-//	      ],
-//	      "orig": "Quarterly Widget Report",
-//	      "text": "Quarterly Widget Report"
-//	    }
-//	  ],
-//	  "tables": [], "pictures": [], "key_value_items": [], "form_items": [],
-//	  "pages": { "1": {"size": {"width": 612.0, "height": 792.0}, "page_no": 1} }
-//	}
-//
-// Four things in there drive the code below.
-//
-// An element is addressed by "self_ref" and never by position, so the order
-// of the collections carries no meaning.
-//
-// "pages" is an object keyed by the page number written as a string, not an
-// array, because JSON object keys are always strings.
-//
-// "prov" is a list and is empty on an element docling did not place, which is
-// most of them. Measured on a 143 page document: 1,137 of 2,454 text elements
-// carry a placement of their own and the other 1,317 take one from an
-// ancestor.
-//
-// "coord_origin" says which corner the rectangle is measured from, and has to
-// be read per box rather than assumed. It is BOTTOMLEFT on the standard path
-// and TOPLEFT on the vision-language one.
+// Three things about the format drive the code below. An element is
+// addressed by "self_ref" and never by position. "pages" is an object keyed
+// by the page number as a string, not an array. And "prov" is empty on an
+// element docling did not place, which is most of them: on a 143 page
+// document, 1,317 of 2,454 text elements take their box from an ancestor.
 
 const (
 	// CoordOriginBottomLeft measures a box from the bottom of the page
@@ -86,27 +44,20 @@ const (
 	CoordOriginTopLeft = "TOPLEFT"
 )
 
-// maxAncestorLevels bounds the climb from an element to a placed ancestor.
-//
-// Four because three is the deepest observed and the parent chain is data
-// from outside this process. A document whose parents form a cycle would
-// otherwise loop forever inside a reconcile.
+// maxAncestorLevels bounds the climb to a placed ancestor. Four because
+// three is the deepest observed, and the parent chain is untrusted data: a
+// cycle in it would otherwise spin inside a reconcile.
 const maxAncestorLevels = 4
 
-// regionPrecision is how many decimal places a normalised coordinate keeps.
-//
-// Five is a six hundredth of a point on a letter page, far below anything a
-// reader could see, and it stops a float division writing seventeen digits
-// per number into an artifact that holds thousands of them. It also makes two
-// boxes that are the same box compare equal, which is what deduplication
-// relies on.
+// regionPrecision keeps five decimal places, which is well below what a
+// reader can see and stops a float division writing seventeen digits per
+// number. It also makes two identical boxes compare equal, which is what
+// deduplication relies on.
 const regionPrecision = 5
 
-// Region is where a chunk's content sits: one page, one rectangle.
-//
-// The rectangle is normalised to 0 to 1 and measured from the top left,
-// whatever convention it arrived in. Normalised coordinates survive any
-// rendering resolution, which a pixel box does not.
+// Region is where a chunk's content sits: one page, one rectangle,
+// normalised to 0 to 1 from the top left whatever convention it arrived in.
+// Normalised coordinates survive any rendering resolution.
 type Region struct {
 	PageNo int `json:"pageNo"`
 
@@ -115,23 +66,19 @@ type Region struct {
 }
 
 // DocItem is what every element of a DoclingDocument has in common: an
-// address, what it is, where it sits, and what contains it.
-//
-// Text elements are read through this type too. Their content is not needed
-// here, because a chunk already carries its own text; only the geometry is
-// missing.
+// address, what it is, where it sits, and what contains it. Text elements
+// are read through it too, since only their geometry is wanted here.
 type DocItem struct {
-	// SelfRef is the element's address inside this document, for example
-	// "#/texts/59". It is an address and not an index, and resolves only
-	// against the document it came from.
+	// SelfRef is the element's address, for example "#/texts/59". It
+	// resolves only against the document it came from.
 	SelfRef string `json:"self_ref"`
 
 	// Label is docling's own name for the element: "text", "section_header",
 	// "list_item", "table" and so on.
 	Label string `json:"label"`
 
-	// Parent is nil on the root. Everything else names its container, which
-	// is how an element with no placement of its own finds one.
+	// Parent is nil on the root, and is how an unplaced element finds a
+	// placement.
 	Parent *Reference `json:"parent"`
 
 	// Prov is empty for elements docling did not place, and for input formats
@@ -139,11 +86,8 @@ type DocItem struct {
 	Prov []Provenance `json:"prov"`
 }
 
-// Reference is a pointer to another element.
-//
-// Two spellings exist. Current docling writes "$ref" and older documents
-// carry "cref", and a stored artifact can have been written by either, so
-// both are read.
+// Reference points at another element. Current docling writes "$ref" and
+// older documents carry "cref", and a stored artifact can be either.
 type Reference struct {
 	Ref  string `json:"$ref"`
 	CRef string `json:"cref"`
@@ -214,11 +158,8 @@ type document struct {
 	Pages map[string]Page `json:"pages"`
 }
 
-// DocumentIndex answers "where is this element" for one document.
-//
-// It is built once per file and queried once per chunk. Building it per chunk
-// would reparse several megabytes of JSON for every one of a document's
-// chunks.
+// DocumentIndex answers "where is this element" for one document. Build it
+// once per file: per chunk would reparse megabytes of JSON each time.
 type DocumentIndex struct {
 	items map[string]*DocItem
 	pages map[string]Page
@@ -252,17 +193,12 @@ func NewDocumentIndex(raw json.RawMessage) (*DocumentIndex, error) {
 	return index, nil
 }
 
-// Regions returns where the named elements sit, and the addresses it could
-// not place.
+// Regions returns where the named elements sit, and separately the
+// addresses it could not place: one bad address should not cost a chunk the
+// rectangles it did resolve.
 //
-// The two are returned separately rather than one failing the other. An
-// address that does not resolve is worth seeing, because it means the chunk
-// and the document disagree about what is in the document, but a chunk with
-// some of its rectangles is still better than a chunk with none.
-//
-// Duplicates are dropped. A run of inline text resolves through its parent,
-// so several addresses in one chunk commonly name the same box, and a reader
-// would see the same rectangle drawn repeatedly.
+// Duplicates are dropped, because inline runs resolve through the same
+// parent and a reader would see one rectangle drawn repeatedly.
 func (index *DocumentIndex) Regions(addresses []string) (regions []Region, unresolved []string) {
 	regions = []Region{}
 	seen := map[Region]bool{}
@@ -298,15 +234,10 @@ func (index *DocumentIndex) Regions(addresses []string) (regions []Region, unres
 
 // placement finds the element's own box, or the nearest one above it.
 //
-// Climbing is not a fallback for a rare case: more than half of a real
-// document's text elements carry no placement, because the parser puts the
-// box on the block and the text on the inline runs inside it. Reading only an
-// element's own prov loses them.
-//
-// It climbs rather than reading the parent directly. An element that has its
-// own box must keep it, or a sentence inside a paragraph would be drawn
-// around the whole paragraph, and groups may gain placements of their own in
-// a later docling release without this needing to change.
+// Climbing is the common case, not a fallback: the parser puts the box on
+// the block and the text on the inline runs inside it. An element with its
+// own box keeps it, or a sentence would be drawn around its whole
+// paragraph.
 func (index *DocumentIndex) placement(item *DocItem) *Provenance {
 	for range maxAncestorLevels + 1 {
 		if own := item.ownPlacement(); own != nil {
@@ -323,12 +254,9 @@ func (index *DocumentIndex) placement(item *DocItem) *Provenance {
 	return nil
 }
 
-// ownPlacement returns the element's first real box, if it has one.
-//
-// An entry with an empty rectangle is skipped rather than returned. bbox is a
-// value and not a pointer, so an absent one decodes to four zeroes, and
-// taking that as a placement would draw a zero-sized box in the page corner
-// and stop the climb that would have found the real one.
+// ownPlacement returns the element's first real box. An absent bbox decodes
+// to four zeroes, because it is a value and not a pointer, and taking that
+// as a placement would draw an empty box and stop the climb.
 func (item *DocItem) ownPlacement() *Provenance {
 	for i := range item.Prov {
 		box := item.Prov[i].BBox
@@ -340,12 +268,10 @@ func (item *DocItem) ownPlacement() *Provenance {
 	return nil
 }
 
-// normalise converts one placement into a 0 to 1 top-left rectangle.
-//
-// It reports false for a page it cannot measure. Without the page's extent
-// there is nothing to divide by, and emitting the raw points would put a box
-// hundreds of times the size of the page into an artifact that says it is
-// normalised.
+// normalise converts one placement into a 0 to 1 top-left rectangle, and
+// reports false for a page it cannot measure. Without the page's extent
+// there is nothing to divide by, and raw points in a field that claims to be
+// normalised would be far worse than no box.
 func (index *DocumentIndex) normalise(placement Provenance) (Region, bool) {
 	page, ok := index.pages[strconv.Itoa(placement.PageNo)]
 	if !ok || page.Size.Width <= 0 || page.Size.Height <= 0 {

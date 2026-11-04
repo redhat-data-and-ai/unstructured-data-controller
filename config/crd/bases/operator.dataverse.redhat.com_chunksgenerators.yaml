@@ -422,6 +422,12 @@ spec:
                 items:
                   type: string
                 type: array
+              permanentlyFailingGeneration:
+                description: |-
+                  PermanentlyFailingGeneration is the spec generation those files were
+                  given up on under, so editing the spec can give them another chance.
+                format: int64
+                type: integer
             type: object
         type: object
     served: true

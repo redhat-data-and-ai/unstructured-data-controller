@@ -193,7 +193,7 @@ func (c *Client) ChunkDoclingDocument(
 	// TryAcquire rather than Acquire, so a full queue returns to the
 	// reconciler instead of parking a worker on it.
 	if !c.ClientConfig.sem.TryAcquire(1) {
-		return nil, errors.New(SemaphoreAcquireError)
+		return nil, ErrSemaphoreUnavailable
 	}
 	// Held until the task is collected. Released here only if docling never
 	// accepts it, because nothing else will know to.

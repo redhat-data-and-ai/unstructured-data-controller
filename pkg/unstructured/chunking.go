@@ -23,43 +23,34 @@ import (
 // error at any point.
 var ErrNoChunksProduced = errors.New("document has content but produced no chunks")
 
-// Chunk is one chunk as a chunker produced it, before anything is stored.
-//
-// Only Text is filled by every chunker. The rest describes where the chunk
-// came from, which a chunker that splits a string cannot know, and which is
-// what makes a citation possible.
+// Chunk is one chunk as a chunker produced it. Only Text is filled by every
+// chunker; the rest is where it came from, which a chunker that splits a
+// string cannot know and which is what makes a citation possible.
 type Chunk struct {
-	// Text is what gets embedded. For a structure-aware chunker it is the
-	// contextualised form, with the heading trail prepended, so a passage
-	// stays findable under the section it belongs to.
+	// Text is embedded. For a structure-aware chunker it carries the
+	// heading trail, so a passage stays findable under its section.
 	Text string
 
-	// RawText is the body alone, and is what gets displayed. Empty where the
-	// chunker has no way to separate the two.
+	// RawText is the body alone, for display. Empty where the chunker cannot
+	// separate the two.
 	RawText string
 
-	// BlockIDs are the addresses of the document elements the chunk was built
-	// from, for example "#/texts/4". Empty for a chunker that works on text,
-	// which has no elements to name.
+	// BlockIDs are the addresses of the elements the chunk was built from,
+	// for example "#/texts/4".
 	BlockIDs []string
 
-	// Regions is where those elements sit on the page, already normalised.
-	// A chunk built from several blocks has several, possibly across a page
-	// break, which is why this is a list and not one rectangle.
+	// Regions is where those elements sit, normalised. A list because a
+	// chunk built from several blocks has several boxes.
 	Regions []docling.Region
 
-	// PageFirst and PageLast are the range of pages the chunk covers, and are
-	// zero where the chunker does not know about pages.
+	// PageFirst and PageLast are zero where the chunker has no pages.
 	PageFirst int
 	PageLast  int
 }
 
 // ChunkResult is what a chunker returns: the chunks, or a receipt for work
-// that is still running.
-//
-// Both cases are a success. A chunker whose work outlives the call cannot
-// return chunks from the call that starts it, so it returns the task id
-// instead and the caller collects later.
+// still running. Both are a success. A chunker whose work outlives the call
+// returns the task id and the caller collects later.
 type ChunkResult struct {
 	Chunks []Chunk
 	TaskID string
@@ -76,27 +67,21 @@ type Chunker interface {
 }
 
 // AsyncChunker is a Chunker whose work outlives the call that starts it.
-// Chunk returns a task id and a later Collect returns that task's chunks.
 //
-// It is separate from Chunker, rather than both methods living on one
-// interface, so that a chunker which finishes within the call does not have
-// to declare a Collect it can never honour. A caller that has a task to
-// collect asks for this with a type assertion, the way the standard library
-// asks a http.ResponseWriter whether it is also a http.Flusher.
+// Separate from Chunker so a chunker that finishes within the call need not
+// declare a Collect it can never honour. Callers ask for it with a type
+// assertion, as they do for http.Flusher.
 type AsyncChunker interface {
 	Chunker
 
-	// Collect returns the chunks of a task that Chunk started. The document
-	// is passed again because the chunker resolves each chunk's elements
-	// against it, and the call that started the task is long gone.
+	// Collect returns the chunks of a task Chunk started. The document is
+	// passed again because the chunker resolves each chunk's elements
+	// against it, and the starting call is long gone.
 	Collect(ctx context.Context, taskID string, document *ConvertedDocument) (ChunkResult, error)
 }
 
-// TextChunks wraps plain strings as chunks that carry nothing but their text.
-//
-// This is everything a chunker that splits a string can say about its output.
-// The fields it leaves empty are the ones a citation needs, which is the
-// whole difference between the two kinds of chunker.
+// TextChunks wraps plain strings as chunks carrying nothing but their text,
+// which is all a chunker that splits a string can say about its output.
 func TextChunks(texts []string) []Chunk {
 	chunks := make([]Chunk, 0, len(texts))
 	for _, text := range texts {
@@ -105,10 +90,8 @@ func TextChunks(texts []string) []Chunk {
 	return chunks
 }
 
-// ChunkTexts returns the text of each chunk, in order.
-//
-// The stored artifact keeps text in its own list, so it stays readable by
-// consumers that predate everything else a chunk now carries.
+// ChunkTexts returns the text of each chunk, in order. The artifact keeps it
+// in its own list so older consumers still read it.
 func ChunkTexts(chunks []Chunk) []string {
 	texts := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {

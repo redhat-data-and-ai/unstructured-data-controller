@@ -103,6 +103,49 @@ func TestDoclingChunkerChunkRefusesAMarkdownOnlyDocument(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNoStructuredDocument)
 }
 
+// A length test alone lets the JSON literal null through, because null is
+// four bytes. Submitting it would base64 "null" as a document and hold a
+// slot until the resulting failure is collected, and indexing it would
+// unmarshal clean into an empty document and place no chunk anywhere.
+func TestDoclingChunkerRefusesADocumentThatIsTheJSONLiteralNull(t *testing.T) {
+	for _, document := range []string{"null", "  null\n"} {
+		t.Run(document, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == pollPath {
+					writeTestJSON(t, w, `{"task_id":"t-1","task_status":"success"}`)
+					return
+				}
+				writeTestJSON(t, w, `{"chunks":[{"chunk_index":0,"text":"a","doc_items":["#/texts/0"]}]}`)
+			}))
+			defer srv.Close()
+
+			_, chunkErr := testChunker(srv).Chunk(context.Background(), convertedDocument(document))
+			assert.ErrorIs(t, chunkErr, ErrNoStructuredDocument, "nothing should be submitted")
+
+			_, collectErr := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(document))
+			assert.ErrorIs(t, collectErr, ErrNoStructuredDocument,
+				"collecting against an empty document should say so, not return chunks with no regions")
+		})
+	}
+}
+
+// Chunk dereferences the metadata for the filename, so a document without it
+// has to be refused rather than panicking the reconciler.
+func TestDoclingChunkerRefusesADocumentWithNoMetadata(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("nothing should be submitted for a document that cannot be chunked")
+	}))
+	defer srv.Close()
+
+	document := convertedDocument(chunkerTestDocument)
+	document.Metadata = nil
+
+	_, err := testChunker(srv).Chunk(context.Background(), document)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoStructuredDocument)
+}
+
 // A running task is a normal answer, not a failure, and it comes back in the
 // same pending shape Chunk used so the caller has one thing to check.
 func TestDoclingChunkerCollectReportsATaskStillRunning(t *testing.T) {

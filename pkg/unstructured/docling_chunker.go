@@ -17,6 +17,7 @@ limitations under the License.
 package unstructured
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -35,40 +36,49 @@ import (
 // should treat it as a reason to stop rather than as a chunking failure.
 var ErrNoStructuredDocument = errors.New("the converted file holds no structured document, only markdown")
 
+// hasStructuredDocument reports whether a converted file carries a document
+// worth sending or indexing.
+//
+// A length test alone is not enough, which is the same rule
+// docling.DoclingResponseDocument.JSONDocument states: the field is absent
+// when nothing asked for it and the JSON literal null when docling ran and
+// produced nothing, and null is four bytes. Letting null through sends "null"
+// to be chunked, and unmarshals clean into an empty index here, which would
+// resolve every chunk to no regions at all and say nothing about it.
+func hasStructuredDocument(document *ConvertedDocument) bool {
+	if document == nil || document.Metadata == nil || document.Content == nil {
+		return false
+	}
+	trimmed := bytes.TrimSpace(document.Content.DoclingDocument)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
+
 // DoclingChunker splits on the document's structure by handing the stored
-// document back to the conversion service.
+// document back to the conversion service. It is the only chunker that can
+// produce a citation, because it is the only one that knows which elements a
+// chunk came from.
 //
-// It is the only chunker that can produce a citation, because it is the only
-// one that knows which elements a chunk came from. Everything else here
-// splits a string and cannot say where any of it was on the page.
-//
-// Its work outlives the call that starts it, so it implements AsyncChunker as
-// well. Chunk submits and returns a task id; Collect returns the chunks once
-// the task has finished.
+// Its work outlives the call, so it implements AsyncChunker too.
 type DoclingChunker struct {
 	Client  *docling.Client
 	Options docling.ChunkingOptions
 }
 
-// Compile-time proof that this is usable wherever either interface is
-// expected. Dropping Collect by accident would otherwise only show up as a
-// failed type assertion at runtime, on the collect path, which is the path
-// that runs minutes after the mistake was made.
+// Dropping Collect by accident would otherwise surface as a failed type
+// assertion minutes later, on the collect path.
 var (
 	_ Chunker      = (*DoclingChunker)(nil)
 	_ AsyncChunker = (*DoclingChunker)(nil)
 )
 
-// Chunk submits the stored document and returns the task the service
-// accepted. It returns no chunks: the work has only started.
+// Chunk submits the stored document and returns the accepted task, not
+// chunks: the work has only started.
 //
-// The stored document is sent rather than the original file. Converting the
-// same file twice does not produce the same document, and a chunk names its
-// elements by their address within one document, so addresses from one
-// conversion resolve against another to the wrong elements. It is also the
-// difference between seconds and milliseconds, since nothing is parsed again.
+// The stored document is sent rather than the original file. A second
+// conversion produces a different document, and a chunk names its elements
+// by address, so those addresses would then point at the wrong elements.
 func (c *DoclingChunker) Chunk(ctx context.Context, document *ConvertedDocument) (ChunkResult, error) {
-	if document == nil || document.Content == nil || len(document.Content.DoclingDocument) == 0 {
+	if !hasStructuredDocument(document) {
 		return ChunkResult{}, ErrNoStructuredDocument
 	}
 
@@ -81,13 +91,12 @@ func (c *DoclingChunker) Chunk(ctx context.Context, document *ConvertedDocument)
 	return ChunkResult{TaskID: response.TaskID}, nil
 }
 
-// Collect returns the chunks of a task Chunk started, with each chunk's
-// elements already resolved to rectangles on the page.
+// Collect returns a started task's chunks, with their elements already
+// resolved to rectangles.
 //
-// A task that is still running comes back as a pending result and not as an
-// error, which is the normal answer rather than a problem. A task that has
-// ended badly returns an error wrapping docling.ErrChunkTaskEnded, so the
-// caller can tell it apart from a poll it simply could not read.
+// A running task comes back pending rather than as an error. One that ended
+// badly wraps docling.ErrChunkTaskEnded, so the caller can tell it from a
+// poll it simply could not read.
 func (c *DoclingChunker) Collect(
 	ctx context.Context, taskID string, document *ConvertedDocument,
 ) (ChunkResult, error) {
@@ -131,7 +140,7 @@ func (*DoclingChunker) resolve(
 ) ([]Chunk, error) {
 	logger := log.FromContext(ctx)
 
-	if document == nil || document.Content == nil || len(document.Content.DoclingDocument) == 0 {
+	if !hasStructuredDocument(document) {
 		return nil, ErrNoStructuredDocument
 	}
 
@@ -180,9 +189,8 @@ func (*DoclingChunker) resolve(
 	return resolved, nil
 }
 
-// pageRange returns the lowest and highest page a chunk touches. A chunk that
-// straddles a page break lists both, and one that touches no page at all,
-// which is every chunk of a format that has no pages, reports zero.
+// pageRange returns the lowest and highest page a chunk touches, or zero for
+// a format that has no pages.
 func pageRange(pageNumbers []int) (first, last int) {
 	if len(pageNumbers) == 0 {
 		return 0, 0

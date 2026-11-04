@@ -432,6 +432,27 @@ func TestGetChunksReportsASuccessfulTaskThatProducedNothing(t *testing.T) {
 	assert.Empty(t, response.Chunks)
 }
 
+// A busy client is a reason to wait, not to fail, and the caller has to tell
+// it apart from a real failure. Matching the message instead would make a
+// file whose own path contains the phrase look like a busy client.
+func TestChunkDoclingDocumentReportsAFullClientAsASentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, `{"task_id":"t-1","task_status":"pending"}`)
+	}))
+	defer srv.Close()
+
+	client := newChunkTestClient(srv)
+	_, err := client.ChunkDoclingDocument(
+		context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
+	require.NoError(t, err, "the only slot should be free")
+
+	_, err = client.ChunkDoclingDocument(
+		context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSemaphoreUnavailable)
+}
+
 // Whether a task has ended cannot be read from an error message, and the
 // caller has to know: polling a task that has ended releases its slot a
 // second time, and a weighted semaphore keeps no record of who holds what, so

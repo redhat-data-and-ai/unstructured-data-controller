@@ -44,6 +44,14 @@ const (
 	SemaphorePanicError   = "semaphore: released more than held"
 )
 
+// ErrSemaphoreUnavailable reports that the client is already at its
+// configured concurrency and refused the work rather than queueing for it.
+// Callers should retry later instead of treating it as a failure.
+//
+// Its message is SemaphoreAcquireError, so callers still matching on the text
+// keep working.
+var ErrSemaphoreUnavailable = errors.New(SemaphoreAcquireError)
+
 type TaskStatus string
 
 type PictureDescriptionAPIParams struct {
@@ -339,7 +347,7 @@ func (c *Client) ConvertFile(
 	// we are using TryAcquire to avoid blocking the main thread
 	acquired := c.ClientConfig.sem.TryAcquire(1)
 	if !acquired {
-		return nil, errors.New(SemaphoreAcquireError)
+		return nil, ErrSemaphoreUnavailable
 	}
 	// release the semaphore if the request fails before docling accepts the task
 	success := false
