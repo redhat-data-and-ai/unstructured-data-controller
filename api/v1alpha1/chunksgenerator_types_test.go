@@ -180,3 +180,63 @@ func TestChunksGeneratorConfig_SetDefaults_EmptyStrategyIsUnchanged(t *testing.T
 			ChunkingStrategyRecursiveCharacter, c.Strategy)
 	}
 }
+
+func TestChunksGenerator_AddOrUpdateJob_AppendsNewFiles(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "b.json", TaskID: "task-b"})
+
+	if len(generator.Status.Jobs) != 2 {
+		t.Fatalf("expected two jobs, got %d", len(generator.Status.Jobs))
+	}
+	if generator.Status.Jobs[0].TaskID != "task-a" || generator.Status.Jobs[1].TaskID != "task-b" {
+		t.Errorf("expected the jobs to be kept in submission order, got %+v", generator.Status.Jobs)
+	}
+}
+
+// A file has at most one job. A second entry for the same file would write the
+// same artifact twice and hold a second slot against the chunking service for
+// nothing.
+func TestChunksGenerator_AddOrUpdateJob_ReplacesTheJobForTheSameFile(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a", Attempts: 1})
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a-retry", Attempts: 2})
+
+	if len(generator.Status.Jobs) != 1 {
+		t.Fatalf("expected one job, got %d", len(generator.Status.Jobs))
+	}
+	if generator.Status.Jobs[0].TaskID != "task-a-retry" {
+		t.Errorf("expected the job to be replaced, got task id %q", generator.Status.Jobs[0].TaskID)
+	}
+	if generator.Status.Jobs[0].Attempts != 2 {
+		t.Errorf("expected the replacement's attempt count, got %d", generator.Status.Jobs[0].Attempts)
+	}
+}
+
+func TestChunksGenerator_GetJobByFilePath(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+
+	job := generator.GetJobByFilePath("a.json")
+	if job == nil {
+		t.Fatal("expected a job for a.json, got nil")
+	}
+	if job.TaskID != "task-a" {
+		t.Errorf("expected task id %q, got %q", "task-a", job.TaskID)
+	}
+}
+
+// Nil, not a zero value. The caller reads this as "already in flight", so a
+// zero ChunkJob would make every file look submitted and nothing would ever be
+// sent.
+func TestChunksGenerator_GetJobByFilePath_UnknownFileIsNil(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+
+	if job := generator.GetJobByFilePath("b.json"); job != nil {
+		t.Errorf("expected no job for an unsubmitted file, got %+v", job)
+	}
+	if job := (&ChunksGenerator{}).GetJobByFilePath("a.json"); job != nil {
+		t.Errorf("expected no job when none have been submitted, got %+v", job)
+	}
+}

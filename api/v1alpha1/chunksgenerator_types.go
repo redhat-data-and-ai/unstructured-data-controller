@@ -145,6 +145,32 @@ func (c *ChunksGenerator) SetWaiting() {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
+// AddOrUpdateJob records a submitted chunking task, replacing any earlier one
+// for the same file. A file has at most one job, because a second task for it
+// would write the same artifact twice and hold a second slot against the
+// chunking service for no gain.
+func (c *ChunksGenerator) AddOrUpdateJob(newJob ChunkJob) {
+	for i, job := range c.Status.Jobs {
+		if job.FilePath == newJob.FilePath {
+			c.Status.Jobs[i] = newJob
+			return
+		}
+	}
+	c.Status.Jobs = append(c.Status.Jobs, newJob)
+}
+
+// GetJobByFilePath returns the job in flight for a file, or nil if there is
+// none. The pointer is into the status slice, so the caller reads it rather
+// than mutating it; status changes go through AddOrUpdateJob under a patch.
+func (c *ChunksGenerator) GetJobByFilePath(filePath string) *ChunkJob {
+	for i := range c.Status.Jobs {
+		if c.Status.Jobs[i].FilePath == filePath {
+			return &c.Status.Jobs[i]
+		}
+	}
+	return nil
+}
+
 func (c *ChunksGenerator) UpdateStatus(message string, err error) {
 	condition := metav1.Condition{
 		Type:               ChunksGeneratorCondition,
