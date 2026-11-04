@@ -123,7 +123,7 @@ type DoclingResponse struct {
 type DoclingResponseDocument struct {
 	FileName  string `json:"filename"`
 	MDContent string `json:"md_content"`
-	// JSONContent is the DoclingDocument rendition, returned only when
+	// JSONContent is the DoclingDocument, returned only when
 	// to_formats includes "json". Unlike its siblings it is a JSON object and
 	// not a string, so it is carried through as bytes rather than decoded
 	// into types of ours and built again. A round trip through our own types
@@ -139,7 +139,7 @@ type DoclingResponseDocument struct {
 	DocTagsContent string          `json:"doctags_content"`
 }
 
-// JSONDocument returns the DoclingDocument rendition, or nil when docling did
+// JSONDocument returns the DoclingDocument, or nil when docling did
 // not return one.
 //
 // The field is absent when nothing asked for it and is the JSON literal null

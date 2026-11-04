@@ -121,7 +121,7 @@ const (
 
 var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
 
-// defaultToFormats asks docling for two renditions of every document.
+// defaultToFormats asks docling for two forms of every document.
 //
 // "md" is what every current consumer reads. "json" is the DoclingDocument:
 // the block tree, the per-block bounding boxes and the page dimensions. Docling

@@ -40,97 +40,30 @@ const (
 	DocumentConverterDocling DocumentConverter = "docling"
 )
 
-// BlockClass names what kind of element a Block holds.
-//
-// The values are currently the parser's own labels, so for docling they are
-// "text", "section_header", "table" and the rest of its vocabulary. Different
-// parsers name the same things differently, so these will later be mapped onto
-// one vocabulary of our own; the named type is here so that mapping is a change
-// to the values and not to the shape of the artifact.
-type BlockClass string
-
-// Block is one semantic element of a document: a paragraph, a heading, a
-// table, a caption. It is what a citation points at.
-type Block struct {
-	// ID is the element's address inside the document stored in
-	// Content.DoclingDocument, for example "#/texts/59". It is the parser's
-	// own self-reference copied verbatim, because nothing can resolve a
-	// reference we invented ourselves. It is an address and not an index, and
-	// it is only valid against that exact document: the same file converted
-	// twice does not produce the same addresses.
-	ID string `json:"id"`
-
-	Class BlockClass `json:"class"`
-
-	// Text is the element as the parser read it.
-	//
-	// It is empty for a table or a picture, whose words are not on the
-	// element itself: a table's live in its cells and a picture's in its
-	// annotations, both inside Content.DoclingDocument. It is also empty for
-	// the wrapper elements described on ExtractDoclingDocument.
-	Text string `json:"text"`
-
-	// PageNo is 1-based, and 0 when the parser gave this element no placement:
-	// either it could not place it, or the input format has no pages at all.
-	PageNo int `json:"pageNo"`
-
-	// BBox is the element's rectangle as [left, top, right, bottom], in the
-	// units and the coordinate origin the parser used. Docling reports PDF
-	// points, and its PDF backends measure from the bottom left while other
-	// paths measure from the top left. Which one applies is recorded per
-	// rectangle inside Content.DoclingDocument and not here, so these values
-	// are not yet drawable and not yet comparable between documents.
-	// Converting them to one convention is a separate piece of work.
-	//
-	// It is the zero rectangle when the parser reported no placement. It can
-	// also be zero alongside a real PageNo, when the parser named a page but
-	// gave no rectangle on it, so it is not a reliable test for "this block
-	// has geometry".
-	BBox [4]float64 `json:"bbox"`
-}
-
-// Page records a page's extent so a bounding box on that page can be turned
-// into a position on a rendering of it at any resolution.
-type Page struct {
-	PageNo int `json:"pageNo"`
-
-	// Width and Height are in PDF points, the same units as Block.BBox.
-	Width  float64 `json:"width"`
-	Height float64 `json:"height"`
-}
-
-// ParserInfo records what produced the blocks. Without it a silent change of
-// parser on the conversion service alters output while every stored document
-// still looks valid, and there is no way afterwards to tell which half of a
-// corpus came from which.
-type ParserInfo struct {
-	Name string `json:"name"`
-
-	// Version says what shape the output is in. For docling it is the
-	// DoclingDocument schema version, which is the only version string the
-	// convert response carries. It is not the docling release that ran.
-	Version string `json:"version"`
-}
-
 type Content struct {
-	// Markdown is what every current consumer reads. Everything below it is
+	// Markdown is what every current consumer reads. DoclingDocument is
 	// additive and optional.
 	Markdown string `json:"markdown"`
 
-	Blocks []Block     `json:"blocks,omitempty"`
-	Pages  []Page      `json:"pages,omitempty"`
-	Parser *ParserInfo `json:"parser,omitempty"`
-
-	// DoclingDocument is the parser's own output, carried through rather than
-	// decoded into types of ours and built again, for two reasons. Block.ID
-	// only resolves against this document, so dropping a field or reordering
-	// an array would break the blocks above it. And it lets a later stage work
-	// from the parsed document instead of converting the file a second time,
-	// which is both slower and not guaranteed to give the same answer.
+	// DoclingDocument is the conversion service's own output, kept whole.
 	//
-	// Writing it out still runs it through the JSON encoder, which strips
+	// It is carried through rather than decoded into types of ours and built
+	// again. A round trip through our own types would silently drop every
+	// field they do not name, and an element's address inside the document,
+	// for example "#/texts/59", indexes into its arrays, so losing or
+	// reordering anything moves them.
+	//
+	// Nothing is derived from it at this stage, deliberately. The one reader
+	// is the chunking stage, which posts it straight back to the conversion
+	// service to chunk without parsing the file a second time, and so holds
+	// the whole tree already. A flattened copy here would be duplicated text
+	// in an artifact that is itself copied into the chunk and embedding
+	// files.
+	//
+	// Writing it out runs it through the JSON encoder, which strips
 	// insignificant whitespace and escapes <, > and & inside strings. That
-	// leaves an equivalent document rather than the identical bytes.
+	// leaves an equivalent document rather than the identical bytes, which
+	// matters to nobody: it is read back as JSON.
 	DoclingDocument json.RawMessage `json:"doclingDocument,omitempty"`
 }
 

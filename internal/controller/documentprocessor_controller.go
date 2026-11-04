@@ -249,15 +249,17 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		}
 		content := &unstructured.Content{
 			Markdown: doclingResponse.Document.MDContent,
+			// Stored as it arrived. Nothing here reads it; the chunking stage
+			// posts it back to the conversion service to chunk the document
+			// without parsing the file again.
+			DoclingDocument: doclingResponse.Document.JSONDocument(),
 		}
-		if doclingDocument := doclingResponse.Document.JSONDocument(); doclingDocument != nil {
-			if extractErr := content.ExtractDoclingDocument(doclingDocument); extractErr != nil {
-				// Markdown is intact and is what every consumer reads today,
-				// so store the file rather than failing the conversion and
-				// retrying it until the attempt limit is reached.
-				logger.Error(extractErr, "could not read the structured document, storing markdown only",
-					"taskID", job.TaskID, "filePath", job.FilePath)
-			}
+		if content.DoclingDocument == nil {
+			// Expected whenever to_formats does not ask for "json", so not an
+			// error. Logged because the alternative is a silently markdown
+			// only artifact that looks the same as a correct one.
+			logger.Info("conversion returned no structured document, storing markdown only",
+				"taskID", job.TaskID, "filePath", job.FilePath)
 		}
 
 		convertedFile := unstructured.ConvertedFile{
