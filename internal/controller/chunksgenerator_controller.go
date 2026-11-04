@@ -138,9 +138,11 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			}
 			if errors.Is(err, unstructured.ErrNotAConvertedFile) {
 				// Not every object under the convert stage prefix is a
-				// converted file. Retrying cannot help, so ignore it rather
-				// than failing the whole stage.
-				logger.Info("ignoring file that is not a converted file", "file", convertedFilePath, "reason", err.Error())
+				// converted file. Retrying cannot help, so skip it rather
+				// than failing the whole stage. Logged at error level, as
+				// the semaphore case above is, because something put a file
+				// here that does not belong and an operator should see it.
+				logger.Error(err, "skipping file that is not a converted file", "file", convertedFilePath)
 				continue
 			}
 			chunkingErrors = append(chunkingErrors, err)
