@@ -18,11 +18,14 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,29 +85,14 @@ func main() {
 		ModelName:  os.Getenv("EMBEDDING_MODEL_NAME"),
 	})
 
-	// Reranking is opt-in and needs both the endpoint and the model name: an empty
-	// model would be sent as "model": "" and rejected on every request, so treat a
-	// half-configured reranker as disabled rather than silently failing per query.
-	// Every branch logs, so the active retrieval path is always visible at startup.
-	var rerankerClient reranker.Reranker
-	rerankerEndpoint := os.Getenv("RERANKER_ENDPOINT")
-	rerankerModelName := os.Getenv("RERANKER_MODEL_NAME")
-	rerankerPoolDepth := mcptools.DefaultRerankerPool
-	switch {
-	case rerankerEndpoint == "":
-		slog.Info("reranking disabled, RERANKER_ENDPOINT is not set")
-	case rerankerModelName == "":
-		slog.Error("reranking disabled, RERANKER_ENDPOINT is set but RERANKER_MODEL_NAME is empty")
-	default:
-		rerankerPoolDepth = resolveRerankerPoolDepth(os.Getenv("RERANKER_CANDIDATE_POOL"))
-		rerankerClient = reranker.NewHTTPClient(&reranker.HTTPClientConfig{
-			Endpoint:   rerankerEndpoint,
-			APIKey:     os.Getenv("RERANKER_API_KEY"),
-			AuthFormat: "Bearer",
-			ModelName:  rerankerModelName,
-		})
-		slog.Info("reranker client initialized",
-			"endpoint", rerankerEndpoint, "model", rerankerModelName, "candidate_pool", rerankerPoolDepth)
+	// Reranking is enabled by an explicit flag, never by the presence of its
+	// other settings. Inferring enablement from configuration makes "switched
+	// off" and "misconfigured" look identical from the outside, so a typo in a
+	// variable name silently turns the feature off.
+	rerankerClient, rerankerPoolDepth, err := buildRerankerClient()
+	if err != nil {
+		slog.Error("invalid reranker configuration", "error", err)
+		os.Exit(1)
 	}
 
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
@@ -187,32 +175,83 @@ func main() {
 	slog.Info("MCP server stopped")
 }
 
-// resolveRerankerPoolDepth validates RERANKER_CANDIDATE_POOL. An environment
-// variable is external input, so a bad value degrades to the default with a
-// warning rather than failing startup: reranking is best-effort and a
-// misconfigured pool should not take the server down.
-func resolveRerankerPoolDepth(raw string) int {
+// buildRerankerClient constructs the reranker from the environment. It returns
+// a nil client when reranking is switched off, and an error when it is switched
+// on but configured wrongly.
+//
+// Misconfiguration fails startup rather than degrading. The runtime fallback to
+// cosine ordering exists for a reranker that breaks in production, not for one
+// that was never configured correctly: a typo that silently halves retrieval
+// quality is far harder to notice than a pod that refuses to start.
+func buildRerankerClient() (reranker.Reranker, int, error) {
+	if !rerankerEnabled() {
+		slog.Info("reranking disabled, ENABLE_RERANKER is not true")
+		return nil, mcptools.DefaultRerankerPool, nil
+	}
+
+	endpoint := os.Getenv("RERANKER_ENDPOINT")
+	if endpoint == "" {
+		return nil, 0, errors.New("ENABLE_RERANKER is true but RERANKER_ENDPOINT is empty")
+	}
+	modelName := os.Getenv("RERANKER_MODEL_NAME")
+	if modelName == "" {
+		return nil, 0, errors.New("ENABLE_RERANKER is true but RERANKER_MODEL_NAME is empty")
+	}
+
+	poolDepth, err := resolveRerankerPoolDepth(os.Getenv("RERANKER_CANDIDATE_POOL"))
+	if err != nil {
+		return nil, 0, err
+	}
+
+	apiKey := os.Getenv("RERANKER_API_KEY")
+	// A bearer token on a plain-HTTP endpoint travels in cleartext. In-cluster
+	// HTTP is a legitimate deployment, so this warns rather than refusing, but
+	// it must be visible: the alternative is leaking a credential on every query
+	// with nothing in the logs to say so.
+	if apiKey != "" && !strings.HasPrefix(strings.ToLower(endpoint), "https://") {
+		slog.Warn("RERANKER_API_KEY will be sent over a non-HTTPS connection in cleartext",
+			"endpoint", endpoint)
+	}
+
+	slog.Info("reranker client initialized",
+		"endpoint", endpoint, "model", modelName, "candidate_pool", poolDepth)
+
+	return reranker.NewHTTPClient(&reranker.HTTPClientConfig{
+		Endpoint:   endpoint,
+		APIKey:     apiKey,
+		AuthFormat: "Bearer",
+		ModelName:  modelName,
+	}), poolDepth, nil
+}
+
+// rerankerEnabled reads the explicit on switch. Enablement is deliberately not
+// inferred from whether the other reranker settings happen to be present.
+func rerankerEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("ENABLE_RERANKER")), "true")
+}
+
+// resolveRerankerPoolDepth validates RERANKER_CANDIDATE_POOL. A value that
+// cannot be honoured is an error rather than a fallback, because a pool running
+// at the default when the operator asked for something else is invisible once
+// the server is up.
+func resolveRerankerPoolDepth(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return mcptools.DefaultRerankerPool
+		return mcptools.DefaultRerankerPool, nil
 	}
 
 	poolDepth, err := strconv.Atoi(raw)
 	if err != nil {
-		slog.Warn("RERANKER_CANDIDATE_POOL is not a number, using the default",
-			"value", raw, "default", mcptools.DefaultRerankerPool)
-		return mcptools.DefaultRerankerPool
+		return 0, fmt.Errorf("RERANKER_CANDIDATE_POOL must be a number, got %q", raw)
 	}
 	if poolDepth <= 0 {
-		slog.Warn("RERANKER_CANDIDATE_POOL must be positive, using the default",
-			"value", poolDepth, "default", mcptools.DefaultRerankerPool)
-		return mcptools.DefaultRerankerPool
+		return 0, fmt.Errorf("RERANKER_CANDIDATE_POOL must be positive, got %d", poolDepth)
 	}
 	if poolDepth > mcptools.MaxRerankerPool {
-		slog.Warn("RERANKER_CANDIDATE_POOL exceeds the maximum, clamping",
-			"value", poolDepth, "max", mcptools.MaxRerankerPool)
-		return mcptools.MaxRerankerPool
+		return 0, fmt.Errorf("RERANKER_CANDIDATE_POOL is %d, which exceeds the maximum of %d",
+			poolDepth, mcptools.MaxRerankerPool)
 	}
-	return poolDepth
+	return poolDepth, nil
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {

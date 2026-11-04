@@ -21,39 +21,178 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	mcptools "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/tools"
 )
 
 func TestResolveRerankerPoolDepth(t *testing.T) {
 	tests := []struct {
-		name string
-		raw  string
-		want int
+		name            string
+		raw             string
+		want            int
+		wantErrContains string
 	}{
-		{"unset uses the default", "", mcptools.DefaultRerankerPool},
-		{"a valid value is honoured", "35", 35},
-		{"the maximum is honoured", strconv.Itoa(mcptools.MaxRerankerPool), mcptools.MaxRerankerPool},
-		{"above the maximum is clamped", "5000", mcptools.MaxRerankerPool},
-		{"zero falls back to the default", "0", mcptools.DefaultRerankerPool},
-		{"negative falls back to the default", "-10", mcptools.DefaultRerankerPool},
-		{"non-numeric falls back to the default", "fifty", mcptools.DefaultRerankerPool},
-		{"empty-ish garbage falls back to the default", "  ", mcptools.DefaultRerankerPool},
+		{name: "unset uses the default", raw: "", want: mcptools.DefaultRerankerPool},
+		{name: "whitespace only uses the default", raw: "   ", want: mcptools.DefaultRerankerPool},
+		{name: "a valid value is honoured", raw: "35", want: 35},
+		{name: "surrounding whitespace is tolerated", raw: " 35 ", want: 35},
+		{
+			name: "the maximum is honoured",
+			raw:  strconv.Itoa(mcptools.MaxRerankerPool),
+			want: mcptools.MaxRerankerPool,
+		},
+		{name: "above the maximum is rejected", raw: "5000", wantErrContains: "exceeds the maximum"},
+		{name: "zero is rejected", raw: "0", wantErrContains: "must be positive"},
+		{name: "negative is rejected", raw: "-10", wantErrContains: "must be positive"},
+		{name: "non-numeric is rejected", raw: "fifty", wantErrContains: "must be a number"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, resolveRerankerPoolDepth(tt.raw))
+			got, err := resolveRerankerPoolDepth(tt.raw)
+
+			if tt.wantErrContains != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErrContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
-// A bad value must never fail startup: reranking is best-effort and degrades
-// to cosine ordering, so a misconfigured pool should not take the server down.
-func TestResolveRerankerPoolDepthAlwaysReturnsUsableDepth(t *testing.T) {
-	for _, raw := range []string{"", "0", "-1", "abc", "99999", "1"} {
-		got := resolveRerankerPoolDepth(raw)
-		assert.Positive(t, got, "input %q produced a non-positive pool", raw)
-		assert.LessOrEqual(t, got, mcptools.MaxRerankerPool, "input %q exceeded the maximum", raw)
+// A misconfigured pool must fail startup rather than silently running at the
+// default, which would be invisible once the server is up.
+func TestResolveRerankerPoolDepthRejectsRatherThanFallingBack(t *testing.T) {
+	for _, raw := range []string{"0", "-1", "abc", "99999"} {
+		_, err := resolveRerankerPoolDepth(raw)
+		assert.Error(t, err, "input %q should be rejected, not silently defaulted", raw)
+	}
+}
+
+func TestRerankerEnabled(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want bool
+	}{
+		{"true", true},
+		{"TRUE", true},
+		{"True", true},
+		{" true ", true},
+		{"", false},
+		{"false", false},
+		{"1", false},
+		{"yes", false},
+	}
+
+	for _, tt := range tests {
+		t.Run("ENABLE_RERANKER="+tt.raw, func(t *testing.T) {
+			t.Setenv("ENABLE_RERANKER", tt.raw)
+			assert.Equal(t, tt.want, rerankerEnabled())
+		})
+	}
+}
+
+func TestBuildRerankerClient(t *testing.T) {
+	tests := []struct {
+		name            string
+		env             map[string]string
+		wantClient      bool
+		wantPool        int
+		wantErrContains string
+	}{
+		{
+			name:       "disabled returns no client and no error",
+			env:        map[string]string{"ENABLE_RERANKER": ""},
+			wantClient: false,
+			wantPool:   mcptools.DefaultRerankerPool,
+		},
+		{
+			// Enablement must come from the flag alone, so a fully configured
+			// reranker stays off until it is switched on explicitly.
+			name: "config present but flag off stays disabled",
+			env: map[string]string{
+				"ENABLE_RERANKER":     "",
+				"RERANKER_ENDPOINT":   "https://example.invalid/v1/rerank",
+				"RERANKER_MODEL_NAME": "a-model",
+			},
+			wantClient: false,
+			wantPool:   mcptools.DefaultRerankerPool,
+		},
+		{
+			name: "enabled and fully configured",
+			env: map[string]string{
+				"ENABLE_RERANKER":     "true",
+				"RERANKER_ENDPOINT":   "https://example.invalid/v1/rerank",
+				"RERANKER_MODEL_NAME": "a-model",
+			},
+			wantClient: true,
+			wantPool:   mcptools.DefaultRerankerPool,
+		},
+		{
+			name: "enabled with an explicit pool depth",
+			env: map[string]string{
+				"ENABLE_RERANKER":         "true",
+				"RERANKER_ENDPOINT":       "https://example.invalid/v1/rerank",
+				"RERANKER_MODEL_NAME":     "a-model",
+				"RERANKER_CANDIDATE_POOL": "80",
+			},
+			wantClient: true,
+			wantPool:   80,
+		},
+		{
+			name:            "enabled without an endpoint fails startup",
+			env:             map[string]string{"ENABLE_RERANKER": "true", "RERANKER_MODEL_NAME": "a-model"},
+			wantErrContains: "RERANKER_ENDPOINT is empty",
+		},
+		{
+			name: "enabled without a model fails startup",
+			env: map[string]string{
+				"ENABLE_RERANKER":   "true",
+				"RERANKER_ENDPOINT": "https://example.invalid/v1/rerank",
+			},
+			wantErrContains: "RERANKER_MODEL_NAME is empty",
+		},
+		{
+			name: "enabled with a bad pool depth fails startup",
+			env: map[string]string{
+				"ENABLE_RERANKER":         "true",
+				"RERANKER_ENDPOINT":       "https://example.invalid/v1/rerank",
+				"RERANKER_MODEL_NAME":     "a-model",
+				"RERANKER_CANDIDATE_POOL": "not-a-number",
+			},
+			wantErrContains: "must be a number",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, key := range []string{
+				"ENABLE_RERANKER", "RERANKER_ENDPOINT", "RERANKER_MODEL_NAME",
+				"RERANKER_API_KEY", "RERANKER_CANDIDATE_POOL",
+			} {
+				t.Setenv(key, tt.env[key])
+			}
+
+			client, poolDepth, err := buildRerankerClient()
+
+			if tt.wantErrContains != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErrContains)
+				assert.Nil(t, client)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantPool, poolDepth)
+			if tt.wantClient {
+				assert.NotNil(t, client)
+			} else {
+				assert.Nil(t, client)
+			}
+		})
 	}
 }

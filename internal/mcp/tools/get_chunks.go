@@ -279,9 +279,14 @@ func retrieveChunks(ctx context.Context, cfg chunkSearchConfig, rerankerClient r
 		reranked, rerankErr := rerankChunks(ctx, rerankerClient, cfg.query, chunks, cfg.limit)
 		switch {
 		case rerankErr == nil:
-		case errors.Is(rerankErr, context.Canceled), errors.Is(rerankErr, context.DeadlineExceeded):
+		case ctx.Err() != nil:
 			// The caller went away or ran out of time. Expected, not an outage,
 			// so this must not look like one in the logs.
+			//
+			// This asks the context directly rather than inspecting the error.
+			// The reranker client has its own timeout that surfaces as
+			// context.DeadlineExceeded too, and matching on the error would
+			// report a genuine reranker stall as a caller disconnect.
 			log.Info("reranking aborted, request context ended", "error", rerankErr)
 		default:
 			// Reranking is best-effort: the cosine ordering is still valid, and

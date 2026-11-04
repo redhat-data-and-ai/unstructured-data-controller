@@ -20,12 +20,14 @@ data:
   # TODO: Replace with your embedding model name
   EMBEDDING_MODEL_NAME: "<YOUR_EMBEDDING_MODEL_NAME>"
   # Optional: cross-encoder reranking of search results.
-  # Reranking stays off unless BOTH values below are set.
+  # Set to "true" to enable. When enabled, RERANKER_ENDPOINT and
+  # RERANKER_MODEL_NAME are required and the server refuses to start without them.
+  ENABLE_RERANKER: "false"
   # TODO: Replace with the full reranker endpoint URL, including the path (e.g. https://host/v1/rerank)
   RERANKER_ENDPOINT: ""
   # TODO: Replace with your reranker model name
   RERANKER_MODEL_NAME: ""
   # Candidates sent to the reranker per query. Deeper pools improve recall but
-  # cost reranker latency. Defaults to 50, maximum 100. An invalid value falls
-  # back to the default and logs a warning.
+  # cost reranker latency. Defaults to 50 when empty; must otherwise be between
+  # 1 and 100. An invalid value fails startup rather than falling back.
   RERANKER_CANDIDATE_POOL: ""

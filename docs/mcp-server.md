@@ -53,21 +53,35 @@ All configuration is via environment variables.
 | `KUBECONFIG`                             | `~/.kube/config`                    | Path to kubeconfig file (only used outside a cluster)                                                                                |
 | `MCP_PUBLIC_URL`                         | _(unset)_                           | Public base URL of the server (e.g. `https://mcp.example.com`). Set when running behind a proxy or load balancer so OAuth discovery metadata uses a stable URL instead of request headers. |
 | `SSO_DISABLE_INTROSPECTION`              | `false`                             | **Development only.** When `true`, skips SSO introspection and validates tokens locally without signature verification. Never enable in production. |
-| `RERANKER_ENDPOINT`                      | _(unset)_                           | Full URL of a cross-encoder rerank endpoint, including the path (e.g. `https://host/v1/rerank`)                                      |
-| `RERANKER_MODEL_NAME`                    | _(unset)_                           | Reranker model name. Required for reranking to activate.                                                                             |
-| `RERANKER_API_KEY`                       | _(unset)_                           | API key for the reranker service, if it requires one                                                                                 |
-| `RERANKER_CANDIDATE_POOL`                | `50`                                | Candidates sent to the reranker per query. Maximum 100. An invalid value falls back to the default and logs a warning.              |
+| `ENABLE_RERANKER`                        | `false`                             | Set to `true` to enable cross-encoder reranking. Reranking is governed by this flag alone, never by whether the variables below happen to be set. |
+| `RERANKER_ENDPOINT`                      | _(unset)_                           | Full URL of a cross-encoder rerank endpoint, including the path (e.g. `https://host/v1/rerank`). Must return `{"results":[{"index":N,"relevance_score":F}]}`; TEI endpoints, which return a bare array, are not supported. Required when `ENABLE_RERANKER=true`. |
+| `RERANKER_MODEL_NAME`                    | _(unset)_                           | Reranker model name. Required when `ENABLE_RERANKER=true`.                                                                           |
+| `RERANKER_API_KEY`                       | _(unset)_                           | API key for the reranker service, if it requires one. Sent as a bearer token, so prefer an `https://` endpoint.                      |
+| `RERANKER_CANDIDATE_POOL`                | `50`                                | Candidates sent to the reranker per query. Must be between 1 and 100. An invalid value fails startup rather than falling back.       |
 
 ### Reranking
 
-When `RERANKER_ENDPOINT` and `RERANKER_MODEL_NAME` are both set, `get_chunks_for_embeddings`
-over-fetches candidates from Snowflake and re-scores them against the query with a
-cross-encoder, returning the best ones in relevance order. Matching chunks then carry a
-`reranker_score` field alongside the original cosine `score`.
+With `ENABLE_RERANKER=true`, `get_chunks_for_embeddings` over-fetches candidates from
+Snowflake and re-scores them against the query with a cross-encoder, returning the best ones
+in relevance order. Matching chunks then carry a `reranker_score` field alongside the
+original cosine `score`.
 
-Reranking is opt-in and best-effort. It stays off unless both variables are set, and if the
-reranker is unreachable or returns an unusable response the tool logs the failure and returns
-the cosine-ranked results instead. The server logs which mode is active at startup.
+**Enabling is explicit, and misconfiguration fails fast.** Reranking is off unless
+`ENABLE_RERANKER=true`. When it is on, `RERANKER_ENDPOINT` and `RERANKER_MODEL_NAME` are
+required and an invalid `RERANKER_CANDIDATE_POOL` is rejected, so the server refuses to start
+rather than running silently in a configuration nobody intended. The startup log states which
+mode is active.
+
+**At runtime, reranking is best-effort.** If the reranker is unreachable, times out, or
+returns a response in an unsupported shape, the tool logs the failure and returns the
+cosine-ranked results instead. A reranker outage degrades retrieval quality; it does not fail
+the query.
+
+**Endpoint compatibility.** The client sends `{"model", "query", "documents", "top_n",
+"return_documents": false}` and expects an object with a `results` array whose entries carry
+`index` and `relevance_score`. Cohere, Jina and vLLM rerank endpoints match this. Native TEI
+`/rerank` returns a bare array and is **not** supported: configuring one yields a decode
+error and cosine fallback on every query.
 
 **Candidate pool depth.** `RERANKER_CANDIDATE_POOL` sets how many candidates the
 cross-encoder re-scores per query, independently of how many chunks the caller asked for.
@@ -96,7 +110,9 @@ EMBEDDING_ENDPOINT=https://your-embedding-service/v1/embeddings
 EMBEDDING_API_KEY=your-api-key
 EMBEDDING_MODEL_NAME=your-model-name
 
-# Optional: enables reranking. Both must be set.
+# Optional: reranking. Off unless ENABLE_RERANKER=true, and when on the
+# endpoint and model name are required.
+ENABLE_RERANKER=true
 RERANKER_ENDPOINT=https://your-reranker-service/v1/rerank
 RERANKER_MODEL_NAME=your-reranker-model-name
 RERANKER_API_KEY=your-api-key
