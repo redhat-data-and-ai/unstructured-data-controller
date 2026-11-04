@@ -411,8 +411,15 @@ type DoclingConfig struct {
 	PDFBackend string `json:"pdf_backend,omitempty"`
 	// +optional
 	Pipeline string `json:"pipeline,omitempty"`
-	// VLMPipelineCustomConfig configures the model used when Pipeline is
-	// "vlm". It has no effect otherwise.
+	// VLMPipelineCustomConfig describes the model to use when Pipeline is
+	// "vlm". It has no effect on any other pipeline.
+	//
+	// TODO: nothing builds a docling request from this yet. Until that
+	// exists, docling picks its own model while this records the one we
+	// asked for, and the record is part of the key that decides whether a
+	// file is converted again. Selecting the vlm pipeline before the request
+	// is wired up therefore stores a conversion under the wrong fingerprint,
+	// and it will not be redone once the wiring lands.
 	// +optional
 	VLMPipelineCustomConfig *VLMPipelineCustomConfig `json:"vlm_pipeline_custom_config,omitempty"`
 	TableMode               string                   `json:"table_mode,omitempty"`
