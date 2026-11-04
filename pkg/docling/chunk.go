@@ -25,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -41,6 +42,16 @@ const InputFormatDoclingDocument = "json_docling"
 // count. It is the only chunker this client asks for; the endpoint is chosen
 // by path, and the field has to agree with it.
 const ChunkerHybrid = "hybrid"
+
+// ErrNoChunksReturned reports a chunk task that finished successfully and
+// produced nothing.
+//
+// This is how the chunker reports being unable to load its tokenizer: the
+// task status is success, the errors list is empty, and the chunks list is
+// empty too. Nothing else in the response distinguishes it from a document
+// that really had no content, which is why the chunks are returned alongside
+// this error rather than instead of it.
+var ErrNoChunksReturned = errors.New("the chunk task succeeded and returned no chunks")
 
 // ChunkingOptions is what the chunk endpoints read as "chunking_options".
 //
@@ -144,6 +155,22 @@ func (c *Client) ChunkDoclingDocument(
 	if len(doclingDocument) == 0 {
 		return nil, errors.New("cannot chunk an empty docling document")
 	}
+	// Checked here for the same reason the document is, and with a stronger
+	// case. Neither of these is rejected by the server. An empty tokenizer
+	// falls back to a model name docling has to download, and where it cannot
+	// the request returns HTTP 200 with zero chunks after the download times
+	// out, which was 58 seconds when measured. A MaxTokens of zero falls back
+	// to the tokenizer's own limit, several times an embedding window, so the
+	// chunks come back too large to embed. Both cost a submit, a poll and a
+	// semaphore slot to learn something knowable before any of them.
+	if strings.TrimSpace(options.Tokenizer) == "" {
+		return nil, errors.New("cannot chunk without a tokenizer: docling's default has to be " +
+			"downloaded, and a download it cannot make returns success with zero chunks")
+	}
+	if options.MaxTokens <= 0 {
+		return nil, fmt.Errorf("cannot chunk with max_tokens %d: unset falls back to the "+
+			"tokenizer's own limit, which is far larger than an embedding window", options.MaxTokens)
+	}
 
 	// TryAcquire rather than Acquire, so a full queue returns to the
 	// reconciler instead of parking a worker on it.
@@ -198,6 +225,15 @@ func (c *Client) ChunkDoclingDocument(
 		return nil, fmt.Errorf("failed to unmarshal async chunk response: %w", err)
 	}
 
+	// Unmarshalling into this struct succeeds for any JSON object, so a 200
+	// carrying something that is not a task envelope leaves TaskID empty.
+	// Treating that as accepted would hold the slot for a task nobody can
+	// poll, and the only path that frees it runs on a poll, so it would be
+	// held until the process restarts.
+	if asyncResponse.TaskID == "" {
+		return nil, errors.New("docling accepted the chunk request but returned no task id")
+	}
+
 	accepted = true
 	return &asyncResponse, nil
 }
@@ -216,14 +252,20 @@ func (c *Client) ChunkDoclingDocument(
 func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *ChunkResponse, error) {
 	logger := log.FromContext(ctx)
 
+	// The slot is NOT released on either of these. Failing to read a status
+	// is not evidence that the task ended, and the task carries on holding
+	// docling's own capacity either way. Releasing here would also release
+	// again on the next attempt, and Release on a weighted semaphore is a
+	// bare subtraction with no record of who holds what, so while other
+	// tasks hold slots the extra release takes theirs instead of panicking.
+	// Real concurrency against docling then quietly exceeds the configured
+	// limit.
 	isValidStatus, taskStatus, err := c.getTaskStatus(ctx, taskID)
 	if err != nil {
-		c.safeRelease()
 		return "", nil, fmt.Errorf("failed to get task status: %w", err)
 	}
 
 	if !isValidStatus {
-		c.safeRelease()
 		return "", nil, fmt.Errorf("invalid task status received for task id: %s", taskID)
 	}
 
@@ -262,6 +304,20 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 	// slot is released whatever the body turned out to hold.
 	c.safeRelease()
 	logger.Info("chunk task completed", "task id", taskID, "chunks", len(chunkResponse.Chunks))
+
+	// Docling's documented silent failure, and the reason this is an error
+	// rather than a log line. A chunker that could not load its tokenizer
+	// answers with {"chunks": [], "status": "success", "errors": []}. Every
+	// signal above says the task succeeded, so a caller reading only the
+	// error would store an empty artifact, and the cache key would then match
+	// on the next reconcile and never retry it.
+	//
+	// The chunks are returned alongside, because this client cannot tell that
+	// case apart from a document that genuinely holds nothing. A caller that
+	// knows the input was empty can look at the error and carry on.
+	if len(chunkResponse.Chunks) == 0 {
+		return taskStatus.TaskStatus, &chunkResponse, ErrNoChunksReturned
+	}
 
 	return taskStatus.TaskStatus, &chunkResponse, nil
 }

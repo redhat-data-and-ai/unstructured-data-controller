@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,8 +36,20 @@ import (
 // again instead of reading it back.
 const convertOptionsKey = "convert_options"
 
+const (
+	pollPath   = "/v1/status/poll/t-1"
+	resultPath = "/v1/result/t-1"
+)
+
 const storedDocument = `{"schema_name":"DoclingDocument","version":"1.10.0",` +
 	`"texts":[{"self_ref":"#/texts/0","text":"hello"}]}`
+
+// validOptions is what every test that is not about validation sends, since
+// ChunkDoclingDocument now rejects a request that would reach docling without
+// a tokenizer or a token budget.
+func validOptions() ChunkingOptions {
+	return ChunkingOptions{Tokenizer: "/models/tok", MaxTokens: 2048, IncludeRawText: true}
+}
 
 // newChunkTestClient returns a client pointed at srv with one semaphore slot,
 // which is the smallest setting that still lets a leak show up as a second
@@ -121,7 +134,7 @@ func TestChunkDoclingDocumentRejectsAnEmptyDocument(t *testing.T) {
 	defer srv.Close()
 
 	_, err := newChunkTestClient(srv).ChunkDoclingDocument(
-		context.Background(), "doc.json", nil, ChunkingOptions{})
+		context.Background(), "doc.json", nil, validOptions())
 	require.Error(t, err)
 }
 
@@ -137,7 +150,7 @@ func TestChunkDoclingDocumentReleasesTheSlotWhenTheSubmitFails(t *testing.T) {
 	client := newChunkTestClient(srv)
 	for range 3 {
 		_, err := client.ChunkDoclingDocument(
-			context.Background(), "doc.json", json.RawMessage(storedDocument), ChunkingOptions{})
+			context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), SemaphoreAcquireError,
 			"the slot from the previous failure was never released")
@@ -148,7 +161,7 @@ func TestChunkDoclingDocumentReleasesTheSlotWhenTheSubmitFails(t *testing.T) {
 // the normal answer and not an error, and the slot stays held.
 func TestGetChunksWhileTheTaskIsStillRunning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/status/poll/t-1" {
+		if r.URL.Path == pollPath {
 			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"started"}`))
 			return
 		}
@@ -168,9 +181,9 @@ func TestGetChunksWhileTheTaskIsStillRunning(t *testing.T) {
 func TestGetChunksReturnsFinishedChunks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/status/poll/t-1":
+		case pollPath:
 			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"success"}`))
-		case "/v1/result/t-1":
+		case resultPath:
 			_, _ = w.Write([]byte(`{"chunks":[{"chunk_index":0,"text":"Heading\nbody",` +
 				`"raw_text":"body","num_tokens":3,"headings":["Heading"],` +
 				`"doc_items":["#/texts/0","#/texts/1"],"page_numbers":[1,2]}],` +
@@ -215,6 +228,164 @@ func TestGetChunksReleasesTheSlotWhenTheTaskFailed(t *testing.T) {
 	client.ClientConfig.URL = submitted.URL
 
 	_, err = client.ChunkDoclingDocument(
-		context.Background(), "doc.json", json.RawMessage(storedDocument), ChunkingOptions{})
+		context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
 	require.NoError(t, err, "the slot from the failed task was never released")
+}
+
+// Neither of these is rejected by the server, and both cost a submit, a poll
+// and a slot to learn something knowable before any of them. An empty
+// tokenizer returns success with zero chunks after a long timeout; a zero
+// budget falls back to the tokenizer's own limit and produces chunks too
+// large to embed.
+func TestChunkDoclingDocumentRejectsOptionsThatCannotWork(t *testing.T) {
+	tests := []struct {
+		name    string
+		options ChunkingOptions
+		wantErr string
+	}{
+		{
+			name:    "no tokenizer",
+			options: ChunkingOptions{MaxTokens: 2048},
+			wantErr: "tokenizer",
+		},
+		{
+			name:    "a tokenizer of only whitespace",
+			options: ChunkingOptions{Tokenizer: "   ", MaxTokens: 2048},
+			wantErr: "tokenizer",
+		},
+		{
+			name:    "no token budget",
+			options: ChunkingOptions{Tokenizer: "/models/tok"},
+			wantErr: "max_tokens",
+		},
+		{
+			name:    "a negative token budget",
+			options: ChunkingOptions{Tokenizer: "/models/tok", MaxTokens: -1},
+			wantErr: "max_tokens",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("no request should have been sent")
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+
+			_, err := newChunkTestClient(srv).ChunkDoclingDocument(
+				context.Background(), "doc.json", json.RawMessage(storedDocument), tt.options)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// A 200 carrying something that is not a task envelope has to be refused.
+// Unmarshalling succeeds for any JSON object, so the task id comes back
+// empty, and a slot held for a task nobody can poll is never given back:
+// the only release path runs on a poll.
+func TestChunkDoclingDocumentRejectsAResponseWithNoTaskID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"detail":"something else entirely"}`))
+	}))
+	defer srv.Close()
+
+	client := newChunkTestClient(srv)
+	_, err := client.ChunkDoclingDocument(
+		context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no task id")
+
+	// And the slot came back, so the next submit can still take one.
+	accepted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"task_id":"t-2","task_status":"pending"}`))
+	}))
+	defer accepted.Close()
+	client.ClientConfig.URL = accepted.URL
+
+	_, err = client.ChunkDoclingDocument(
+		context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
+	require.NoError(t, err, "the slot was held for a task that was never accepted")
+}
+
+// A poll that cannot be read is not evidence the task ended, so the slot
+// stays held.
+//
+// Releasing it would also release again on the next attempt, and Release on
+// a weighted semaphore is a bare subtraction with no record of who holds
+// what. While another task holds a slot, the extra release takes that one
+// rather than panicking, and real concurrency against docling quietly
+// exceeds the configured limit.
+func TestGetChunksKeepsTheSlotWhenTheStatusCannotBeRead(t *testing.T) {
+	polls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/v1/status/poll/") {
+			polls++
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+	}))
+	defer srv.Close()
+
+	// Two slots, so one submit can still be made if exactly one leaks, and
+	// the assertion below can tell the difference.
+	client := NewClientFromURL(&ClientConfig{URL: srv.URL, MaxConcurrentRequests: 2})
+
+	// Take both slots.
+	for range 2 {
+		accepted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"pending"}`))
+		}))
+		url := client.ClientConfig.URL
+		client.ClientConfig.URL = accepted.URL
+		_, err := client.ChunkDoclingDocument(
+			context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
+		require.NoError(t, err)
+		client.ClientConfig.URL = url
+		accepted.Close()
+	}
+
+	// Three failed polls. Each one used to hand a slot back.
+	for range 3 {
+		_, _, err := client.GetChunks(context.Background(), "t-1")
+		require.Error(t, err)
+	}
+	assert.Equal(t, 3, polls)
+
+	// Both tasks are still running, so both slots are still held and a third
+	// submit must be refused.
+	_, err := client.ChunkDoclingDocument(
+		context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), SemaphoreAcquireError,
+		"a failed poll released a slot for a task that is still running")
+}
+
+// The silent failure this client exists to catch. A chunker that could not
+// load its tokenizer answers with a successful task, an empty errors list and
+// no chunks, so every other signal says it worked.
+//
+// The chunks come back alongside the error, because nothing here can tell
+// that case apart from a document that genuinely held nothing.
+func TestGetChunksReportsASuccessfulTaskThatProducedNothing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case pollPath:
+			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"success"}`))
+		case resultPath:
+			_, _ = w.Write([]byte(`{"chunks":[],"processing_time":58.2}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	status, response, err := newChunkTestClient(srv).GetChunks(context.Background(), "t-1")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoChunksReturned)
+	assert.Equal(t, TaskStatusSuccess, status, "docling reported success, and that is worth seeing")
+	require.NotNil(t, response, "the caller decides whether an empty document is acceptable")
+	assert.Empty(t, response.Chunks)
 }
