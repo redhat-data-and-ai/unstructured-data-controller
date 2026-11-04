@@ -48,7 +48,8 @@ Always use `make` targets instead of raw `go` commands - they include the right 
 - Do not modify files in `vendor/` - run `go mod tidy && go mod vendor`.
 - Do not use raw `go build`, `go test`, `go vet`, `go fmt` - use the `make` targets.
 - Do not commit `.env`, `.pem`, `.key`, or any secret files.
-- Do not use `git push --force`, `git reset --hard`, `git clean`, or `git branch -D`.
+- Do not use `git push --force`, `git reset --hard`, `git clean`, or `git branch -D`. `--force-with-lease` is still a force push: the lease stops you overwriting someone else's work, it does not make the operation allowed.
+- Do not rewrite a commit that has already been pushed. No `--amend`, no squash, no rebase of a pushed branch, not even to fix a typo in a message. Add another commit instead. Rewriting published history invalidates review comments anchored to those commits and changes what a reviewer is looking at underneath them. If a branch genuinely has to be rebased onto a moved `main`, ask first, and treat the answer as covering that one push.
 - Do not add dependencies without running `make lint` and `make test`.
 - Do not bypass pre-commit hooks with `--no-verify`.
 - Do not use `git add -A` or `git add .` - always add specific files by name.
