@@ -80,8 +80,20 @@ const (
 	DefaultDocumentProcessorType = "docling"
 	DefaultOCRPreset             = "auto"
 	DefaultPDFBackend            = "docling_parse"
-	DefaultPipeline              = "standard"
-	DefaultTableMode             = "accurate"
+	DefaultPipeline              = PipelineStandard
+
+	// PipelineStandard runs layout detection and OCR. PipelineVLM replaces
+	// both by sending a picture of each page to a vision-language model.
+	PipelineStandard = "standard"
+	PipelineVLM      = "vlm"
+
+	// VLMModelNemotronParse is the only model this operator has settings for.
+	// Selecting any other one means supplying its prompt and response format
+	// as well, since neither can be guessed.
+	VLMModelNemotronParse   = "nvidia/Nemotron-3.5-Parse"
+	DefaultVLMPipelineModel = VLMModelNemotronParse
+
+	DefaultTableMode = "accurate"
 	// "placeholder" prevents raw base64 image data from leaking into markdown content
 	// that flows into chunking and embedding stages.
 	DefaultImageExportMode        = "placeholder"
@@ -108,6 +120,27 @@ const (
 )
 
 var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
+
+// vlmModelDefaults carries the settings that belong to a model rather than to
+// a pipeline, so that selecting a model is the only choice anyone has to make.
+//
+// Scale is the cheapest value that loses nothing. Nemotron Parse resizes every
+// page to a 2048 by 1664 canvas, and 2048 pixels tall on a letter page is 186
+// DPI, so 2.78 (200 DPI, since 200/72) clears it with nothing to spare. Higher
+// is scaled straight back down. MaxSize has to stay above the canvas or pages
+// are shrunk before the model sees them and the effective scale drops without
+// any error.
+//
+// Values are returned by copy. Add no slices or maps to this struct without
+// copying them too, or a caller mutating one reaches the shared default.
+var vlmModelDefaults = map[string]VLMPipelineCustomConfig{
+	VLMModelNemotronParse: {
+		Prompt:         "</s><s><predict_bbox><predict_classes><output_markdown><predict_text_in_pic>",
+		ResponseFormat: "nemotron_parse_v3_5",
+		Scale:          "2.78",
+		MaxSize:        4096,
+	},
+}
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -325,6 +358,44 @@ type VLMPipelineCustomConfig struct {
 	MaxSize int `json:"max_size,omitempty"`
 }
 
+// SetDefaults fills in the settings that follow from the model.
+//
+// Prompt, response format, scale and max size are properties of the model
+// rather than choices, which is why they are derived from Model instead of
+// being left to whoever writes the CR. The prompt in particular is a row of
+// control tokens that the model answers to, and getting one wrong returns a
+// document that looks fine and is missing whatever was not asked for.
+//
+// They live in the spec rather than in the controller so that they reach the
+// stored metadata. A release that changes what we ask the model for then
+// reconverts, instead of leaving every existing document looking current.
+//
+// An unrecognised model is left alone rather than rejected, so a model we have
+// not catalogued can still be used by filling the fields in by hand.
+func (c *VLMPipelineCustomConfig) SetDefaults() {
+	if c.Model == "" {
+		c.Model = DefaultVLMPipelineModel
+	}
+
+	defaults, known := vlmModelDefaults[c.Model]
+	if !known {
+		return
+	}
+
+	if c.Prompt == "" {
+		c.Prompt = defaults.Prompt
+	}
+	if c.ResponseFormat == "" {
+		c.ResponseFormat = defaults.ResponseFormat
+	}
+	if c.Scale == "" {
+		c.Scale = defaults.Scale
+	}
+	if c.MaxSize == 0 {
+		c.MaxSize = defaults.MaxSize
+	}
+}
+
 type DoclingConfig struct {
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
@@ -405,6 +476,15 @@ func (c *DoclingConfig) SetDefaults() {
 	}
 	if c.Pipeline == "" {
 		c.Pipeline = DefaultPipeline
+	}
+	// Only the vlm pipeline reads this, and defaulting it for everyone would
+	// change the stored metadata of every processor that will never use it,
+	// reconverting each of their corpora for nothing.
+	if c.Pipeline == PipelineVLM {
+		if c.VLMPipelineCustomConfig == nil {
+			c.VLMPipelineCustomConfig = &VLMPipelineCustomConfig{}
+		}
+		c.VLMPipelineCustomConfig.SetDefaults()
 	}
 	if c.TableMode == "" {
 		c.TableMode = DefaultTableMode
