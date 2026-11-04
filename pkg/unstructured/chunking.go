@@ -3,6 +3,7 @@ package unstructured
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/langchain"
@@ -99,19 +100,24 @@ type TextChunkerAdapter struct {
 }
 
 // ChunkDocument splits the document's markdown using the wrapped Chunker.
-func (a *TextChunkerAdapter) ChunkDocument(_ context.Context, doc *ConvertedDocument) ([]DocumentChunk, error) {
+func (adapter *TextChunkerAdapter) ChunkDocument(
+	_ context.Context, doc *ConvertedDocument,
+) ([]DocumentChunk, error) {
 	// The adapter is exported and has no constructor, so check both the
 	// document it was handed and the chunker it was built with.
-	if a.Chunker == nil {
+	if adapter.Chunker == nil {
 		return nil, errors.New("chunking a document: the adapter has no chunker")
 	}
 	if doc == nil || doc.Content == nil {
 		return nil, errors.New("chunking a document: the converted document has no content")
 	}
 
-	texts, err := a.Chunker.Chunk(doc.Content.Markdown)
+	texts, err := adapter.Chunker.Chunk(doc.Content.Markdown)
 	if err != nil {
-		return nil, err
+		// Named, because this error reaches the reconcile status alongside
+		// every other failure in the stage, and the splitter's own message
+		// does not say which step produced it.
+		return nil, fmt.Errorf("splitting document markdown: %w", err)
 	}
 	// Keep a nil result nil, so the chunks artifact is byte for byte what it
 	// would have been had the Chunker been called directly.
