@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -135,6 +136,15 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				skippedFiles = append(skippedFiles, convertedFilePath)
 				continue
 			}
+			if errors.Is(err, unstructured.ErrNotAConvertedFile) {
+				// Not every object under the convert stage prefix is a
+				// converted file. Retrying cannot help, so skip it rather
+				// than failing the whole stage. Logged at error level, as
+				// the semaphore case above is, because something put a file
+				// here that does not belong and an operator should see it.
+				logger.Error(err, "skipping file that is not a converted file", "file", convertedFilePath)
+				continue
+			}
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to process converted file", "file", convertedFilePath)
 			continue
@@ -227,6 +237,9 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	if err != nil {
 		return false, err
 	}
+	if err := convertedFile.Validate(); err != nil {
+		return false, err
+	}
 
 	convertedFileMetadata := convertedFile.ConvertedDocument.Metadata
 
@@ -278,6 +291,9 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 	convertedFile := unstructured.ConvertedFile{}
 	err = json.Unmarshal(convertedFileRaw, &convertedFile)
 	if err != nil {
+		return nil, err
+	}
+	if err := convertedFile.Validate(); err != nil {
 		return nil, err
 	}
 
