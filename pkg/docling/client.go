@@ -121,11 +121,34 @@ type DoclingResponse struct {
 }
 
 type DoclingResponseDocument struct {
-	FileName       string `json:"filename"`
-	MDContent      string `json:"md_content"`
-	HTMLContent    string `json:"html_content"`
-	TextContent    string `json:"text_content"`
-	DocTagsContent string `json:"doctags_content"`
+	FileName  string `json:"filename"`
+	MDContent string `json:"md_content"`
+	// JSONContent is the DoclingDocument rendition, returned only when
+	// to_formats includes "json". Unlike its siblings it is a JSON object and
+	// not a string, so it is kept verbatim: addresses into the document such as
+	// "#/texts/59" only resolve against these exact bytes, and re-encoding a
+	// decoded copy is not guaranteed to preserve them.
+	//
+	// Prefer JSONDocument() over reading this field directly.
+	JSONContent    json.RawMessage `json:"json_content"`
+	HTMLContent    string          `json:"html_content"`
+	TextContent    string          `json:"text_content"`
+	DocTagsContent string          `json:"doctags_content"`
+}
+
+// JSONDocument returns the DoclingDocument rendition, or nil when docling did
+// not return one.
+//
+// The field is absent when nothing asked for it and is the JSON literal null
+// when docling ran but produced no document. json.RawMessage keeps both as
+// bytes, and "null" is four of them, so len(JSONContent) > 0 is not a valid
+// test for "a document came back".
+func (d *DoclingResponseDocument) JSONDocument() json.RawMessage {
+	trimmed := bytes.TrimSpace(d.JSONContent)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	return d.JSONContent
 }
 
 type AsyncDoclingResponse struct {
