@@ -147,52 +147,70 @@ func TestConvertedFileMetadataEqualIgnoresAbsentVLMConfig(t *testing.T) {
 		"a file stored before the field existed must not be reconverted by its addition")
 }
 
-// The other half. The field lives in this struct so that changing the model
-// reconverts. Held anywhere else, a model change would leave every stored file
-// looking current while new files came from a different model.
+// The other half. The field lives in this struct so that changing what the
+// model is asked to do reconverts. Held anywhere else, switching model or
+// prompt would leave every stored file looking current while new files came
+// from a different parse.
 func TestConvertedFileMetadataEqualDetectsVLMConfigChange(t *testing.T) {
-	base := func(model, revision string) ConvertedFileMetadata {
+	base := func(mutate func(*v1alpha1.VLMPipelineCustomConfig)) ConvertedFileMetadata {
+		vlm := &v1alpha1.VLMPipelineCustomConfig{
+			Model:          "example/model",
+			Prompt:         "<prompt>",
+			ResponseFormat: "example_format",
+			Scale:          "2.78",
+			MaxSize:        4096,
+		}
+		if mutate != nil {
+			mutate(vlm)
+		}
 		return ConvertedFileMetadata{
 			RawFilePath:       "a.pdf",
 			FileIdentifier:    "abc",
 			DocumentConverter: DocumentConverterDocling,
 			DoclingConfig: v1alpha1.DoclingConfig{
-				Pipeline: "vlm",
-				VLMPipelineCustomConfig: &v1alpha1.VLMPipelineCustomConfig{
-					Model:    model,
-					Revision: revision,
-				},
+				Pipeline:                "vlm",
+				VLMPipelineCustomConfig: vlm,
 			},
 		}
 	}
 
 	tests := []struct {
 		name  string
-		left  ConvertedFileMetadata
 		right ConvertedFileMetadata
 		equal bool
 	}{
 		{
-			name:  "same model and revision",
-			left:  base("example/model", "abc123"),
-			right: base("example/model", "abc123"),
+			name:  "identical config",
+			right: base(nil),
 			equal: true,
 		},
 		{
 			name:  "different model",
-			left:  base("example/model", "abc123"),
-			right: base("example/other", "abc123"),
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.Model = "example/other" }),
 			equal: false,
 		},
 		{
-			name:  "different revision of the same model",
-			left:  base("example/model", "abc123"),
-			right: base("example/model", "def456"),
+			name:  "different prompt",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.Prompt = "<other>" }),
+			equal: false,
+		},
+		{
+			name:  "different response format",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.ResponseFormat = "other_format" }),
+			equal: false,
+		},
+		{
+			name:  "different scale",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.Scale = "2.0" }),
+			equal: false,
+		},
+		{
+			name:  "different max size",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.MaxSize = 2048 }),
 			equal: false,
 		},
 		{
 			name: "configured against not configured",
-			left: base("example/model", "abc123"),
 			right: ConvertedFileMetadata{
 				RawFilePath:       "a.pdf",
 				FileIdentifier:    "abc",
@@ -204,7 +222,8 @@ func TestConvertedFileMetadataEqualDetectsVLMConfigChange(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.equal, tt.left.Equal(&tt.right))
+			left := base(nil)
+			assert.Equal(t, tt.equal, left.Equal(&tt.right))
 		})
 	}
 }

@@ -70,7 +70,6 @@ import (
 //	    pipeline: vlm
 //	    vlm_pipeline_custom_config:
 //	      model: nvidia/Nemotron-3.5-Parse
-//	      revision: e7ea79242a87ea0ad3919b672bfedb429a683206
 //	      prompt: "</s><s><predict_bbox><predict_classes><output_markdown><predict_text_in_pic>"
 //	      response_format: nemotron_parse_v3_5
 //	      scale: "2.78"                      # 200 DPI
@@ -284,16 +283,19 @@ type PictureDescriptionAPI struct {
 //
 // No credential field, as on PictureDescriptionAPI. The key is read from the
 // controller's secret and added to the outbound request only.
+//
+// There is no field pinning the model's version. Docling only honours one when
+// it downloads the weights itself, and a model reached over an API is served
+// by whoever hosts it, so nothing we send here can fix the version. The gap is
+// real: the host can update the model and every document converted before that
+// still looks current. Recording what answered belongs with the output rather
+// than here, where it would only look like a guarantee.
 type VLMPipelineCustomConfig struct {
 	// Model is the model repository identifier, for example
-	// "nvidia/Nemotron-3.5-Parse".
+	// "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
+	// to be one the host serves.
 	// +optional
 	Model string `json:"model,omitempty"`
-
-	// Revision pins the model version. Unset means the service decides, so two
-	// parses of the same document can come from different versions.
-	// +optional
-	Revision string `json:"revision,omitempty"`
 
 	// Prompt selects which outputs the model produces. A wrong one returns a
 	// document that parses cleanly and is missing what was not asked for.

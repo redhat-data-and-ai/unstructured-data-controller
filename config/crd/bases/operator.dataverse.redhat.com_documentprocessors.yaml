@@ -157,7 +157,8 @@ spec:
                           model:
                             description: |-
                               Model is the model repository identifier, for example
-                              "nvidia/Nemotron-3.5-Parse".
+                              "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
+                              to be one the host serves.
                             type: string
                           prompt:
                             description: |-
@@ -170,11 +171,6 @@ spec:
                               marker, because the set of decoders belongs to docling and grows between
                               its releases, so pinning it here would reject values docling accepts. An
                               unknown value is rejected by docling rather than ignored.
-                            type: string
-                          revision:
-                            description: |-
-                              Revision pins the model version. Unset means the service decides, so two
-                              parses of the same document can come from different versions.
                             type: string
                           scale:
                             description: |-
@@ -381,7 +377,8 @@ spec:
                             model:
                               description: |-
                                 Model is the model repository identifier, for example
-                                "nvidia/Nemotron-3.5-Parse".
+                                "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
+                                to be one the host serves.
                               type: string
                             prompt:
                               description: |-
@@ -394,11 +391,6 @@ spec:
                                 marker, because the set of decoders belongs to docling and grows between
                                 its releases, so pinning it here would reject values docling accepts. An
                                 unknown value is rejected by docling rather than ignored.
-                              type: string
-                            revision:
-                              description: |-
-                                Revision pins the model version. Unset means the service decides, so two
-                                parses of the same document can come from different versions.
                               type: string
                             scale:
                               description: |-

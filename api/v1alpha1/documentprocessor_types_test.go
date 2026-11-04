@@ -155,7 +155,6 @@ func TestDoclingConfig_SetDefaults_PreservesVLMPipelineCustomConfig(t *testing.T
 	c := DoclingConfig{
 		VLMPipelineCustomConfig: &VLMPipelineCustomConfig{
 			Model:          "example/model",
-			Revision:       "abc123",
 			Prompt:         "<prompt>",
 			ResponseFormat: "example_format",
 			Scale:          "2.78",
@@ -170,9 +169,6 @@ func TestDoclingConfig_SetDefaults_PreservesVLMPipelineCustomConfig(t *testing.T
 	}
 	if got.Model != "example/model" {
 		t.Errorf("expected model %q, got %q", "example/model", got.Model)
-	}
-	if got.Revision != "abc123" {
-		t.Errorf("expected revision %q, got %q", "abc123", got.Revision)
 	}
 	if got.Prompt != "<prompt>" {
 		t.Errorf("expected prompt %q, got %q", "<prompt>", got.Prompt)
