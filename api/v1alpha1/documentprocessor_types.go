@@ -255,6 +255,72 @@ type PictureDescriptionAPI struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// VLMPipelineCustomConfig describes the vision-language model that the "vlm"
+// pipeline sends each page to. It is only read when DoclingConfig.Pipeline is
+// "vlm"; the standard pipeline ignores it.
+//
+// It holds the model's identity and the rasterisation settings, and nothing
+// else. That split is deliberate. This struct is copied verbatim into the
+// metadata stored alongside every converted document, and that metadata
+// decides whether a file needs converting again. So a field here is a field
+// whose change reconverts the corpus. Model, revision, prompt and response
+// format all change what the parse returns, so a change to any of them should
+// reconvert. The endpoint, its credential, its timeout and its concurrency do
+// not change what the parse returns, so they are controller-level
+// configuration and are deliberately absent: moving the service to a new
+// address must not reconvert anything.
+//
+// There is no credential field for the same reason there is no credential
+// field on PictureDescriptionAPI: the key is read from the controller's secret
+// and added to the outbound request only, never to anything that is stored.
+type VLMPipelineCustomConfig struct {
+	// Model is the model repository identifier, for example
+	// "nvidia/Nemotron-3.5-Parse".
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// Revision pins the model to one version. Leaving it unset means the
+	// service decides, and the same document can then be parsed by two
+	// different versions with nothing recording which.
+	// +optional
+	Revision string `json:"revision,omitempty"`
+
+	// Prompt is part of the contract with the model rather than a preference.
+	// Models in this family take a prompt that selects which outputs they
+	// produce, so the wrong prompt returns a document that parses cleanly and
+	// is missing whatever was not asked for.
+	// +optional
+	Prompt string `json:"prompt,omitempty"`
+
+	// ResponseFormat names the decoder used on the model's reply. It has to
+	// match what the model actually emits; an unknown value is rejected by
+	// the conversion service rather than silently ignored. It is not
+	// constrained to an enum here because the set of decoders belongs to that
+	// service and grows between its releases, so pinning the list would mean
+	// rejecting values the service accepts.
+	// +optional
+	ResponseFormat string `json:"response_format,omitempty"`
+
+	// Scale is the factor pages are rasterised at before being sent to the
+	// model, where 1.0 is 72 DPI. It is a string for the same reason
+	// ImagesScale is: a float in an API object is awkward to round-trip.
+	//
+	// Note that ImagesScale does not control this. That one sets the scale of
+	// images exported in the output; this one sets what the model is shown.
+	// +optional
+	Scale string `json:"scale,omitempty"`
+
+	// MaxSize caps a rasterised page's longest edge in pixels.
+	//
+	// It interacts with Scale and the interaction is easy to miss: when a page
+	// scaled by Scale would exceed MaxSize, it is scaled down to fit, so the
+	// effective scale silently drops below the requested one. Large or
+	// landscape pages hit this first. Raising Scale without also raising
+	// MaxSize changes nothing for those pages.
+	// +optional
+	MaxSize int `json:"max_size,omitempty"`
+}
+
 type DoclingConfig struct {
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
@@ -269,8 +335,12 @@ type DoclingConfig struct {
 	OCRPreset  string `json:"ocr_preset,omitempty"`
 	PDFBackend string `json:"pdf_backend,omitempty"`
 	// +optional
-	Pipeline  string `json:"pipeline,omitempty"`
-	TableMode string `json:"table_mode,omitempty"`
+	Pipeline string `json:"pipeline,omitempty"`
+	// VLMPipelineCustomConfig configures the model used when Pipeline is
+	// "vlm". It has no effect otherwise.
+	// +optional
+	VLMPipelineCustomConfig *VLMPipelineCustomConfig `json:"vlm_pipeline_custom_config,omitempty"`
+	TableMode               string                   `json:"table_mode,omitempty"`
 	// +optional
 	TableCellMatching *bool `json:"table_cell_matching,omitempty"`
 	// +optional

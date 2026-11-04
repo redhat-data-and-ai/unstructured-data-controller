@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
 
 func TestConvertedFileValidate(t *testing.T) {
@@ -119,4 +121,97 @@ func TestConvertedFileValidateAcceptsRealFile(t *testing.T) {
 
 	assert.Equal(t, "a.pdf", cf.ConvertedDocument.Metadata.RawFilePath)
 	assert.Equal(t, "# heading", cf.ConvertedDocument.Content.Markdown)
+}
+
+// TestConvertedFileMetadataEqualIgnoresAbsentVLMConfig covers the case that
+// makes adding a field to DoclingConfig safe at all.
+//
+// Equal is what decides whether a stored file is converted again. Every file
+// already in storage was written before this field existed, so its JSON has no
+// key for it and it decodes as nil. A pipeline that does not use the vlm
+// pipeline also leaves it nil. Those two have to compare equal, or shipping
+// the field reconverts every document that has ever been converted.
+func TestConvertedFileMetadataEqualIgnoresAbsentVLMConfig(t *testing.T) {
+	// No vlm_pipeline_custom_config key at all, as a file stored before the
+	// field existed would have.
+	stored := []byte(`{"rawFilePath":"a.pdf","fileIdentifier":"abc",
+		"documentConverter":"docling","doclingConfig":{"to_formats":["md"]}}`)
+
+	var old ConvertedFileMetadata
+	require.NoError(t, json.Unmarshal(stored, &old))
+	require.Nil(t, old.DoclingConfig.VLMPipelineCustomConfig)
+
+	current := ConvertedFileMetadata{
+		RawFilePath:       "a.pdf",
+		FileIdentifier:    "abc",
+		DocumentConverter: DocumentConverterDocling,
+		DoclingConfig:     v1alpha1.DoclingConfig{ToFormats: []string{"md"}},
+	}
+
+	assert.True(t, old.Equal(&current),
+		"a file stored before the field existed must not be reconverted by its addition")
+}
+
+// TestConvertedFileMetadataEqualDetectsVLMConfigChange is the other half: the
+// field is in this struct precisely so that changing the model reconverts.
+// Were it held somewhere outside the metadata, a model or revision change
+// would leave every stored file looking current while new files came from a
+// different model.
+func TestConvertedFileMetadataEqualDetectsVLMConfigChange(t *testing.T) {
+	base := func(model, revision string) ConvertedFileMetadata {
+		return ConvertedFileMetadata{
+			RawFilePath:       "a.pdf",
+			FileIdentifier:    "abc",
+			DocumentConverter: DocumentConverterDocling,
+			DoclingConfig: v1alpha1.DoclingConfig{
+				Pipeline: "vlm",
+				VLMPipelineCustomConfig: &v1alpha1.VLMPipelineCustomConfig{
+					Model:    model,
+					Revision: revision,
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name  string
+		left  ConvertedFileMetadata
+		right ConvertedFileMetadata
+		equal bool
+	}{
+		{
+			name:  "same model and revision",
+			left:  base("example/model", "abc123"),
+			right: base("example/model", "abc123"),
+			equal: true,
+		},
+		{
+			name:  "different model",
+			left:  base("example/model", "abc123"),
+			right: base("example/other", "abc123"),
+			equal: false,
+		},
+		{
+			name:  "different revision of the same model",
+			left:  base("example/model", "abc123"),
+			right: base("example/model", "def456"),
+			equal: false,
+		},
+		{
+			name: "configured against not configured",
+			left: base("example/model", "abc123"),
+			right: ConvertedFileMetadata{
+				RawFilePath:       "a.pdf",
+				FileIdentifier:    "abc",
+				DocumentConverter: DocumentConverterDocling,
+			},
+			equal: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.equal, tt.left.Equal(&tt.right))
+		})
+	}
 }

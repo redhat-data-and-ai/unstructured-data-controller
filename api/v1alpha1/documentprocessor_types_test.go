@@ -138,3 +138,59 @@ func TestDoclingConfig_SetDefaults_DoesNotAliasGlobalSlice(t *testing.T) {
 		t.Error("SetDefaults aliased the global defaultFromFormats slice")
 	}
 }
+
+// TestDoclingConfig_SetDefaults_LeavesVLMPipelineCustomConfigUnset pins the
+// absence of a default rather than the presence of one.
+//
+// This config is stored in the metadata that decides whether a file needs
+// converting again. Filling the field in here would change that metadata for
+// every pipeline, including every pipeline that does not use the vlm pipeline
+// at all, and each of them would then reconvert its whole corpus on the next
+// reconcile. So "unset stays unset" is the behaviour, and it is worth a test
+// because a later reader adding one more block to SetDefaults would see no
+// reason not to add this one too.
+func TestDoclingConfig_SetDefaults_LeavesVLMPipelineCustomConfigUnset(t *testing.T) {
+	c := DoclingConfig{}
+	c.SetDefaults()
+
+	if c.VLMPipelineCustomConfig != nil {
+		t.Errorf("expected vlm_pipeline_custom_config to stay unset, got %+v", c.VLMPipelineCustomConfig)
+	}
+}
+
+func TestDoclingConfig_SetDefaults_PreservesVLMPipelineCustomConfig(t *testing.T) {
+	c := DoclingConfig{
+		VLMPipelineCustomConfig: &VLMPipelineCustomConfig{
+			Model:          "example/model",
+			Revision:       "abc123",
+			Prompt:         "<prompt>",
+			ResponseFormat: "example_format",
+			Scale:          "2.78",
+			MaxSize:        4096,
+		},
+	}
+	c.SetDefaults()
+
+	got := c.VLMPipelineCustomConfig
+	if got == nil {
+		t.Fatal("expected vlm_pipeline_custom_config to be preserved, got nil")
+	}
+	if got.Model != "example/model" {
+		t.Errorf("expected model %q, got %q", "example/model", got.Model)
+	}
+	if got.Revision != "abc123" {
+		t.Errorf("expected revision %q, got %q", "abc123", got.Revision)
+	}
+	if got.Prompt != "<prompt>" {
+		t.Errorf("expected prompt %q, got %q", "<prompt>", got.Prompt)
+	}
+	if got.ResponseFormat != "example_format" {
+		t.Errorf("expected response_format %q, got %q", "example_format", got.ResponseFormat)
+	}
+	if got.Scale != "2.78" {
+		t.Errorf("expected scale %q, got %q", "2.78", got.Scale)
+	}
+	if got.MaxSize != 4096 {
+		t.Errorf("expected max_size %d, got %d", 4096, got.MaxSize)
+	}
+}
