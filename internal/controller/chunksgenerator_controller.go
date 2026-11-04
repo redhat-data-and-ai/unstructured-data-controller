@@ -350,8 +350,9 @@ func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFile
 	// failure rather than a warning: a deck missing from retrieval looks
 	// exactly like a deck nobody asked about.
 	//
-	// The reconcile loop collects this per file and carries on, so one bad
-	// document surfaces on the CR without holding up the rest of the stage.
+	// Unlike every other chunking failure, this one recurs identically on each
+	// reconcile: the input and the config are unchanged and the stage has no
+	// attempt limit.
 	if err := unstructured.ValidateChunks(content, chunks); err != nil {
 		return nil, fmt.Errorf("chunking %s: %w", convertedFilePath, err)
 	}

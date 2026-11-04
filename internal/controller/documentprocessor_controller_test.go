@@ -57,6 +57,8 @@ func TestInjectVLMEngine(t *testing.T) {
 		pipeline     string
 		modelCfg     *operatorv1alpha1.VLMPipelineCustomConfig
 		wantInjected bool
+		wantAuth     bool
+		wantErr      string
 	}{
 		{
 			name:         "injects when the vlm pipeline is selected and the engine is reachable",
@@ -64,6 +66,7 @@ func TestInjectVLMEngine(t *testing.T) {
 			pipeline:     operatorv1alpha1.PipelineVLM,
 			modelCfg:     modelConfig(),
 			wantInjected: true,
+			wantAuth:     true,
 		},
 		{
 			name:         "leaves the standard pipeline alone",
@@ -80,25 +83,49 @@ func TestInjectVLMEngine(t *testing.T) {
 			wantInjected: false,
 		},
 		{
-			name:         "does nothing without a model config, which only the vlm pipeline is given",
-			settings:     vlmPipelineSettings{apiKey: testVLMAPIKey, apiURL: testVLMAPIURL},
-			pipeline:     operatorv1alpha1.PipelineVLM,
-			modelCfg:     nil,
-			wantInjected: false,
-		},
-		{
-			name:         "does not send an unauthenticated request when the credential is missing",
+			name:         "injects without a credential, sending no Authorization header",
 			settings:     vlmPipelineSettings{apiURL: testVLMAPIURL},
 			pipeline:     operatorv1alpha1.PipelineVLM,
 			modelCfg:     modelConfig(),
-			wantInjected: false,
+			wantInjected: true,
+			wantAuth:     false,
 		},
 		{
-			name:         "does nothing when the endpoint is missing",
-			settings:     vlmPipelineSettings{apiKey: testVLMAPIKey},
-			pipeline:     operatorv1alpha1.PipelineVLM,
-			modelCfg:     modelConfig(),
-			wantInjected: false,
+			// The four cases below must fail rather than skip: a skipped
+			// injection converts on docling's own model and answers 200, while
+			// the artifact is fingerprinted as though the named model ran.
+			name:     "fails when the endpoint is missing",
+			settings: vlmPipelineSettings{apiKey: testVLMAPIKey},
+			pipeline: operatorv1alpha1.PipelineVLM,
+			modelCfg: modelConfig(),
+			wantErr:  "vlmPipelineAPIURL is not set",
+		},
+		{
+			name:     "fails without a model config",
+			settings: vlmPipelineSettings{apiKey: testVLMAPIKey, apiURL: testVLMAPIURL},
+			pipeline: operatorv1alpha1.PipelineVLM,
+			modelCfg: nil,
+			wantErr:  "vlm_pipeline_custom_config is not set",
+		},
+		{
+			name:     "fails when the model has no prompt and no catalogued default",
+			settings: vlmPipelineSettings{apiKey: testVLMAPIKey, apiURL: testVLMAPIURL},
+			pipeline: operatorv1alpha1.PipelineVLM,
+			modelCfg: &operatorv1alpha1.VLMPipelineCustomConfig{
+				Model:          "example/uncatalogued",
+				ResponseFormat: "example_format",
+			},
+			wantErr: "has no prompt",
+		},
+		{
+			name:     "fails when the model has no response format and no catalogued default",
+			settings: vlmPipelineSettings{apiKey: testVLMAPIKey, apiURL: testVLMAPIURL},
+			pipeline: operatorv1alpha1.PipelineVLM,
+			modelCfg: &operatorv1alpha1.VLMPipelineCustomConfig{
+				Model:  "example/uncatalogued",
+				Prompt: "example prompt",
+			},
+			wantErr: "has no response format",
 		},
 	}
 
@@ -107,7 +134,16 @@ func TestInjectVLMEngine(t *testing.T) {
 			withVLMPipelineSettings(t, tt.settings)
 
 			doclingCfg := &docling.DoclingConfig{Pipeline: tt.pipeline}
-			injectVLMEngine(doclingCfg, tt.modelCfg)
+			err := injectVLMEngine(doclingCfg, tt.modelCfg)
+
+			if tt.wantErr != "" {
+				require.Error(t, err, "a vlm pipeline that cannot be built must fail, not skip")
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, doclingCfg.VLMPipelineCustomConfig,
+					"nothing should be injected on the failure path")
+				return
+			}
+			require.NoError(t, err)
 
 			if !tt.wantInjected {
 				assert.Nil(t, doclingCfg.VLMPipelineCustomConfig,
@@ -122,8 +158,13 @@ func TestInjectVLMEngine(t *testing.T) {
 			assert.Equal(t, testVLMAPIURL, customConfig.EngineOptions.URL)
 			assert.Equal(t, docling.VLMEngineTypeAPI, customConfig.EngineOptions.EngineType,
 				"docling cannot resolve the engine without this discriminator")
-			assert.Equal(t, "Bearer "+testVLMAPIKey, customConfig.EngineOptions.Headers["Authorization"],
-				"the model gateway expects a Bearer token, unlike the docling gateway")
+			if tt.wantAuth {
+				assert.Equal(t, "Bearer "+testVLMAPIKey, customConfig.EngineOptions.Headers["Authorization"],
+					"the model gateway expects a Bearer token, unlike the docling gateway")
+			} else {
+				assert.NotContains(t, customConfig.EngineOptions.Headers, "Authorization",
+					"an empty Bearer token is worse than no header")
+			}
 
 			// Everything that changes the parse comes from the spec.
 			assert.Equal(t, tt.modelCfg.Model, customConfig.ModelSpec.DefaultRepoID)
@@ -143,10 +184,11 @@ func TestInjectVLMEngineOmitsAnUnsetScale(t *testing.T) {
 	withVLMPipelineSettings(t, vlmPipelineSettings{apiKey: testVLMAPIKey, apiURL: testVLMAPIURL})
 
 	doclingCfg := &docling.DoclingConfig{Pipeline: operatorv1alpha1.PipelineVLM}
-	injectVLMEngine(doclingCfg, &operatorv1alpha1.VLMPipelineCustomConfig{
+	require.NoError(t, injectVLMEngine(doclingCfg, &operatorv1alpha1.VLMPipelineCustomConfig{
 		Model:          "example/model",
+		Prompt:         "example prompt",
 		ResponseFormat: "example_format",
-	})
+	}))
 
 	require.NotNil(t, doclingCfg.VLMPipelineCustomConfig)
 	assert.Nil(t, doclingCfg.VLMPipelineCustomConfig.Scale)
@@ -178,7 +220,7 @@ func TestInjectVLMEngineDoesNotLeakTheKeyIntoStoredMetadata(t *testing.T) {
 	// from the CR, never the CR's own config.
 	crConfig := documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig
 	doclingCfg := &docling.DoclingConfig{Pipeline: crConfig.Pipeline}
-	injectVLMEngine(doclingCfg, crConfig.VLMPipelineCustomConfig)
+	require.NoError(t, injectVLMEngine(doclingCfg, crConfig.VLMPipelineCustomConfig))
 
 	require.NotNil(t, doclingCfg.VLMPipelineCustomConfig,
 		"precondition: the key should have been injected into the wire config")
@@ -201,7 +243,7 @@ func TestVLMPipelineSettingsConfigured(t *testing.T) {
 	}{
 		{name: "nil, before any ControllerConfig reconcile", settings: nil, want: false},
 		{name: "empty", settings: &vlmPipelineSettings{}, want: false},
-		{name: "endpoint only", settings: &vlmPipelineSettings{apiURL: testVLMAPIURL}, want: false},
+		{name: "endpoint only", settings: &vlmPipelineSettings{apiURL: testVLMAPIURL}, want: true},
 		{name: "credential only", settings: &vlmPipelineSettings{apiKey: testVLMAPIKey}, want: false},
 		{
 			name:     "both",

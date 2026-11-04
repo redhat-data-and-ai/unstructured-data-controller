@@ -77,6 +77,11 @@ func TestSampleSecretDeclaresTheKeysTheControllerReads(t *testing.T) {
 func TestSampleSecretDeclaresNoUnreadVLMKey(t *testing.T) {
 	secret := operatorSecretSample(t)
 
+	// Ranging a nil map runs zero iterations, so without this the test passes
+	// vacuously if the sample switches to the equally valid data form.
+	require.NotEmpty(t, secret.StringData,
+		"the sample must use stringData, or this test asserts nothing")
+
 	for key := range secret.StringData {
 		if !strings.Contains(key, "VLM") && !strings.Contains(key, "NEMOTRON") {
 			continue

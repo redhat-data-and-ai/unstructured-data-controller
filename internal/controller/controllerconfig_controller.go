@@ -82,11 +82,10 @@ var (
 )
 
 // vlmPipelineAPIKeySecretKey is the Secret entry holding the credential for
-// the model the vlm pipeline parses with. Named rather than inlined because
-// getting it wrong is silent: a key the controller never finds leaves the
-// settings unconfigured, injection is skipped, and every document converts on
-// the standard pipeline while reporting success. It must match
-// config/samples/unstructured-secret.yaml.
+// the model the vlm pipeline parses with. Named rather than inlined so the
+// Secret and the reader cannot drift apart: a key the controller never finds
+// reads as "this endpoint needs no credential", and the request goes out
+// unauthenticated. It must match config/samples/unstructured-secret.yaml.
 const vlmPipelineAPIKeySecretKey = "VLM_PIPELINE_API_KEY"
 
 // vlmPipelineSettings is where the vlm pipeline's model is reached. Which
@@ -103,11 +102,13 @@ type vlmPipelineSettings struct {
 	apiURL string
 }
 
-// configured reports whether the model can be reached. Both halves are
-// required: an endpoint without a credential fails once per document rather
-// than once.
+// configured reports whether the model can be reached. Only the endpoint is
+// required: a model served without authentication is an ordinary deployment,
+// and a credential that turns out to be needed fails loudly at the gateway. A
+// missing endpoint cannot fail loudly, because docling then runs its own
+// bundled model and answers 200.
 func (s *vlmPipelineSettings) configured() bool {
-	return s != nil && s.apiURL != "" && s.apiKey != ""
+	return s != nil && s.apiURL != ""
 }
 
 // stringValue reads an optional API field, which is nil when unset.

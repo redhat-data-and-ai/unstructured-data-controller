@@ -137,7 +137,9 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		doclingCfg.PictureDescriptionAPI.Headers["Authorization"] = "Bearer " + vlmAPIKey
 	}
 
-	injectVLMEngine(doclingCfg, cfg.VLMPipelineCustomConfig)
+	if err := injectVLMEngine(doclingCfg, cfg.VLMPipelineCustomConfig); err != nil {
+		return r.handleError(ctx, documentProcessorCR, err)
+	}
 
 	fs, err := filestore.New(ctx, dataStorageDirectory, dataStorageBucket)
 	if err != nil {
@@ -627,18 +629,49 @@ func injectAndValidateVLMConfig(cr *operatorv1alpha1.DocumentProcessor) error {
 //
 // It therefore mutates only the wire config, never the CR's own DoclingConfig.
 //
-// A no-op unless the pipeline is "vlm" and the operator has both an endpoint
-// and a credential, so a partly configured controller leaves docling on its
-// own default model rather than failing once per document.
-func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alpha1.VLMPipelineCustomConfig) {
-	if doclingCfg.Pipeline != operatorv1alpha1.PipelineVLM || modelCfg == nil {
-		return
+// A no-op on any pipeline but "vlm". On "vlm" it fails rather than skipping,
+// because skipping cannot be noticed: docling drops the options it did not
+// receive, runs its own bundled model and answers 200, while the artifact is
+// still fingerprinted from the spec that named this one. Fixing the
+// configuration afterwards reconverts nothing, because that fingerprint never
+// changed.
+func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alpha1.VLMPipelineCustomConfig) error {
+	if doclingCfg.Pipeline != operatorv1alpha1.PipelineVLM {
+		return nil
 	}
+	if modelCfg == nil {
+		return errors.New(`pipeline is "vlm" but vlm_pipeline_custom_config is not set`)
+	}
+
+	// Both fail opaquely when absent: the task ends in failure and the result
+	// endpoint answers 404 without naming the field. SetDefaults fills them
+	// only for catalogued models, so an alias the server itself accepts still
+	// arrives here blank.
+	if modelCfg.Prompt == "" {
+		return fmt.Errorf("vlm pipeline model %q has no prompt and no catalogued default; set prompt explicitly", modelCfg.Model)
+	}
+	if modelCfg.ResponseFormat == "" {
+		return fmt.Errorf("vlm pipeline model %q has no response format and no catalogued default; set response_format explicitly", modelCfg.Model)
+	}
+
 	// Loaded once: every field below then comes from the same revision, rather
 	// than risking a credential from one and an endpoint from another.
 	settings := vlmPipelineCfg.Load()
 	if !settings.configured() {
-		return
+		return errors.New(`pipeline is "vlm" but vlmPipelineAPIURL is not set on the ControllerConfig`)
+	}
+
+	engineOptions := docling.VLMEngineOptions{
+		EngineType: docling.VLMEngineTypeAPI,
+		URL:        settings.apiURL,
+	}
+	// Only when there is one: an empty Bearer token is worse than no header.
+	if settings.apiKey != "" {
+		engineOptions.Headers = map[string]string{
+			// The model gateway expects a Bearer token, unlike the docling
+			// gateway itself, which takes the raw key.
+			"Authorization": "Bearer " + settings.apiKey,
+		}
 	}
 
 	doclingCfg.VLMPipelineCustomConfig = &docling.VLMPipelineCustomConfig{
@@ -651,18 +684,11 @@ func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alph
 			Prompt:         modelCfg.Prompt,
 			ResponseFormat: modelCfg.ResponseFormat,
 		},
-		EngineOptions: docling.VLMEngineOptions{
-			EngineType: docling.VLMEngineTypeAPI,
-			URL:        settings.apiURL,
-			Headers: map[string]string{
-				// The model gateway expects a Bearer token, unlike the docling
-				// gateway itself, which takes the raw key.
-				"Authorization": "Bearer " + settings.apiKey,
-			},
-		},
-		Scale:   parseFloat64Ptr(modelCfg.Scale),
-		MaxSize: modelCfg.MaxSize,
+		EngineOptions: engineOptions,
+		Scale:         parseFloat64Ptr(modelCfg.Scale),
+		MaxSize:       modelCfg.MaxSize,
 	}
+	return nil
 }
 
 func convertPictureDescriptionAPI(api *operatorv1alpha1.PictureDescriptionAPI) *docling.PictureDescriptionAPI {
