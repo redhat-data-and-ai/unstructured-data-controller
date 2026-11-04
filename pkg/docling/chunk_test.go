@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,6 +45,19 @@ const (
 const storedDocument = `{"schema_name":"DoclingDocument","version":"1.10.0",` +
 	`"texts":[{"self_ref":"#/texts/0","text":"hello"}]}`
 
+// writeJSON replies from a test handler and reports a failed write.
+//
+// A discarded write error leaves the client with a truncated body, so the
+// test fails on a decode error somewhere else and never says the write was
+// the problem. require must not be used here: handlers run on the server
+// goroutine, and a failed require there does not stop the test.
+func writeJSON(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := io.WriteString(w, body); err != nil {
+		t.Errorf("writing the test response: %v", err)
+	}
+}
+
 // validOptions is what every test that is not about validation sends, since
 // ChunkDoclingDocument now rejects a request that would reach docling without
 // a tokenizer or a token budget.
@@ -67,7 +81,7 @@ func TestChunkDoclingDocumentSendsTheRightRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"pending"}`))
+		writeJSON(t, w, `{"task_id":"t-1","task_status":"pending"}`)
 	}))
 	defer srv.Close()
 
@@ -127,15 +141,29 @@ func TestChunkDoclingDocumentSendsTheRightRequest(t *testing.T) {
 // fail the task, which costs a submit, a poll and a slot to learn something
 // knowable here.
 func TestChunkDoclingDocumentRejectsAnEmptyDocument(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		t.Error("no request should have been sent")
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
+	// The JSON literal null is the one worth spelling out. It is what the
+	// convert response carries when docling ran and produced no document,
+	// it is four bytes, so a length test alone lets it through, and
+	// JSONDocument in this package already treats it as absent.
+	for _, document := range []json.RawMessage{
+		nil,
+		json.RawMessage(``),
+		json.RawMessage(`   `),
+		json.RawMessage(`null`),
+		json.RawMessage(`  null  `),
+	} {
+		t.Run(string(document), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("no request should have been sent")
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
 
-	_, err := newChunkTestClient(srv).ChunkDoclingDocument(
-		context.Background(), "doc.json", nil, validOptions())
-	require.Error(t, err)
+			_, err := newChunkTestClient(srv).ChunkDoclingDocument(
+				context.Background(), "doc.json", document, validOptions())
+			require.Error(t, err)
+		})
+	}
 }
 
 // A rejected submit has to give the slot back. Holding it would leak one
@@ -162,7 +190,7 @@ func TestChunkDoclingDocumentReleasesTheSlotWhenTheSubmitFails(t *testing.T) {
 func TestGetChunksWhileTheTaskIsStillRunning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == pollPath {
-			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"started"}`))
+			writeJSON(t, w, `{"task_id":"t-1","task_status":"started"}`)
 			return
 		}
 		t.Errorf("the result should not have been fetched for a running task, got %s", r.URL.Path)
@@ -182,12 +210,12 @@ func TestGetChunksReturnsFinishedChunks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case pollPath:
-			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"success"}`))
+			writeJSON(t, w, `{"task_id":"t-1","task_status":"success"}`)
 		case resultPath:
-			_, _ = w.Write([]byte(`{"chunks":[{"chunk_index":0,"text":"Heading\nbody",` +
-				`"raw_text":"body","num_tokens":3,"headings":["Heading"],` +
-				`"doc_items":["#/texts/0","#/texts/1"],"page_numbers":[1,2]}],` +
-				`"processing_time":0.8}`))
+			writeJSON(t, w, `{"chunks":[{"chunk_index":0,"text":"Heading\nbody",`+
+				`"raw_text":"body","num_tokens":3,"headings":["Heading"],`+
+				`"doc_items":["#/texts/0","#/texts/1"],"page_numbers":[1,2]}],`+
+				`"processing_time":0.8}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -212,17 +240,31 @@ func TestGetChunksReturnsFinishedChunks(t *testing.T) {
 // returning an empty result that reads as a document with no chunks.
 func TestGetChunksReleasesTheSlotWhenTheTaskFailed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"failure"}`))
+		writeJSON(t, w, `{"task_id":"t-1","task_status":"failure"}`)
 	}))
 	defer srv.Close()
 
 	client := newChunkTestClient(srv)
-	_, _, err := client.GetChunks(context.Background(), "t-1")
+
+	// Take the only slot first. Without this the test passes whether or not
+	// the release happens, because the submit below finds a free slot
+	// either way.
+	accepted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, `{"task_id":"t-1","task_status":"pending"}`)
+	}))
+	client.ClientConfig.URL = accepted.URL
+	_, err := client.ChunkDoclingDocument(
+		context.Background(), "doc.json", json.RawMessage(storedDocument), validOptions())
+	require.NoError(t, err)
+	accepted.Close()
+
+	client.ClientConfig.URL = srv.URL
+	_, _, err = client.GetChunks(context.Background(), "t-1")
 	require.Error(t, err)
 
-	// The slot is free, so a submit can still be made.
+	// The slot came back, so a submit can take it again.
 	submitted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"task_id":"t-2","task_status":"pending"}`))
+		writeJSON(t, w, `{"task_id":"t-2","task_status":"pending"}`)
 	}))
 	defer submitted.Close()
 	client.ClientConfig.URL = submitted.URL
@@ -287,7 +329,7 @@ func TestChunkDoclingDocumentRejectsOptionsThatCannotWork(t *testing.T) {
 // the only release path runs on a poll.
 func TestChunkDoclingDocumentRejectsAResponseWithNoTaskID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"detail":"something else entirely"}`))
+		writeJSON(t, w, `{"detail":"something else entirely"}`)
 	}))
 	defer srv.Close()
 
@@ -299,7 +341,7 @@ func TestChunkDoclingDocumentRejectsAResponseWithNoTaskID(t *testing.T) {
 
 	// And the slot came back, so the next submit can still take one.
 	accepted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"task_id":"t-2","task_status":"pending"}`))
+		writeJSON(t, w, `{"task_id":"t-2","task_status":"pending"}`)
 	}))
 	defer accepted.Close()
 	client.ClientConfig.URL = accepted.URL
@@ -336,7 +378,7 @@ func TestGetChunksKeepsTheSlotWhenTheStatusCannotBeRead(t *testing.T) {
 	// Take both slots.
 	for range 2 {
 		accepted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"pending"}`))
+			writeJSON(t, w, `{"task_id":"t-1","task_status":"pending"}`)
 		}))
 		url := client.ClientConfig.URL
 		client.ClientConfig.URL = accepted.URL
@@ -373,9 +415,9 @@ func TestGetChunksReportsASuccessfulTaskThatProducedNothing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case pollPath:
-			_, _ = w.Write([]byte(`{"task_id":"t-1","task_status":"success"}`))
+			writeJSON(t, w, `{"task_id":"t-1","task_status":"success"}`)
 		case resultPath:
-			_, _ = w.Write([]byte(`{"chunks":[],"processing_time":58.2}`))
+			writeJSON(t, w, `{"chunks":[],"processing_time":58.2}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}

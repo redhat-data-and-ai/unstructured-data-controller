@@ -17,6 +17,7 @@ limitations under the License.
 package docling
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -152,7 +153,12 @@ func (c *Client) ChunkDoclingDocument(
 ) (*AsyncDoclingResponse, error) {
 	logger := log.FromContext(ctx)
 
-	if len(doclingDocument) == 0 {
+	// The same rule JSONDocument applies, for the same reason: the field is
+	// absent when nothing asked for it and the JSON literal null when docling
+	// ran and produced nothing, and null is four bytes, so a length test
+	// alone lets it through. Sending it would base64 "null" as a document and
+	// hold a slot until the resulting failure is collected.
+	if trimmed := bytes.TrimSpace(doclingDocument); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, errors.New("cannot chunk an empty docling document")
 	}
 	// Checked here for the same reason the document is, and with a stronger
@@ -213,7 +219,11 @@ func (c *Client) ChunkDoclingDocument(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get response body: %w", err)
 	}
-	defer func() { _ = responseBody.Close() }()
+	defer func() {
+		if closeErr := responseBody.Close(); closeErr != nil {
+			logger.Error(closeErr, "failed to close the chunk submit response body")
+		}
+	}()
 
 	body, err := io.ReadAll(responseBody)
 	if err != nil {
@@ -291,7 +301,11 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 		c.safeRelease()
 		return "", nil, fmt.Errorf("failed to get response body: %w", err)
 	}
-	defer func() { _ = bodyResponse.Close() }()
+	defer func() {
+		if closeErr := bodyResponse.Close(); closeErr != nil {
+			logger.Error(closeErr, "failed to close the chunk result response body", "task id", taskID)
+		}
+	}()
 
 	var chunkResponse ChunkResponse
 	if err := json.NewDecoder(bodyResponse).Decode(&chunkResponse); err != nil {
