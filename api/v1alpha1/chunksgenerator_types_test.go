@@ -83,3 +83,100 @@ func TestChunksGeneratorConfig_SetDefaults_TokenStrategy(t *testing.T) {
 		t.Errorf("expected chunkOverlap %d, got %d", DefaultChunkOverlap, c.TokenSplitterConfig.ChunkOverlap)
 	}
 }
+
+// Selecting the strategy and a tokenizer has to be enough. Every one of
+// docling's own defaults for the remaining settings is wrong here: max_tokens
+// falls back to the tokenizer's limit, which is several times an embedding
+// window, and the two flags default off, which leaves no display text and
+// serialises tables as value triplets.
+func TestChunksGeneratorConfig_SetDefaults_DoclingHybridStrategy(t *testing.T) {
+	c := ChunksGeneratorConfig{
+		Strategy:            ChunkingStrategyDoclingHybrid,
+		HybridChunkerConfig: HybridChunkerConfig{Tokenizer: "/example/tokenizer"},
+	}
+	c.SetDefaults()
+
+	if c.HybridChunkerConfig.MaxTokens != DefaultHybridMaxTokens {
+		t.Errorf("expected maxTokens %d, got %d", DefaultHybridMaxTokens, c.HybridChunkerConfig.MaxTokens)
+	}
+	if c.HybridChunkerConfig.IncludeRawText == nil || !*c.HybridChunkerConfig.IncludeRawText {
+		t.Error("expected includeRawText to default true, or there is nothing to display")
+	}
+	if c.HybridChunkerConfig.UseMarkdownTables == nil || !*c.HybridChunkerConfig.UseMarkdownTables {
+		t.Error("expected useMarkdownTables to default true")
+	}
+	if c.HybridChunkerConfig.Tokenizer != "/example/tokenizer" {
+		t.Errorf("expected tokenizer to be preserved, got %q", c.HybridChunkerConfig.Tokenizer)
+	}
+}
+
+// Tokenizer has no default on purpose. There is no value that works on every
+// deployment, admission rejects an empty one for this strategy, and a guess
+// here would be a path that silently returns zero chunks.
+func TestChunksGeneratorConfig_SetDefaults_DoclingHybridLeavesTokenizerEmpty(t *testing.T) {
+	c := ChunksGeneratorConfig{Strategy: ChunkingStrategyDoclingHybrid}
+	c.SetDefaults()
+
+	if c.HybridChunkerConfig.Tokenizer != "" {
+		t.Errorf("expected tokenizer to stay empty, got %q", c.HybridChunkerConfig.Tokenizer)
+	}
+}
+
+func TestChunksGeneratorConfig_SetDefaults_DoclingHybridPreservesExplicitValues(t *testing.T) {
+	off := false
+	c := ChunksGeneratorConfig{
+		Strategy: ChunkingStrategyDoclingHybrid,
+		HybridChunkerConfig: HybridChunkerConfig{
+			Tokenizer:         "/example/tokenizer",
+			MaxTokens:         512,
+			IncludeRawText:    &off,
+			UseMarkdownTables: &off,
+		},
+	}
+	c.SetDefaults()
+
+	if c.HybridChunkerConfig.MaxTokens != 512 {
+		t.Errorf("expected maxTokens 512, got %d", c.HybridChunkerConfig.MaxTokens)
+	}
+	if c.HybridChunkerConfig.IncludeRawText == nil || *c.HybridChunkerConfig.IncludeRawText {
+		t.Error("expected includeRawText false to survive defaulting")
+	}
+	if c.HybridChunkerConfig.UseMarkdownTables == nil || *c.HybridChunkerConfig.UseMarkdownTables {
+		t.Error("expected useMarkdownTables false to survive defaulting")
+	}
+}
+
+// The other strategies must not grow this config. It travels into the
+// metadata that decides whether a file needs chunking again, so populating it
+// for a generator that never reads it would re-chunk that whole corpus, and
+// then re-embed it.
+func TestChunksGeneratorConfig_SetDefaults_OtherStrategiesLeaveHybridUnset(t *testing.T) {
+	for _, strategy := range []ChunkingStrategy{
+		"",
+		ChunkingStrategyRecursiveCharacter,
+		ChunkingStrategyMarkdown,
+		ChunkingStrategyToken,
+	} {
+		t.Run("strategy="+string(strategy), func(t *testing.T) {
+			c := ChunksGeneratorConfig{Strategy: strategy}
+			c.SetDefaults()
+
+			if c.HybridChunkerConfig != (HybridChunkerConfig{}) {
+				t.Errorf("expected hybridChunkerConfig to stay unset, got %+v", c.HybridChunkerConfig)
+			}
+		})
+	}
+}
+
+// The empty string still has to reach the existing default. 75 resources set
+// it empty rather than omitting the field, because it is required in the
+// generated CRD, and changing what it resolves to re-chunks all of them.
+func TestChunksGeneratorConfig_SetDefaults_EmptyStrategyIsUnchanged(t *testing.T) {
+	c := ChunksGeneratorConfig{}
+	c.SetDefaults()
+
+	if c.Strategy != ChunkingStrategyRecursiveCharacter {
+		t.Errorf("expected the empty strategy to default to %q, got %q",
+			ChunkingStrategyRecursiveCharacter, c.Strategy)
+	}
+}

@@ -66,6 +66,57 @@ spec:
                   properties:
                     chunksGeneratorConfig:
                       properties:
+                        hybridChunkerConfig:
+                          description: |-
+                            HybridChunkerConfig configures docling's own chunker, which splits on the
+                            document's structure instead of on character counts. The other three
+                            strategies split text in process; this one is a call to docling, and each
+                            chunk it returns knows which part of the document it came from.
+
+                            Every one of docling's own defaults is wrong for this use, which is why all
+                            four settings are explicit.
+                          properties:
+                            includeRawText:
+                              description: |-
+                                IncludeRawText returns the body separately from the contextualised
+                                text. Both are wanted: the contextualised one is embedded, so a chunk
+                                is findable under its section heading, and the raw one is what gets
+                                displayed. Defaults true. False leaves nothing to display.
+                              type: boolean
+                            maxTokens:
+                              description: |-
+                                MaxTokens caps the finished chunk, headings included, because the
+                                chunker subtracts the heading trail itself. Set it to the context
+                                window of the embedding model the chunks are destined for.
+
+                                Leaving it unset is not an option either. Docling falls back to the
+                                tokenizer's own limit, which is several times a typical embedding
+                                window, and produces chunks nothing can embed.
+                              minimum: 1
+                              type: integer
+                            tokenizer:
+                              description: |-
+                                Tokenizer counts the tokens MaxTokens is measured in. Required, and
+                                admission rejects an empty one, because there is no default that works
+                                and the failure is silent.
+
+                                A HuggingFace model name only resolves if docling can reach
+                                huggingface.co. Where it cannot, an unreachable tokenizer is not an
+                                error: the request returns success with zero chunks once the download
+                                times out. Measured against a deployment with no egress, a HuggingFace
+                                name returned 0 chunks in 58s where a path to a tokenizer inside
+                                docling's own image returned 1 in 9.5s. Docling's own default is a
+                                HuggingFace name.
+                              type: string
+                            useMarkdownTables:
+                              description: |-
+                                UseMarkdownTables serialises a table as markdown rather than as
+                                "RowLabel, ColumnName = value" triplets. Defaults true.
+
+                                Settable rather than fixed because on a table-dense corpus this is a
+                                genuine retrieval-quality tradeoff rather than an obvious improvement.
+                              type: boolean
+                          type: object
                         markdownSplitterConfig:
                           properties:
                             chunkOverlap:
@@ -95,6 +146,18 @@ spec:
                               type: array
                           type: object
                         strategy:
+                          description: |-
+                            Strategy selects the chunker.
+
+                            The empty string is accepted because this field is required in the
+                            generated CRD, so resources that want the default set it empty rather
+                            than omitting it, and SetDefaults fills it in.
+                          enum:
+                          - recursiveCharacterTextSplitter
+                          - markdownTextSplitter
+                          - tokenTextSplitter
+                          - doclingHybridChunker
+                          - ""
                           type: string
                         tokenSplitterConfig:
                           properties:
@@ -118,6 +181,12 @@ spec:
                       required:
                       - strategy
                       type: object
+                      x-kubernetes-validations:
+                      - message: hybridChunkerConfig.tokenizer is required when strategy
+                          is doclingHybridChunker
+                        rule: self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig)
+                          && has(self.hybridChunkerConfig.tokenizer) && self.hybridChunkerConfig.tokenizer
+                          != ”)
                     dependsOn:
                       items:
                         description: StageDependency identifies an upstream stage
