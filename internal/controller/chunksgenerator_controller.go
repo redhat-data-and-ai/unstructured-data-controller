@@ -17,10 +17,12 @@ limitations under the License.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,6 +47,15 @@ import (
 
 const (
 	ChunksGeneratorControllerName = "ChunksGenerator"
+
+	// maxDoclingChunkingAttempts bounds how often one file is sent to
+	// docling's chunker before it is given up on.
+	//
+	// A bound is needed because the usual causes do not clear by themselves.
+	// An unreachable tokenizer returns success with no chunks, and a document
+	// the chunker cannot read fails the same way every time, so an unbounded
+	// retry takes a slot on every pass and chunks nothing.
+	maxDoclingChunkingAttempts = 3
 )
 
 // ChunksGeneratorReconciler reconciles a ChunksGenerator object
@@ -128,6 +139,28 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	skippedFiles := []string{}
 	var filesProcessed int64
 
+	// Collect finished chunking tasks before submitting any more, so a task
+	// that has completed gives its slot back and frees capacity for this
+	// pass. The slice is copied because reconcileChunkJob patches status and
+	// so rewrites the one on the resource underneath the loop. Only the
+	// remote chunker records jobs; the in process splitters leave this empty.
+	// A completed task counts itself, inside the same patch that forgets the
+	// job, rather than through the counter below. The counter is only added
+	// up once every file has been dealt with, and this loop can leave tasks
+	// still running, which returns early.
+	for _, job := range slices.Clone(chunksGeneratorCR.Status.Jobs) {
+		// A job with no task id is a failed attempt waiting to be sent
+		// again, not a task to ask about. The file loop below resubmits it
+		// and carries its attempt count.
+		if job.TaskID == "" {
+			continue
+		}
+		if err := r.reconcileChunkJob(ctx, job, chunksGeneratorCR, inputPath, outputPath); err != nil {
+			chunkingErrors = append(chunkingErrors, err)
+			logger.Error(err, "failed to reconcile chunking task", "file", job.FilePath, "taskID", job.TaskID)
+		}
+	}
+
 	for _, convertedFilePath := range filePaths {
 		logger.Info("processing converted file", "file", convertedFilePath)
 		processed, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR, inputPath, outputPath)
@@ -174,6 +207,17 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}, nil
 	}
 
+	// Chunking tasks outlive the reconcile that submitted them, and nothing
+	// else wakes this stage when one finishes. Without the requeue the files
+	// behind them are never written.
+	if len(chunksGeneratorCR.Status.Jobs) > 0 {
+		logger.Info("some chunking tasks are still running, will requeue after a bit ...",
+			"tasks", len(chunksGeneratorCR.Status.Jobs))
+		return ctrl.Result{
+			RequeueAfter: requeueAfter,
+		}, nil
+	}
+
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
 		chunksGeneratorCR.Status.FilesProcessed += filesProcessed
@@ -193,14 +237,25 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 
 	chunksFilePath := unstructured.RemapToOutputDir(convertedFilePath, inputPath, outputPath)
 
-	// A file whose chunking task is already in flight needs nothing here. Its
+	// Given up on after repeated failures. Its chunks file does not exist, so
+	// every check below says it needs chunking, and without this it is
+	// resubmitted on every reconcile for as long as the resource lives.
+	if chunksGeneratorCR.IsFilePermanentlyFailing(convertedFilePath) {
+		logger.Info("skipping file that has permanently failed chunking", "file", convertedFilePath)
+		return false, nil
+	}
+
+	// A file whose chunking task is already running needs nothing here. Its
 	// artifact does not exist until the task finishes, so the checks below
 	// would submit it again on every requeue, each submit taking another slot
-	// against docling and orphaning the task id it overwrites. The in process
-	// splitters finish within one reconcile and never record a job, so this is
-	// only ever true on the remote path.
-	if job := chunksGeneratorCR.GetJobByFilePath(convertedFilePath); job != nil {
-		logger.Info("chunking task already in flight for file, nothing to submit", "file", convertedFilePath, "taskID", job.TaskID)
+	// against docling and orphaning the task id it overwrites.
+	//
+	// A job with no task id is a failed attempt waiting to be retried, and
+	// falls through so the submit below picks it up and carries its attempt
+	// count. The in process splitters finish within one reconcile and never
+	// record a job at all.
+	if job := chunksGeneratorCR.GetJobByFilePath(convertedFilePath); job != nil && job.TaskID != "" {
+		logger.Info("chunking task already running for file, nothing to submit", "file", convertedFilePath, "taskID", job.TaskID)
 		return false, nil
 	}
 
@@ -308,6 +363,14 @@ func (r *ChunksGeneratorReconciler) submitChunkJob(ctx context.Context, converte
 	}
 	logger.Info("docling accepted the chunking task", "taskID", response.TaskID, "file", convertedFilePath)
 
+	// A job left behind by a failed attempt carries the count forward. The
+	// count is the only record of how many times this file has been tried,
+	// so restarting it at one here would retry forever.
+	attempt := 1
+	if previous := chunksGeneratorCR.GetJobByFilePath(convertedFilePath); previous != nil {
+		attempt = previous.Attempts + 1
+	}
+
 	// The config travels with the job rather than being read again when the
 	// result arrives. The spec can change while the task runs, and the
 	// metadata written then has to describe the chunking that actually ran,
@@ -321,9 +384,171 @@ func (r *ChunksGeneratorReconciler) submitChunkJob(ctx context.Context, converte
 			TaskID:                response.TaskID,
 			Status:                response.TaskStatus,
 			CreatedOn:             time.Now().Format(time.RFC3339),
-			Attempts:              1,
+			Attempts:              attempt,
 		})
 	})
+}
+
+// reconcileChunkJob asks docling where a submitted chunking task has got to,
+// and acts on the answer.
+//
+// A task still running is left alone. One that has finished has its chunks
+// written and its job forgotten. One that ended badly is retried until the
+// attempt limit, after which the file is recorded as permanently failing.
+//
+// A job is never left on status carrying the id of a task that has ended.
+// Polling an ended task releases its semaphore slot a second time, and a
+// weighted semaphore keeps no record of who holds what, so the second release
+// takes a slot from a task that is still running rather than failing.
+func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job operatorv1alpha1.ChunkJob,
+	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string) error {
+	logger := log.FromContext(ctx)
+
+	taskStatus, chunkResponse, err := doclingClient.GetChunks(ctx, job.TaskID)
+	switch {
+	case err != nil && !errors.Is(err, docling.ErrChunkTaskEnded):
+		// The task is alive and still holds its slot, so the next pass polls
+		// the same id rather than starting again.
+		return fmt.Errorf("polling the chunking task for %s: %w", job.FilePath, err)
+
+	case errors.Is(err, docling.ErrNoChunksReturned):
+		// Deliberately not failed here. This is both how the chunker reports
+		// being unable to load its tokenizer and what a document with no
+		// content legitimately produces, and only the document can tell them
+		// apart, so the write below decides.
+		logger.Info("chunking task returned no chunks", "file", job.FilePath, "taskID", job.TaskID)
+
+	case err != nil:
+		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
+
+	case taskStatus == docling.TaskStatusPending || taskStatus == docling.TaskStatusStarted:
+		logger.Info("chunking task is still running", "file", job.FilePath, "taskID", job.TaskID, "status", taskStatus)
+		return nil
+
+	default:
+		// The task finished and returned chunks. Written below.
+	}
+
+	chunks := []docling.Chunk{}
+	if chunkResponse != nil {
+		chunks = chunkResponse.Chunks
+	}
+
+	// Any failure from here on goes through failChunkJob rather than being
+	// returned, even one as transient as a failed upload. The task has ended
+	// and given its slot back, so leaving the job with its id would have the
+	// next pass poll it again. Retrying means chunking the file afresh.
+	if err := r.writeChunksFile(ctx, job, chunks, inputPath, outputPath); err != nil {
+		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
+	}
+	logger.Info("stored chunks for file", "file", job.FilePath, "taskID", job.TaskID, "chunks", len(chunks))
+
+	// Counted here, in the same patch that forgets the job, because the
+	// reconcile that submitted this task finished long ago.
+	return controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
+		chunksGeneratorCR.DeleteJobByFilePath(job.FilePath)
+		chunksGeneratorCR.Status.FilesProcessed++
+	})
+}
+
+// failChunkJob gives a file another attempt, or gives up on it.
+//
+// Under the limit it keeps the job and clears the task id, which is what the
+// submit path reads as "retry this and carry the count". The count lives
+// nowhere else, so dropping the job here would restart it and retry forever.
+func (r *ChunksGeneratorReconciler) failChunkJob(ctx context.Context, job operatorv1alpha1.ChunkJob,
+	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, cause error) error {
+	logger := log.FromContext(ctx)
+
+	if job.Attempts >= maxDoclingChunkingAttempts {
+		// Not returned as an error. The file is recorded on status, which is
+		// where an operator looks, and failing the whole stage for one file
+		// that will never succeed stops every other file from being written.
+		logger.Error(cause, "giving up on chunking file, attempt limit reached",
+			"file", job.FilePath, "attempts", job.Attempts)
+		return controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
+			chunksGeneratorCR.AddPermanentlyFailingFile(job.FilePath)
+			chunksGeneratorCR.DeleteJobByFilePath(job.FilePath)
+		})
+	}
+
+	retry := job
+	retry.TaskID = ""
+	retry.Status = ""
+	if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
+		chunksGeneratorCR.AddOrUpdateJob(retry)
+	}); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("chunking %s failed on attempt %d of %d: %w",
+		job.FilePath, job.Attempts, maxDoclingChunkingAttempts, cause)
+}
+
+// writeChunksFile stores what docling's chunker produced for one job.
+//
+// The metadata comes from the job rather than from the spec. A task can
+// outlive a change to the resource, and the artifact has to describe the
+// chunking that actually ran or the next reconcile compares it against a
+// configuration it was not produced under.
+func (r *ChunksGeneratorReconciler) writeChunksFile(ctx context.Context, job operatorv1alpha1.ChunkJob,
+	chunks []docling.Chunk, inputPath, outputPath string) error {
+	convertedFileRaw, err := r.fileStore.Retrieve(ctx, job.FilePath)
+	if err != nil {
+		return err
+	}
+
+	convertedFile := unstructured.ConvertedFile{}
+	if err := json.Unmarshal(convertedFileRaw, &convertedFile); err != nil {
+		return err
+	}
+	if err := convertedFile.Validate(); err != nil {
+		return err
+	}
+
+	// Docling numbers its chunks and this artifact is read by position, so
+	// the two have to agree. Sorting costs nothing and the alternative is a
+	// file whose text and provenance belong to different chunks, which
+	// nothing downstream can detect.
+	ordered := slices.Clone(chunks)
+	slices.SortFunc(ordered, func(a, b docling.Chunk) int {
+		return cmp.Compare(a.ChunkIndex, b.ChunkIndex)
+	})
+
+	// The contextualised text, with the heading trail, rather than the body
+	// alone. It is what gets embedded, so a passage stays findable under the
+	// section it came from.
+	texts := make([]string, 0, len(ordered))
+	for _, chunk := range ordered {
+		texts = append(texts, chunk.Text)
+	}
+
+	// The same guard the in process path uses, and the reason no chunks is
+	// not failed before reaching here. A document that genuinely held nothing
+	// is allowed to produce nothing; one that held content and produced
+	// nothing is the silent tokenizer failure.
+	if err := unstructured.ValidateChunks(convertedFile.ConvertedDocument.Content.Markdown, texts); err != nil {
+		return fmt.Errorf("chunking %s: %w", job.FilePath, err)
+	}
+
+	chunksFile := unstructured.ChunksFile{
+		ConvertedDocument: convertedFile.ConvertedDocument,
+		ChunksDocument: &unstructured.ChunksDocument{
+			Metadata: &unstructured.ChunksFileMetadata{
+				ChunkingTool:          unstructured.ChunkingToolForStrategy(job.ChunksGeneratorConfig.Strategy),
+				ChunksGeneratorConfig: job.ChunksGeneratorConfig,
+				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
+			},
+			Chunks: &unstructured.Chunks{Text: texts},
+		},
+	}
+
+	chunksFileBytes, err := json.Marshal(chunksFile)
+	if err != nil {
+		return err
+	}
+
+	return r.fileStore.Store(ctx, unstructured.RemapToOutputDir(job.FilePath, inputPath, outputPath), chunksFileBytes)
 }
 
 func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string) (bool, error) {

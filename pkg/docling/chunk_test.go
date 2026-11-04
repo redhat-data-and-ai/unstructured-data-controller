@@ -431,3 +431,80 @@ func TestGetChunksReportsASuccessfulTaskThatProducedNothing(t *testing.T) {
 	require.NotNil(t, response, "the caller decides whether an empty document is acceptable")
 	assert.Empty(t, response.Chunks)
 }
+
+// Whether a task has ended cannot be read from an error message, and the
+// caller has to know: polling a task that has ended releases its slot a
+// second time, and a weighted semaphore keeps no record of who holds what, so
+// the second release takes a slot from a task that is still running.
+func TestGetChunksMarksTheErrorsThatMeanTheTaskHasEnded(t *testing.T) {
+	tests := []struct {
+		name     string
+		handler  http.HandlerFunc
+		hasEnded bool
+	}{
+		{
+			name: "docling reported the task as failed",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, `{"task_id":"t-1","task_status":"failure"}`)
+			},
+			hasEnded: true,
+		},
+		{
+			name: "the result could not be fetched",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == pollPath {
+					writeJSON(t, w, `{"task_id":"t-1","task_status":"success"}`)
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+			hasEnded: true,
+		},
+		{
+			name: "the result was not a chunk response",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == pollPath {
+					writeJSON(t, w, `{"task_id":"t-1","task_status":"success"}`)
+					return
+				}
+				writeJSON(t, w, `not json`)
+			},
+			hasEnded: true,
+		},
+		{
+			name: "the task succeeded and produced nothing",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == pollPath {
+					writeJSON(t, w, `{"task_id":"t-1","task_status":"success"}`)
+					return
+				}
+				writeJSON(t, w, `{"chunks":[]}`)
+			},
+			hasEnded: true,
+		},
+		{
+			// The one case that leaves the task alive. Nothing was learned
+			// about it, so the same id has to be polled again.
+			name: "the status could not be read",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+			},
+			hasEnded: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			srv := httptest.NewServer(test.handler)
+			defer srv.Close()
+
+			_, _, err := newChunkTestClient(srv).GetChunks(context.Background(), "t-1")
+			require.Error(t, err)
+			if test.hasEnded {
+				assert.ErrorIs(t, err, ErrChunkTaskEnded)
+				return
+			}
+			assert.NotErrorIs(t, err, ErrChunkTaskEnded)
+		})
+	}
+}

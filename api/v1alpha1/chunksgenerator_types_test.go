@@ -240,3 +240,60 @@ func TestChunksGenerator_GetJobByFilePath_UnknownFileIsNil(t *testing.T) {
 		t.Errorf("expected no job when none have been submitted, got %+v", job)
 	}
 }
+
+func TestChunksGenerator_DeleteJobByFilePath(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "b.json", TaskID: "task-b"})
+
+	generator.DeleteJobByFilePath("a.json")
+
+	if len(generator.Status.Jobs) != 1 {
+		t.Fatalf("expected one job to remain, got %d", len(generator.Status.Jobs))
+	}
+	if generator.Status.Jobs[0].FilePath != "b.json" {
+		t.Errorf("expected the other file's job to remain, got %q", generator.Status.Jobs[0].FilePath)
+	}
+}
+
+// Deleting something that is not there has to be harmless. The collect path
+// deletes after writing an artifact, and that can run twice if the status
+// patch is retried.
+func TestChunksGenerator_DeleteJobByFilePath_UnknownFileChangesNothing(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+
+	generator.DeleteJobByFilePath("b.json")
+
+	if len(generator.Status.Jobs) != 1 {
+		t.Errorf("expected the existing job to be untouched, got %+v", generator.Status.Jobs)
+	}
+}
+
+func TestChunksGenerator_PermanentlyFailingFiles(t *testing.T) {
+	generator := &ChunksGenerator{}
+
+	if generator.IsFilePermanentlyFailing("a.json") {
+		t.Error("expected a file nobody has given up on to not be failing")
+	}
+
+	generator.AddPermanentlyFailingFile("a.json")
+	if !generator.IsFilePermanentlyFailing("a.json") {
+		t.Error("expected the file to be recorded as permanently failing")
+	}
+	if generator.IsFilePermanentlyFailing("b.json") {
+		t.Error("expected an unrelated file to be unaffected")
+	}
+}
+
+// The file is added once per give-up and the list is never pruned, so without
+// this the same path accumulates on status until the resource is edited.
+func TestChunksGenerator_AddPermanentlyFailingFile_IsNotRecordedTwice(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddPermanentlyFailingFile("a.json")
+	generator.AddPermanentlyFailingFile("a.json")
+
+	if len(generator.Status.PermanentlyFailingFiles) != 1 {
+		t.Errorf("expected one entry, got %v", generator.Status.PermanentlyFailingFiles)
+	}
+}

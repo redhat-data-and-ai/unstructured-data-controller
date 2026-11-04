@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"slices"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -169,6 +171,34 @@ func (c *ChunksGenerator) GetJobByFilePath(filePath string) *ChunkJob {
 		}
 	}
 	return nil
+}
+
+// DeleteJobByFilePath forgets a job, which is what finishing with a file
+// looks like: either its chunks were written or it has been given up on.
+func (c *ChunksGenerator) DeleteJobByFilePath(filePath string) {
+	remaining := []ChunkJob{}
+	for _, job := range c.Status.Jobs {
+		if job.FilePath != filePath {
+			remaining = append(remaining, job)
+		}
+	}
+	c.Status.Jobs = remaining
+}
+
+// AddPermanentlyFailingFile records a file that will not be tried again.
+//
+// Without it a file that fails every attempt is resubmitted forever, because
+// the only other record of the attempts is the job, and giving up means
+// removing that job.
+func (c *ChunksGenerator) AddPermanentlyFailingFile(filePath string) {
+	if slices.Contains(c.Status.PermanentlyFailingFiles, filePath) {
+		return
+	}
+	c.Status.PermanentlyFailingFiles = append(c.Status.PermanentlyFailingFiles, filePath)
+}
+
+func (c *ChunksGenerator) IsFilePermanentlyFailing(filePath string) bool {
+	return slices.Contains(c.Status.PermanentlyFailingFiles, filePath)
 }
 
 func (c *ChunksGenerator) UpdateStatus(message string, err error) {

@@ -54,6 +54,18 @@ const ChunkerHybrid = "hybrid"
 // this error rather than instead of it.
 var ErrNoChunksReturned = errors.New("the chunk task succeeded and returned no chunks")
 
+// ErrChunkTaskEnded marks every error from GetChunks that means the task is
+// over and its semaphore slot has been given back.
+//
+// The distinction matters to the caller and cannot be made from the message.
+// A task that is over must not be polled again: the next poll would release
+// a slot a second time, and Release on a weighted semaphore is a bare
+// subtraction with no record of who holds what, so while another task holds a
+// slot the extra release takes that one instead of failing. An error that
+// leaves the task running, such as a status that could not be read, carries
+// no such marker and should be retried against the same task id.
+var ErrChunkTaskEnded = errors.New("the chunk task has ended")
+
 // ChunkingOptions is what the chunk endpoints read as "chunking_options".
 //
 // Every value here is set explicitly because not one of docling's own
@@ -281,7 +293,7 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 
 	if taskStatus.TaskStatus == TaskStatusFailure {
 		c.safeRelease()
-		return "", nil, fmt.Errorf("chunk task failed: task id: %s", taskID)
+		return "", nil, fmt.Errorf("%w: chunk task failed: task id: %s", ErrChunkTaskEnded, taskID)
 	}
 
 	// Still working. Leave the slot held, the caller will ask again.
@@ -292,14 +304,14 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 	taskResultURL, err := c.getTaskResultEndpoint(taskID)
 	if err != nil {
 		c.safeRelease()
-		return "", nil, fmt.Errorf("failed to get task result endpoint: %w", err)
+		return "", nil, fmt.Errorf("%w: failed to get task result endpoint: %w", ErrChunkTaskEnded, err)
 	}
 
 	logger.Info("sending request to get chunks", "url", taskResultURL)
 	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
 	if err != nil {
 		c.safeRelease()
-		return "", nil, fmt.Errorf("failed to get response body: %w", err)
+		return "", nil, fmt.Errorf("%w: failed to get the chunk result: %w", ErrChunkTaskEnded, err)
 	}
 	defer func() {
 		if closeErr := bodyResponse.Close(); closeErr != nil {
@@ -310,7 +322,7 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 	var chunkResponse ChunkResponse
 	if err := json.NewDecoder(bodyResponse).Decode(&chunkResponse); err != nil {
 		c.safeRelease()
-		return "", nil, fmt.Errorf("failed to decode chunk response: %w", err)
+		return "", nil, fmt.Errorf("%w: failed to decode chunk response: %w", ErrChunkTaskEnded, err)
 	}
 
 	// The result body carries no status of its own, unlike a conversion
@@ -330,7 +342,7 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 	// case apart from a document that genuinely holds nothing. A caller that
 	// knows the input was empty can look at the error and carry on.
 	if len(chunkResponse.Chunks) == 0 {
-		return taskStatus.TaskStatus, &chunkResponse, ErrNoChunksReturned
+		return taskStatus.TaskStatus, &chunkResponse, fmt.Errorf("%w: %w", ErrChunkTaskEnded, ErrNoChunksReturned)
 	}
 
 	return taskStatus.TaskStatus, &chunkResponse, nil
