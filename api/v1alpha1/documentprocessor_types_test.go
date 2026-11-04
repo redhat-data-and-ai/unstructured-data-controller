@@ -20,6 +20,11 @@ import (
 	"testing"
 )
 
+// mutatedPrompt is the sentinel the aliasing test writes into a value it got
+// back from SetDefaults. Finding it in a package-level default means the
+// default was handed out by reference.
+const mutatedPrompt = "mutated"
+
 func TestDocumentProcessorConfig_SetDefaults_EmptyConfig(t *testing.T) {
 	c := DocumentProcessorConfig{}
 	c.SetDefaults()
@@ -136,5 +141,109 @@ func TestDoclingConfig_SetDefaults_DoesNotAliasGlobalSlice(t *testing.T) {
 
 	if defaultFromFormats[0] == "mutated" {
 		t.Error("SetDefaults aliased the global defaultFromFormats slice")
+	}
+}
+
+// The standard pipeline must not grow this config. Every live processor is on
+// the standard pipeline, and populating the field would change their stored
+// metadata, reconverting every corpus for a feature none of them use.
+func TestDoclingConfig_SetDefaults_StandardPipelineLeavesVLMConfigUnset(t *testing.T) {
+	for _, pipeline := range []string{"", PipelineStandard} {
+		t.Run("pipeline="+pipeline, func(t *testing.T) {
+			c := DoclingConfig{Pipeline: pipeline}
+			c.SetDefaults()
+
+			if c.VLMPipelineCustomConfig != nil {
+				t.Errorf("expected vlm_pipeline_custom_config to stay unset, got %+v", c.VLMPipelineCustomConfig)
+			}
+		})
+	}
+}
+
+// Selecting the vlm pipeline and nothing else has to produce a request the
+// model will answer. Prompt and response format in particular cannot be
+// guessed by a user, and a wrong one fails silently rather than loudly.
+func TestDoclingConfig_SetDefaults_VLMPipelineFillsTheModelsSettings(t *testing.T) {
+	c := DoclingConfig{Pipeline: PipelineVLM}
+	c.SetDefaults()
+
+	got := c.VLMPipelineCustomConfig
+	if got == nil {
+		t.Fatal("expected vlm_pipeline_custom_config to be populated, got nil")
+	}
+
+	want := vlmModelDefaults[DefaultVLMPipelineModel]
+	if got.Model != DefaultVLMPipelineModel {
+		t.Errorf("expected model %q, got %q", DefaultVLMPipelineModel, got.Model)
+	}
+	if got.Prompt != want.Prompt {
+		t.Errorf("expected prompt %q, got %q", want.Prompt, got.Prompt)
+	}
+	if got.ResponseFormat != want.ResponseFormat {
+		t.Errorf("expected response_format %q, got %q", want.ResponseFormat, got.ResponseFormat)
+	}
+	if got.Scale != want.Scale {
+		t.Errorf("expected scale %q, got %q", want.Scale, got.Scale)
+	}
+	if got.MaxSize != want.MaxSize {
+		t.Errorf("expected max_size %d, got %d", want.MaxSize, got.MaxSize)
+	}
+}
+
+func TestDoclingConfig_SetDefaults_VLMPipelinePreservesExplicitValues(t *testing.T) {
+	c := DoclingConfig{
+		Pipeline: PipelineVLM,
+		VLMPipelineCustomConfig: &VLMPipelineCustomConfig{
+			Model:          VLMModelNemotronParse,
+			Prompt:         "<prompt>",
+			ResponseFormat: "example_format",
+			Scale:          "1.0",
+			MaxSize:        2048,
+		},
+	}
+	c.SetDefaults()
+
+	got := c.VLMPipelineCustomConfig
+	if got.Prompt != "<prompt>" {
+		t.Errorf("expected prompt %q, got %q", "<prompt>", got.Prompt)
+	}
+	if got.ResponseFormat != "example_format" {
+		t.Errorf("expected response_format %q, got %q", "example_format", got.ResponseFormat)
+	}
+	if got.Scale != "1.0" {
+		t.Errorf("expected scale %q, got %q", "1.0", got.Scale)
+	}
+	if got.MaxSize != 2048 {
+		t.Errorf("expected max_size %d, got %d", 2048, got.MaxSize)
+	}
+}
+
+// A model we have no settings for is left alone rather than given another
+// model's prompt, which would be answered and would return nonsense.
+func TestDoclingConfig_SetDefaults_VLMPipelineUnknownModelFillsNothing(t *testing.T) {
+	c := DoclingConfig{
+		Pipeline:                PipelineVLM,
+		VLMPipelineCustomConfig: &VLMPipelineCustomConfig{Model: "example/unknown"},
+	}
+	c.SetDefaults()
+
+	got := c.VLMPipelineCustomConfig
+	if got.Model != "example/unknown" {
+		t.Errorf("expected model %q, got %q", "example/unknown", got.Model)
+	}
+	if got.Prompt != "" || got.ResponseFormat != "" || got.Scale != "" || got.MaxSize != 0 {
+		t.Errorf("expected an unknown model to be left alone, got %+v", got)
+	}
+}
+
+// The defaults are handed out by copy. A caller mutating what it got back must
+// not reach the package-level map through it.
+func TestVLMPipelineCustomConfig_SetDefaults_DoesNotAliasTheModelTable(t *testing.T) {
+	c := VLMPipelineCustomConfig{}
+	c.SetDefaults()
+	c.Prompt = mutatedPrompt
+
+	if vlmModelDefaults[DefaultVLMPipelineModel].Prompt == mutatedPrompt {
+		t.Error("SetDefaults aliased the package-level vlmModelDefaults entry")
 	}
 }

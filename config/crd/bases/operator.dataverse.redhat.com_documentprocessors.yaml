@@ -142,6 +142,51 @@ spec:
                         items:
                           type: string
                         type: array
+                      vlm_pipeline_custom_config:
+                        description: |-
+                          VLMPipelineCustomConfig describes the model to use when Pipeline is
+                          "vlm". It has no effect on any other pipeline.
+
+                          exists, docling picks its own model while this records the one we
+                          asked for, and the record is part of the key that decides whether a
+                          file is converted again. Selecting the vlm pipeline before the request
+                          is wired up therefore stores a conversion under the wrong fingerprint,
+                          and it will not be redone once the wiring lands.
+                        properties:
+                          max_size:
+                            description: |-
+                              MaxSize caps a rasterised page's longest edge in pixels. A page that
+                              would exceed it is scaled down to fit, so the effective scale drops
+                              below Scale silently. Large and landscape pages hit this first, and
+                              raising Scale alone changes nothing for them.
+                            type: integer
+                          model:
+                            description: |-
+                              Model is the model repository identifier, for example
+                              "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
+                              to be one the host serves.
+                            type: string
+                          prompt:
+                            description: |-
+                              Prompt selects which outputs the model produces. A wrong one returns a
+                              document that parses cleanly and is missing what was not asked for.
+                            type: string
+                          response_format:
+                            description: |-
+                              ResponseFormat names the decoder applied to the model's reply. No enum
+                              marker, because the set of decoders belongs to docling and grows between
+                              its releases, so pinning it here would reject values docling accepts. An
+                              unknown value is rejected by docling rather than ignored.
+                            type: string
+                          scale:
+                            description: |-
+                              Scale is what pages are rasterised at before the model sees them, where
+                              1.0 is 72 DPI. String for the same reason ImagesScale is.
+
+                              ImagesScale does not control this. That one scales images exported in
+                              the output.
+                            type: string
+                        type: object
                     type: object
                   type:
                     type: string
@@ -323,6 +368,51 @@ spec:
                           items:
                             type: string
                           type: array
+                        vlm_pipeline_custom_config:
+                          description: |-
+                            VLMPipelineCustomConfig describes the model to use when Pipeline is
+                            "vlm". It has no effect on any other pipeline.
+
+                            exists, docling picks its own model while this records the one we
+                            asked for, and the record is part of the key that decides whether a
+                            file is converted again. Selecting the vlm pipeline before the request
+                            is wired up therefore stores a conversion under the wrong fingerprint,
+                            and it will not be redone once the wiring lands.
+                          properties:
+                            max_size:
+                              description: |-
+                                MaxSize caps a rasterised page's longest edge in pixels. A page that
+                                would exceed it is scaled down to fit, so the effective scale drops
+                                below Scale silently. Large and landscape pages hit this first, and
+                                raising Scale alone changes nothing for them.
+                              type: integer
+                            model:
+                              description: |-
+                                Model is the model repository identifier, for example
+                                "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
+                                to be one the host serves.
+                              type: string
+                            prompt:
+                              description: |-
+                                Prompt selects which outputs the model produces. A wrong one returns a
+                                document that parses cleanly and is missing what was not asked for.
+                              type: string
+                            response_format:
+                              description: |-
+                                ResponseFormat names the decoder applied to the model's reply. No enum
+                                marker, because the set of decoders belongs to docling and grows between
+                                its releases, so pinning it here would reject values docling accepts. An
+                                unknown value is rejected by docling rather than ignored.
+                              type: string
+                            scale:
+                              description: |-
+                                Scale is what pages are rasterised at before the model sees them, where
+                                1.0 is 72 DPI. String for the same reason ImagesScale is.
+
+                                ImagesScale does not control this. That one scales images exported in
+                                the output.
+                              type: string
+                          type: object
                       type: object
                     documentConverter:
                       type: string

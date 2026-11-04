@@ -57,14 +57,43 @@ import (
 //	      status: "True"
 //	      message: successfully reconciled
 //	  jobs: []                               # tracks in-flight docling conversion jobs
+//
+// sample config for the vlm pipeline, which sends whole pages to a
+// vision-language model instead of running layout and OCR. The endpoint and
+// its credential are not here: they come from the ControllerConfig and the
+// controller's secret, so that moving the service does not reconvert anything.
+//
+//	config:
+//	  type: docling
+//	  doclingConfig:
+//	    from_formats: [pdf]
+//	    pipeline: vlm
+//	    vlm_pipeline_custom_config:
+//	      model: nvidia/Nemotron-3.5-Parse
+//	      prompt: "</s><s><predict_bbox><predict_classes><output_markdown><predict_text_in_pic>"
+//	      response_format: nemotron_parse_v3_5
+//	      scale: "2.78"                      # 200 DPI
+//	      max_size: 4096                     # or scale is capped silently
 
 const (
 	DocumentProcessorCondition   = "DocumentProcessorReady"
 	DefaultDocumentProcessorType = "docling"
 	DefaultOCRPreset             = "auto"
 	DefaultPDFBackend            = "docling_parse"
-	DefaultPipeline              = "standard"
-	DefaultTableMode             = "accurate"
+	DefaultPipeline              = PipelineStandard
+
+	// PipelineStandard runs layout detection and OCR. PipelineVLM replaces
+	// both by sending a picture of each page to a vision-language model.
+	PipelineStandard = "standard"
+	PipelineVLM      = "vlm"
+
+	// VLMModelNemotronParse is the only model this operator has settings for.
+	// Selecting any other one means supplying its prompt and response format
+	// as well, since neither can be guessed.
+	VLMModelNemotronParse   = "nvidia/Nemotron-3.5-Parse"
+	DefaultVLMPipelineModel = VLMModelNemotronParse
+
+	DefaultTableMode = "accurate"
 	// "placeholder" prevents raw base64 image data from leaking into markdown content
 	// that flows into chunking and embedding stages.
 	DefaultImageExportMode        = "placeholder"
@@ -91,6 +120,27 @@ const (
 )
 
 var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
+
+// vlmModelDefaults carries the settings that belong to a model rather than to
+// a pipeline, so that selecting a model is the only choice anyone has to make.
+//
+// Scale is the cheapest value that loses nothing. Nemotron Parse resizes every
+// page to a 2048 by 1664 canvas, and 2048 pixels tall on a letter page is 186
+// DPI, so 2.78 (200 DPI, since 200/72) clears it with nothing to spare. Higher
+// is scaled straight back down. MaxSize has to stay above the canvas or pages
+// are shrunk before the model sees them and the effective scale drops without
+// any error.
+//
+// Values are returned by copy. Add no slices or maps to this struct without
+// copying them too, or a caller mutating one reaches the shared default.
+var vlmModelDefaults = map[string]VLMPipelineCustomConfig{
+	VLMModelNemotronParse: {
+		Prompt:         "</s><s><predict_bbox><predict_classes><output_markdown><predict_text_in_pic>",
+		ResponseFormat: "nemotron_parse_v3_5",
+		Scale:          "2.78",
+		MaxSize:        4096,
+	},
+}
 
 func boolPtr(b bool) *bool { return &b }
 
@@ -255,6 +305,97 @@ type PictureDescriptionAPI struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// VLMPipelineCustomConfig describes the model the "vlm" pipeline sends each
+// page to. The standard pipeline ignores it.
+//
+// It holds only what changes the parse. This struct is copied into the
+// metadata that decides whether a file needs converting again, so a field here
+// is a field whose change reconverts the corpus. The endpoint, its credential,
+// its timeout and its concurrency are absent for that reason. Moving the
+// service to a new address must not reconvert anything.
+//
+// No credential field, as on PictureDescriptionAPI. The key is read from the
+// controller's secret and added to the outbound request only.
+//
+// There is no field pinning the model's version. Docling only honours one when
+// it downloads the weights itself, and a model reached over an API is served
+// by whoever hosts it, so nothing we send here can fix the version. The gap is
+// real: the host can update the model and every document converted before that
+// still looks current. Recording what answered belongs with the output rather
+// than here, where it would only look like a guarantee.
+type VLMPipelineCustomConfig struct {
+	// Model is the model repository identifier, for example
+	// "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
+	// to be one the host serves.
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// Prompt selects which outputs the model produces. A wrong one returns a
+	// document that parses cleanly and is missing what was not asked for.
+	// +optional
+	Prompt string `json:"prompt,omitempty"`
+
+	// ResponseFormat names the decoder applied to the model's reply. No enum
+	// marker, because the set of decoders belongs to docling and grows between
+	// its releases, so pinning it here would reject values docling accepts. An
+	// unknown value is rejected by docling rather than ignored.
+	// +optional
+	ResponseFormat string `json:"response_format,omitempty"`
+
+	// Scale is what pages are rasterised at before the model sees them, where
+	// 1.0 is 72 DPI. String for the same reason ImagesScale is.
+	//
+	// ImagesScale does not control this. That one scales images exported in
+	// the output.
+	// +optional
+	Scale string `json:"scale,omitempty"`
+
+	// MaxSize caps a rasterised page's longest edge in pixels. A page that
+	// would exceed it is scaled down to fit, so the effective scale drops
+	// below Scale silently. Large and landscape pages hit this first, and
+	// raising Scale alone changes nothing for them.
+	// +optional
+	MaxSize int `json:"max_size,omitempty"`
+}
+
+// SetDefaults fills in the settings that follow from the model.
+//
+// Prompt, response format, scale and max size are properties of the model
+// rather than choices, which is why they are derived from Model instead of
+// being left to whoever writes the CR. The prompt in particular is a row of
+// control tokens that the model answers to, and getting one wrong returns a
+// document that looks fine and is missing whatever was not asked for.
+//
+// They live in the spec rather than in the controller so that they reach the
+// stored metadata. A release that changes what we ask the model for then
+// reconverts, instead of leaving every existing document looking current.
+//
+// An unrecognised model is left alone rather than rejected, so a model we have
+// not catalogued can still be used by filling the fields in by hand.
+func (c *VLMPipelineCustomConfig) SetDefaults() {
+	if c.Model == "" {
+		c.Model = DefaultVLMPipelineModel
+	}
+
+	defaults, known := vlmModelDefaults[c.Model]
+	if !known {
+		return
+	}
+
+	if c.Prompt == "" {
+		c.Prompt = defaults.Prompt
+	}
+	if c.ResponseFormat == "" {
+		c.ResponseFormat = defaults.ResponseFormat
+	}
+	if c.Scale == "" {
+		c.Scale = defaults.Scale
+	}
+	if c.MaxSize == 0 {
+		c.MaxSize = defaults.MaxSize
+	}
+}
+
 type DoclingConfig struct {
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
@@ -269,8 +410,19 @@ type DoclingConfig struct {
 	OCRPreset  string `json:"ocr_preset,omitempty"`
 	PDFBackend string `json:"pdf_backend,omitempty"`
 	// +optional
-	Pipeline  string `json:"pipeline,omitempty"`
-	TableMode string `json:"table_mode,omitempty"`
+	Pipeline string `json:"pipeline,omitempty"`
+	// VLMPipelineCustomConfig describes the model to use when Pipeline is
+	// "vlm". It has no effect on any other pipeline.
+	//
+	// TODO: nothing builds a docling request from this yet. Until that
+	// exists, docling picks its own model while this records the one we
+	// asked for, and the record is part of the key that decides whether a
+	// file is converted again. Selecting the vlm pipeline before the request
+	// is wired up therefore stores a conversion under the wrong fingerprint,
+	// and it will not be redone once the wiring lands.
+	// +optional
+	VLMPipelineCustomConfig *VLMPipelineCustomConfig `json:"vlm_pipeline_custom_config,omitempty"`
+	TableMode               string                   `json:"table_mode,omitempty"`
 	// +optional
 	TableCellMatching *bool `json:"table_cell_matching,omitempty"`
 	// +optional
@@ -331,6 +483,15 @@ func (c *DoclingConfig) SetDefaults() {
 	}
 	if c.Pipeline == "" {
 		c.Pipeline = DefaultPipeline
+	}
+	// Only the vlm pipeline reads this, and defaulting it for everyone would
+	// change the stored metadata of every processor that will never use it,
+	// reconverting each of their corpora for nothing.
+	if c.Pipeline == PipelineVLM {
+		if c.VLMPipelineCustomConfig == nil {
+			c.VLMPipelineCustomConfig = &VLMPipelineCustomConfig{}
+		}
+		c.VLMPipelineCustomConfig.SetDefaults()
 	}
 	if c.TableMode == "" {
 		c.TableMode = DefaultTableMode

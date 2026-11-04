@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
 
 func TestConvertedFileValidate(t *testing.T) {
@@ -119,4 +121,109 @@ func TestConvertedFileValidateAcceptsRealFile(t *testing.T) {
 
 	assert.Equal(t, "a.pdf", cf.ConvertedDocument.Metadata.RawFilePath)
 	assert.Equal(t, "# heading", cf.ConvertedDocument.Content.Markdown)
+}
+
+// Every file already in storage predates this field, so its JSON has no key
+// for it and it decodes as nil. A pipeline not using the vlm pipeline also
+// leaves it nil. These must compare equal, or shipping the field reconverts
+// everything ever converted.
+func TestConvertedFileMetadataEqualIgnoresAbsentVLMConfig(t *testing.T) {
+	// No vlm_pipeline_custom_config key, as a pre-existing file would have.
+	stored := []byte(`{"rawFilePath":"a.pdf","fileIdentifier":"abc",
+		"documentConverter":"docling","doclingConfig":{"to_formats":["md"]}}`)
+
+	var old ConvertedFileMetadata
+	require.NoError(t, json.Unmarshal(stored, &old))
+	require.Nil(t, old.DoclingConfig.VLMPipelineCustomConfig)
+
+	current := ConvertedFileMetadata{
+		RawFilePath:       "a.pdf",
+		FileIdentifier:    "abc",
+		DocumentConverter: DocumentConverterDocling,
+		DoclingConfig:     v1alpha1.DoclingConfig{ToFormats: []string{"md"}},
+	}
+
+	assert.True(t, old.Equal(&current),
+		"a file stored before the field existed must not be reconverted by its addition")
+}
+
+// The other half. The field lives in this struct so that changing what the
+// model is asked to do reconverts. Held anywhere else, switching model or
+// prompt would leave every stored file looking current while new files came
+// from a different parse.
+func TestConvertedFileMetadataEqualDetectsVLMConfigChange(t *testing.T) {
+	base := func(mutate func(*v1alpha1.VLMPipelineCustomConfig)) ConvertedFileMetadata {
+		vlm := &v1alpha1.VLMPipelineCustomConfig{
+			Model:          "example/model",
+			Prompt:         "<prompt>",
+			ResponseFormat: "example_format",
+			Scale:          "2.78",
+			MaxSize:        4096,
+		}
+		if mutate != nil {
+			mutate(vlm)
+		}
+		return ConvertedFileMetadata{
+			RawFilePath:       "a.pdf",
+			FileIdentifier:    "abc",
+			DocumentConverter: DocumentConverterDocling,
+			DoclingConfig: v1alpha1.DoclingConfig{
+				Pipeline:                "vlm",
+				VLMPipelineCustomConfig: vlm,
+			},
+		}
+	}
+
+	tests := []struct {
+		name  string
+		right ConvertedFileMetadata
+		equal bool
+	}{
+		{
+			name:  "identical config",
+			right: base(nil),
+			equal: true,
+		},
+		{
+			name:  "different model",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.Model = "example/other" }),
+			equal: false,
+		},
+		{
+			name:  "different prompt",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.Prompt = "<other>" }),
+			equal: false,
+		},
+		{
+			name:  "different response format",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.ResponseFormat = "other_format" }),
+			equal: false,
+		},
+		{
+			name:  "different scale",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.Scale = "2.0" }),
+			equal: false,
+		},
+		{
+			name:  "different max size",
+			right: base(func(v *v1alpha1.VLMPipelineCustomConfig) { v.MaxSize = 2048 }),
+			equal: false,
+		},
+		{
+			name: "configured against not configured",
+			right: ConvertedFileMetadata{
+				RawFilePath:       "a.pdf",
+				FileIdentifier:    "abc",
+				DocumentConverter: DocumentConverterDocling,
+			},
+			equal: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			left := base(nil)
+			assert.Equal(t, tt.equal, left.Equal(&tt.right))
+		})
+	}
 }
