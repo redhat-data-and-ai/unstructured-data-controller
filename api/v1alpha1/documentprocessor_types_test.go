@@ -139,16 +139,9 @@ func TestDoclingConfig_SetDefaults_DoesNotAliasGlobalSlice(t *testing.T) {
 	}
 }
 
-// TestDoclingConfig_SetDefaults_LeavesVLMPipelineCustomConfigUnset pins the
-// absence of a default rather than the presence of one.
-//
-// This config is stored in the metadata that decides whether a file needs
-// converting again. Filling the field in here would change that metadata for
-// every pipeline, including every pipeline that does not use the vlm pipeline
-// at all, and each of them would then reconvert its whole corpus on the next
-// reconcile. So "unset stays unset" is the behaviour, and it is worth a test
-// because a later reader adding one more block to SetDefaults would see no
-// reason not to add this one too.
+// Pins the absence of a default. Defaulting this field would change the stored
+// metadata for every pipeline, including those that never use the vlm
+// pipeline, and each would reconvert its whole corpus on the next reconcile.
 func TestDoclingConfig_SetDefaults_LeavesVLMPipelineCustomConfigUnset(t *testing.T) {
 	c := DoclingConfig{}
 	c.SetDefaults()

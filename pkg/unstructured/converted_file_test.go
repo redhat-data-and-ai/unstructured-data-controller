@@ -123,17 +123,12 @@ func TestConvertedFileValidateAcceptsRealFile(t *testing.T) {
 	assert.Equal(t, "# heading", cf.ConvertedDocument.Content.Markdown)
 }
 
-// TestConvertedFileMetadataEqualIgnoresAbsentVLMConfig covers the case that
-// makes adding a field to DoclingConfig safe at all.
-//
-// Equal is what decides whether a stored file is converted again. Every file
-// already in storage was written before this field existed, so its JSON has no
-// key for it and it decodes as nil. A pipeline that does not use the vlm
-// pipeline also leaves it nil. Those two have to compare equal, or shipping
-// the field reconverts every document that has ever been converted.
+// Every file already in storage predates this field, so its JSON has no key
+// for it and it decodes as nil. A pipeline not using the vlm pipeline also
+// leaves it nil. These must compare equal, or shipping the field reconverts
+// everything ever converted.
 func TestConvertedFileMetadataEqualIgnoresAbsentVLMConfig(t *testing.T) {
-	// No vlm_pipeline_custom_config key at all, as a file stored before the
-	// field existed would have.
+	// No vlm_pipeline_custom_config key, as a pre-existing file would have.
 	stored := []byte(`{"rawFilePath":"a.pdf","fileIdentifier":"abc",
 		"documentConverter":"docling","doclingConfig":{"to_formats":["md"]}}`)
 
@@ -152,11 +147,9 @@ func TestConvertedFileMetadataEqualIgnoresAbsentVLMConfig(t *testing.T) {
 		"a file stored before the field existed must not be reconverted by its addition")
 }
 
-// TestConvertedFileMetadataEqualDetectsVLMConfigChange is the other half: the
-// field is in this struct precisely so that changing the model reconverts.
-// Were it held somewhere outside the metadata, a model or revision change
-// would leave every stored file looking current while new files came from a
-// different model.
+// The other half. The field lives in this struct so that changing the model
+// reconverts. Held anywhere else, a model change would leave every stored file
+// looking current while new files came from a different model.
 func TestConvertedFileMetadataEqualDetectsVLMConfigChange(t *testing.T) {
 	base := func(model, revision string) ConvertedFileMetadata {
 		return ConvertedFileMetadata{
