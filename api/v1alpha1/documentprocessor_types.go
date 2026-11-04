@@ -57,6 +57,24 @@ import (
 //	      status: "True"
 //	      message: successfully reconciled
 //	  jobs: []                               # tracks in-flight docling conversion jobs
+//
+// sample config for the vlm pipeline, which sends whole pages to a
+// vision-language model instead of running layout and OCR. The endpoint and
+// its credential are not here: they come from the ControllerConfig and the
+// controller's secret, so that moving the service does not reconvert anything.
+//
+//	config:
+//	  type: docling
+//	  doclingConfig:
+//	    from_formats: [pdf]
+//	    pipeline: vlm
+//	    vlm_pipeline_custom_config:
+//	      model: nvidia/Nemotron-3.5-Parse
+//	      revision: e7ea79242a87ea0ad3919b672bfedb429a683206
+//	      prompt: "</s><s><predict_bbox><predict_classes><output_markdown><predict_text_in_pic>"
+//	      response_format: nemotron_parse_v3_5
+//	      scale: "2.78"                      # 200 DPI
+//	      max_size: 4096                     # or scale is capped silently
 
 const (
 	DocumentProcessorCondition   = "DocumentProcessorReady"
