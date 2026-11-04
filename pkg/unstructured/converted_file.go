@@ -17,6 +17,7 @@ limitations under the License.
 package unstructured
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -40,7 +41,30 @@ const (
 )
 
 type Content struct {
+	// Markdown is what every current consumer reads. DoclingDocument is
+	// additive and optional.
 	Markdown string `json:"markdown"`
+
+	// DoclingDocument is the conversion service's own output, kept whole.
+	//
+	// It is carried through rather than decoded into types of ours and built
+	// again. A round trip through our own types would silently drop every
+	// field they do not name, and an element's address inside the document,
+	// for example "#/texts/59", indexes into its arrays, so losing or
+	// reordering anything moves them.
+	//
+	// Nothing is derived from it at this stage, deliberately. The one reader
+	// is the chunking stage, which posts it straight back to the conversion
+	// service to chunk without parsing the file a second time, and so holds
+	// the whole tree already. A flattened copy here would be duplicated text
+	// in an artifact that is itself copied into the chunk and embedding
+	// files.
+	//
+	// Writing it out runs it through the JSON encoder, which strips
+	// insignificant whitespace and escapes <, > and & inside strings. That
+	// leaves an equivalent document rather than the identical bytes, which
+	// matters to nobody: it is read back as JSON.
+	DoclingDocument json.RawMessage `json:"doclingDocument,omitempty"`
 }
 
 type ConvertedFileMetadata struct {

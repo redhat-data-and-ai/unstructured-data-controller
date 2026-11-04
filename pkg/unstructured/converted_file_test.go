@@ -227,3 +227,41 @@ func TestConvertedFileMetadataEqualDetectsVLMConfigChange(t *testing.T) {
 		})
 	}
 }
+
+// The DoclingDocument has to survive being written and read back, because
+// the chunking stage posts the stored copy to the conversion service and an
+// address like "#/texts/59" indexes into its arrays. Anything dropped or
+// reordered on the way through moves every address after it.
+func TestContentCarriesTheDoclingDocumentThrough(t *testing.T) {
+	// Deliberately includes a field no type of ours names, and the characters
+	// Go's encoder escapes.
+	doclingDocument := `{"schema_name":"DoclingDocument","version":"1.10.0",` +
+		`"texts":[{"self_ref":"#/texts/0","text":"a < b & c > d","unknown_field":[1,2,3]}],` +
+		`"pages":{"1":{"size":{"width":612,"height":792},"page_no":1}}}`
+
+	in := Content{Markdown: "# heading", DoclingDocument: json.RawMessage(doclingDocument)}
+
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+
+	var out Content
+	require.NoError(t, json.Unmarshal(raw, &out))
+
+	assert.Equal(t, "# heading", out.Markdown)
+	// Compared as values rather than as bytes. The encoder escapes <, > and &
+	// inside strings, so the bytes differ and the document does not.
+	var want, got any
+	require.NoError(t, json.Unmarshal([]byte(doclingDocument), &want))
+	require.NoError(t, json.Unmarshal(out.DoclingDocument, &got))
+	assert.Equal(t, want, got, "the DoclingDocument changed meaning on the way through")
+}
+
+// A conversion that asked for markdown only must not leave an empty key
+// behind, because every existing artifact has no key at all and the two have
+// to stay indistinguishable.
+func TestContentOmitsAnAbsentDoclingDocument(t *testing.T) {
+	raw, err := json.Marshal(Content{Markdown: "# heading"})
+	require.NoError(t, err)
+
+	assert.NotContains(t, string(raw), "doclingDocument")
+}
