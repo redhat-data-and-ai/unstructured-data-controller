@@ -137,6 +137,8 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		doclingCfg.PictureDescriptionAPI.Headers["Authorization"] = "Bearer " + vlmAPIKey
 	}
 
+	injectVLMEngine(doclingCfg, cfg.VLMPipelineCustomConfig)
+
 	fs, err := filestore.New(ctx, dataStorageDirectory, dataStorageBucket)
 	if err != nil {
 		if IsAWSClientNotInitializedError(err) {
@@ -611,6 +613,56 @@ func injectAndValidateVLMConfig(cr *operatorv1alpha1.DocumentProcessor) error {
 		}
 	}
 	return nil
+}
+
+// injectVLMEngine builds the engine half of a vlm pipeline request: the model
+// settings come from the spec, which has already been defaulted, and the
+// address and credential from the ControllerConfig and its Secret.
+//
+// That split is the point. Everything the spec supplies changes what the model
+// returns, and reaches ConvertedFileMetadata so that changing it reconverts.
+// Everything this function adds does not: moving the service to a new address
+// must leave existing documents alone, and a credential must never be
+// persisted into an artifact that reaches the destination bucket.
+//
+// It therefore mutates only the wire config, never the CR's own DoclingConfig.
+//
+// A no-op unless the pipeline is "vlm" and the operator has both an endpoint
+// and a credential, so a partly configured controller leaves docling on its
+// own default model rather than failing once per document.
+func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alpha1.VLMPipelineCustomConfig) {
+	if doclingCfg.Pipeline != operatorv1alpha1.PipelineVLM || modelCfg == nil {
+		return
+	}
+	// Loaded once: every field below then comes from the same revision, rather
+	// than risking a credential from one and an endpoint from another.
+	settings := vlmPipelineCfg.Load()
+	if !settings.configured() {
+		return
+	}
+
+	doclingCfg.VLMPipelineCustomConfig = &docling.VLMPipelineCustomConfig{
+		ModelSpec: docling.VLMModelSpec{
+			// Docling requires a name and only echoes it back, so the model id
+			// serves: a second, divergent label would only invite confusion
+			// about which one the endpoint actually answers to.
+			Name:           modelCfg.Model,
+			DefaultRepoID:  modelCfg.Model,
+			Prompt:         modelCfg.Prompt,
+			ResponseFormat: modelCfg.ResponseFormat,
+		},
+		EngineOptions: docling.VLMEngineOptions{
+			EngineType: docling.VLMEngineTypeAPI,
+			URL:        settings.apiURL,
+			Headers: map[string]string{
+				// The model gateway expects a Bearer token, unlike the docling
+				// gateway itself, which takes the raw key.
+				"Authorization": "Bearer " + settings.apiKey,
+			},
+		},
+		Scale:   parseFloat64Ptr(modelCfg.Scale),
+		MaxSize: modelCfg.MaxSize,
+	}
 }
 
 func convertPictureDescriptionAPI(api *operatorv1alpha1.PictureDescriptionAPI) *docling.PictureDescriptionAPI {

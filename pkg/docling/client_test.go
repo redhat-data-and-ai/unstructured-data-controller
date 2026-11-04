@@ -183,3 +183,116 @@ func TestGetConvertedFileJSONContent(t *testing.T) {
 		})
 	}
 }
+
+// The server silently discards options it does not recognise and returns 200,
+// so a wrong key here does not fail: it quietly runs the standard pipeline
+// while reporting success. These assertions pin the wire names against the
+// schema the server actually enforces, because nothing downstream will.
+func TestDoclingConfigVLMWireNames(t *testing.T) {
+	scale := 2.78
+	doclingConfig := DoclingConfig{
+		Pipeline: "vlm",
+		VLMPipelineCustomConfig: &VLMPipelineCustomConfig{
+			ModelSpec: VLMModelSpec{
+				Name:           "nvidia/Nemotron-3.5-Parse",
+				DefaultRepoID:  "nvidia/Nemotron-3.5-Parse",
+				Prompt:         "prompt",
+				ResponseFormat: "nemotron_parse_v3_5",
+			},
+			EngineOptions: VLMEngineOptions{
+				EngineType: VLMEngineTypeAPI,
+				URL:        "https://example.invalid/v1/chat/completions",
+				Headers:    map[string]string{"Authorization": "Bearer token"},
+			},
+			Scale:   &scale,
+			MaxSize: 4096,
+		},
+	}
+
+	payload, err := json.Marshal(doclingConfig)
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+
+	customConfig, ok := decoded["vlm_pipeline_custom_config"].(map[string]any)
+	require.True(t, ok, "the server knows this option as vlm_pipeline_custom_config; "+
+		"the older vlm_pipeline_model_api is deprecated and takes a flat shape")
+
+	modelSpec, ok := customConfig["model_spec"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "nvidia/Nemotron-3.5-Parse", modelSpec["default_repo_id"])
+	assert.Equal(t, "nvidia/Nemotron-3.5-Parse", modelSpec["name"])
+	assert.Equal(t, "prompt", modelSpec["prompt"])
+	assert.Equal(t, "nemotron_parse_v3_5", modelSpec["response_format"])
+
+	engineOptions, ok := customConfig["engine_options"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "api", engineOptions["engine_type"],
+		"docling resolves engine_options by this discriminator; without it no engine matches")
+	assert.Equal(t, "https://example.invalid/v1/chat/completions", engineOptions["url"])
+
+	headers, ok := engineOptions["headers"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Bearer token", headers["Authorization"])
+
+	// Rasterisation sits beside model_spec, not inside it or inside the engine
+	// options, which is where the deprecated option used to carry it.
+	assert.Equal(t, 2.78, customConfig["scale"])
+	assert.Equal(t, float64(4096), customConfig["max_size"])
+
+	// Docling only derives the request's model parameter from default_repo_id
+	// while engine_options carries no params of its own, so sending an empty
+	// params object would be enough to drop the model name.
+	assert.NotContains(t, engineOptions, "params")
+}
+
+// An unset scale must be absent rather than zero, or pages are rasterised at
+// nothing instead of at the server's default.
+func TestVLMPipelineCustomConfigOmitsUnsetScale(t *testing.T) {
+	payload, err := json.Marshal(&VLMPipelineCustomConfig{})
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+
+	assert.NotContains(t, decoded, "scale")
+	assert.NotContains(t, decoded, "max_size")
+}
+
+// Every field docling requires must be emitted even when empty rather than
+// silently omitted into a validation error that names no field.
+func TestVLMPipelineCustomConfigAlwaysEmitsRequiredFields(t *testing.T) {
+	payload, err := json.Marshal(&VLMPipelineCustomConfig{})
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(payload, &decoded))
+
+	require.Contains(t, decoded, "model_spec")
+	modelSpec, ok := decoded["model_spec"].(map[string]any)
+	require.True(t, ok)
+	for _, field := range []string{"name", "default_repo_id", "prompt", "response_format"} {
+		assert.Contains(t, modelSpec, field)
+	}
+
+	require.Contains(t, decoded, "engine_options")
+	engineOptions, ok := decoded["engine_options"].(map[string]any)
+	require.True(t, ok)
+	for _, field := range []string{"engine_type", "url"} {
+		assert.Contains(t, engineOptions, field)
+	}
+}
+
+// The option must disappear entirely when unset, so ordinary conversions are
+// byte-identical to what the server received before this field existed.
+func TestDoclingConfigOmitsVLMEngineWhenUnset(t *testing.T) {
+	payload, err := json.Marshal(DoclingConfig{})
+	require.NoError(t, err)
+
+	assert.NotContains(t, string(payload), "vlm_pipeline_custom_config")
+	// The deprecated name must not reappear either: docling drops unknown
+	// options silently, so sending it would run the standard pipeline and
+	// still report success.
+	assert.NotContains(t, string(payload), "vlm_pipeline_model_api")
+}

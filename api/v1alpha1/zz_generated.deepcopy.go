@@ -241,6 +241,11 @@ func (in *ControllerConfigSpec) DeepCopyInto(out *ControllerConfigSpec) {
 		*out = new(int)
 		**out = **in
 	}
+	if in.VLMPipelineAPIURL != nil {
+		in, out := &in.VLMPipelineAPIURL, &out.VLMPipelineAPIURL
+		*out = new(string)
+		**out = **in
+	}
 	if in.GoogleDriveConfig != nil {
 		in, out := &in.GoogleDriveConfig, &out.GoogleDriveConfig
 		*out = new(GoogleDriveControllerConfig)
