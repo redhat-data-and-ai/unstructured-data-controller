@@ -52,13 +52,13 @@ func TestDoclingConfig_SetDefaults_EmptyConfig(t *testing.T) {
 	// defaultToFormats. SetDefaults copies straight from those two, so
 	// comparing against them checks the function against its own input and
 	// passes whatever they happen to hold.
-	wantFromFormats := []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
-	if !slices.Equal(c.FromFormats, wantFromFormats) {
-		t.Errorf("expected from_formats %v, got %v", wantFromFormats, c.FromFormats)
+	inputFormats := []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
+	if !slices.Equal(c.FromFormats, inputFormats) {
+		t.Errorf("expected from_formats %v, got %v", inputFormats, c.FromFormats)
 	}
-	wantToFormats := []string{"md", "json"}
-	if !slices.Equal(c.ToFormats, wantToFormats) {
-		t.Errorf("expected to_formats %v, got %v", wantToFormats, c.ToFormats)
+	outputFormats := []string{"md", "json"}
+	if !slices.Equal(c.ToFormats, outputFormats) {
+		t.Errorf("expected to_formats %v, got %v", outputFormats, c.ToFormats)
 	}
 	if c.ImageExportMode != DefaultImageExportMode {
 		t.Errorf("expected image_export_mode %q, got %q", DefaultImageExportMode, c.ImageExportMode)
