@@ -50,6 +50,12 @@ spec:
             description: ChunksGeneratorSpec defines the desired state of ChunksGenerator
             properties:
               config:
+                description: |-
+                  The rule uses size() rather than comparing against an empty string literal.
+                  Two adjacent apostrophes are what text editors and chat tools turn into a
+                  typographic quote, and a marker is a comment, so Go, vet and the linters
+                  all accept the result. It surfaces only when the API server compiles the
+                  rule at CRD install. See TestKubebuilderMarkersAreASCII.
                 properties:
                   hybridChunkerConfig:
                     description: |-
@@ -170,8 +176,8 @@ spec:
                 - message: hybridChunkerConfig.tokenizer is required when strategy
                     is doclingHybridChunker
                   rule: self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig)
-                    && has(self.hybridChunkerConfig.tokenizer) && self.hybridChunkerConfig.tokenizer
-                    != ”)
+                    && has(self.hybridChunkerConfig.tokenizer) && size(self.hybridChunkerConfig.tokenizer)
+                    > 0)
               dataProduct:
                 description: 'Deprecated: use StageName and DependsOn instead.'
                 type: string
@@ -268,6 +274,12 @@ spec:
                     attempts:
                       type: integer
                     chunksGeneratorConfig:
+                      description: |-
+                        The rule uses size() rather than comparing against an empty string literal.
+                        Two adjacent apostrophes are what text editors and chat tools turn into a
+                        typographic quote, and a marker is a comment, so Go, vet and the linters
+                        all accept the result. It surfaces only when the API server compiles the
+                        rule at CRD install. See TestKubebuilderMarkersAreASCII.
                       properties:
                         hybridChunkerConfig:
                           description: |-
@@ -388,8 +400,8 @@ spec:
                       - message: hybridChunkerConfig.tokenizer is required when strategy
                           is doclingHybridChunker
                         rule: self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig)
-                          && has(self.hybridChunkerConfig.tokenizer) && self.hybridChunkerConfig.tokenizer
-                          != ”)
+                          && has(self.hybridChunkerConfig.tokenizer) && size(self.hybridChunkerConfig.tokenizer)
+                          > 0)
                     createdOn:
                       type: string
                     fileIdentifier:

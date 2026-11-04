@@ -170,7 +170,12 @@ func (c *ChunksGenerator) UpdateStatus(message string, err error) {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
-// +kubebuilder:validation:XValidation:rule="self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig) && has(self.hybridChunkerConfig.tokenizer) && self.hybridChunkerConfig.tokenizer != ”)",message="hybridChunkerConfig.tokenizer is required when strategy is doclingHybridChunker"
+// The rule uses size() rather than comparing against an empty string literal.
+// Two adjacent apostrophes are what text editors and chat tools turn into a
+// typographic quote, and a marker is a comment, so Go, vet and the linters
+// all accept the result. It surfaces only when the API server compiles the
+// rule at CRD install. See TestKubebuilderMarkersAreASCII.
+// +kubebuilder:validation:XValidation:rule="self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig) && has(self.hybridChunkerConfig.tokenizer) && size(self.hybridChunkerConfig.tokenizer) > 0)",message="hybridChunkerConfig.tokenizer is required when strategy is doclingHybridChunker"
 type ChunksGeneratorConfig struct {
 	// Strategy selects the chunker.
 	//
