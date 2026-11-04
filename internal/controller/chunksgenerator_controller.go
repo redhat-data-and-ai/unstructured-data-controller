@@ -17,7 +17,6 @@ limitations under the License.
 package controller
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -247,15 +246,16 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 
 	// A file whose chunking task is already running needs nothing here. Its
 	// artifact does not exist until the task finishes, so the checks below
-	// would submit it again on every requeue, each submit taking another slot
-	// against docling and orphaning the task id it overwrites.
+	// would start it again on every requeue, each start taking another slot
+	// against the service and orphaning the task id it overwrites.
 	//
 	// A job with no task id is a failed attempt waiting to be retried, and
-	// falls through so the submit below picks it up and carries its attempt
-	// count. The in process splitters finish within one reconcile and never
-	// record a job at all.
+	// falls through so the chunker below starts it again and carries its
+	// attempt count. A chunker that finishes within the call never records a
+	// job at all, so this only ever fires on the remote path.
 	if job := chunksGeneratorCR.GetJobByFilePath(convertedFilePath); job != nil && job.TaskID != "" {
-		logger.Info("chunking task already running for file, nothing to submit", "file", convertedFilePath, "taskID", job.TaskID)
+		logger.Info("chunking task already running for file, nothing to start",
+			"file", convertedFilePath, "taskID", job.TaskID)
 		return false, nil
 	}
 
@@ -270,33 +270,156 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 		return false, nil
 	}
 
-	// Docling's chunker runs remotely and is submitted rather than called, so
-	// this reconcile records a task and a later one collects its result.
-	// There is no chunks file to write yet, and the file does not count as
-	// processed until there is.
-	if chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy == operatorv1alpha1.ChunkingStrategyDoclingHybrid {
-		return false, r.submitChunkJob(ctx, convertedFilePath, chunksGeneratorCR)
+	convertedFile, err := r.retrieveConvertedFile(ctx, convertedFilePath)
+	if err != nil {
+		return false, err
 	}
 
-	// chunk the file
-	chunksFile, err := r.chunkFile(ctx, convertedFilePath, chunksGeneratorCR)
+	config := chunksGeneratorCR.Spec.ChunksGeneratorConfig
+	chunker, err := chunkerFor(config)
+	if err != nil {
+		return false, err
+	}
+
+	result, err := chunker.Chunk(ctx, convertedFile.ConvertedDocument)
 	if err != nil {
 		logger.Error(err, "failed to chunk file")
 		return false, err
 	}
 
-	// store the chunks in the filestore
-	chunksFileBytes, err := json.Marshal(chunksFile)
-	if err != nil {
-		logger.Error(err, "failed to marshal chunks file")
-		return false, err
+	// The chunker started work instead of finishing it, which a chunker that
+	// calls out over the network has to. There is nothing to write yet, so
+	// the task is recorded and a later reconcile collects it. The file does
+	// not count as processed until it has been.
+	if result.Pending() {
+		return false, r.recordChunkJob(ctx, chunksGeneratorCR, convertedFile, convertedFilePath, config, result.TaskID)
 	}
-	if err := r.fileStore.Store(ctx, chunksFilePath, chunksFileBytes); err != nil {
-		logger.Error(err, "failed to store chunks file")
+
+	if err := r.storeChunks(ctx, convertedFile, config, result.Chunks, chunksFilePath); err != nil {
 		return false, err
 	}
 
 	return true, nil
+}
+
+// chunkerFor returns the chunker a generator's configuration selects.
+//
+// This is the only place the strategy is turned into behaviour. Everything
+// downstream asks the chunker what happened rather than asking the config
+// what it is, which is what keeps a chunker that answers immediately and one
+// that answers later on the same path.
+func chunkerFor(config operatorv1alpha1.ChunksGeneratorConfig) (unstructured.Chunker, error) {
+	switch config.Strategy {
+	case operatorv1alpha1.ChunkingStrategyRecursiveCharacter:
+		return &unstructured.RecursiveCharacterSplitter{
+			LangchainClient: langchainClient,
+			Config: &textsplitter.Options{
+				Separators:    config.RecursiveCharacterSplitterConfig.Separators,
+				ChunkSize:     config.RecursiveCharacterSplitterConfig.ChunkSize,
+				ChunkOverlap:  config.RecursiveCharacterSplitterConfig.ChunkOverlap,
+				KeepSeparator: config.RecursiveCharacterSplitterConfig.KeepSeparator,
+			},
+		}, nil
+
+	case operatorv1alpha1.ChunkingStrategyMarkdown:
+		return &unstructured.MarkdownSplitter{
+			LangchainClient: langchainClient,
+			Config: &textsplitter.Options{
+				ChunkSize:            config.MarkdownSplitterConfig.ChunkSize,
+				ChunkOverlap:         config.MarkdownSplitterConfig.ChunkOverlap,
+				CodeBlocks:           config.MarkdownSplitterConfig.CodeBlocks,
+				ReferenceLinks:       config.MarkdownSplitterConfig.ReferenceLinks,
+				KeepHeadingHierarchy: config.MarkdownSplitterConfig.HeadingHierarchy,
+				JoinTableRows:        config.MarkdownSplitterConfig.JoinTableRows,
+			},
+		}, nil
+
+	case operatorv1alpha1.ChunkingStrategyToken:
+		return &unstructured.TokenSplitter{
+			LangchainClient: langchainClient,
+			Config: &textsplitter.Options{
+				ChunkSize:         config.TokenSplitterConfig.ChunkSize,
+				ChunkOverlap:      config.TokenSplitterConfig.ChunkOverlap,
+				ModelName:         config.TokenSplitterConfig.ModelName,
+				EncodingName:      config.TokenSplitterConfig.EncodingName,
+				AllowedSpecial:    config.TokenSplitterConfig.AllowedSpecial,
+				DisallowedSpecial: config.TokenSplitterConfig.DisallowedSpecial,
+			},
+		}, nil
+
+	case operatorv1alpha1.ChunkingStrategyDoclingHybrid:
+		return &unstructured.DoclingChunker{
+			Client:  doclingClient,
+			Options: chunkingOptionsFrom(config.HybridChunkerConfig),
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("invalid strategy: %s", config.Strategy)
+	}
+}
+
+// retrieveConvertedFile reads a converted file and checks it is one.
+func (r *ChunksGeneratorReconciler) retrieveConvertedFile(
+	ctx context.Context, convertedFilePath string,
+) (*unstructured.ConvertedFile, error) {
+	raw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	convertedFile := &unstructured.ConvertedFile{}
+	if err := json.Unmarshal(raw, convertedFile); err != nil {
+		return nil, err
+	}
+	if err := convertedFile.Validate(); err != nil {
+		return nil, err
+	}
+
+	return convertedFile, nil
+}
+
+// storeChunks writes the chunks artifact for a document.
+//
+// The configuration is passed in rather than read from the resource. A task
+// can outlive a change to the spec, and the artifact has to describe the
+// chunking that actually ran, or the next reconcile compares it against a
+// configuration it was not produced under.
+func (r *ChunksGeneratorReconciler) storeChunks(
+	ctx context.Context, convertedFile *unstructured.ConvertedFile,
+	config operatorv1alpha1.ChunksGeneratorConfig, chunks []unstructured.Chunk, chunksFilePath string,
+) error {
+	// A parser that returns a document and no usable text chunks to nothing
+	// while every stage reports success, so the only place this can be caught
+	// is here, before the empty artifact is written. Observed against a
+	// vision-language parser on whole slide decks, which is why it is a hard
+	// failure rather than a warning: a deck missing from retrieval looks
+	// exactly like a deck nobody asked about.
+	//
+	// Unlike every other chunking failure, this one recurs identically on
+	// each reconcile: the input and the config are unchanged.
+	content := convertedFile.ConvertedDocument.Content.Markdown
+	if err := unstructured.ValidateChunks(content, chunks); err != nil {
+		return fmt.Errorf("chunking %s: %w", chunksFilePath, err)
+	}
+
+	chunksFile := unstructured.ChunksFile{
+		ConvertedDocument: convertedFile.ConvertedDocument,
+		ChunksDocument: &unstructured.ChunksDocument{
+			Metadata: &unstructured.ChunksFileMetadata{
+				ChunkingTool:          unstructured.ChunkingToolForStrategy(config.Strategy),
+				ChunksGeneratorConfig: config,
+				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
+			},
+			Chunks: unstructured.NewChunks(chunks),
+		},
+	}
+
+	chunksFileBytes, err := json.Marshal(chunksFile)
+	if err != nil {
+		return err
+	}
+
+	return r.fileStore.Store(ctx, chunksFilePath, chunksFileBytes)
 }
 
 // chunkingOptionsFrom maps the generator's hybrid chunker settings onto the
@@ -318,50 +441,18 @@ func chunkingOptionsFrom(config operatorv1alpha1.HybridChunkerConfig) docling.Ch
 	}
 }
 
-// submitChunkJob hands a stored document to docling's chunker and records the
-// task docling accepted.
+// recordChunkJob saves a task the chunker started, so a later reconcile can
+// collect it.
 //
-// It writes no chunks file. The chunker is asynchronous, so the result is
-// collected by a later reconcile, and the job recorded on status is what
-// survives a controller restart in between.
-func (r *ChunksGeneratorReconciler) submitChunkJob(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) error {
-	logger := log.FromContext(ctx)
-	logger.Info("submitting file for chunking", "file", convertedFilePath)
-
-	convertedFileRaw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
-	if err != nil {
-		return err
-	}
-
-	convertedFile := unstructured.ConvertedFile{}
-	if err := json.Unmarshal(convertedFileRaw, &convertedFile); err != nil {
-		return err
-	}
-	if err := convertedFile.Validate(); err != nil {
-		return err
-	}
-
-	// The stored document is sent, never the original file. Converting the
-	// same file twice does not produce the same document, and a chunk names
-	// the elements it was built from by their address within one document, so
-	// addresses from one conversion resolve against another to the wrong
-	// elements. It is also the difference between seconds and milliseconds,
-	// since nothing is parsed again.
-	doclingDocument := convertedFile.ConvertedDocument.Content.DoclingDocument
-	if len(doclingDocument) == 0 {
-		// Expected for anything converted before structured output was asked
-		// for. Retrying cannot help while the converted file stays as it is,
-		// so this names what is missing rather than reporting a chunking
-		// failure.
-		return fmt.Errorf("cannot chunk %s with docling: it holds no structured document, only markdown", convertedFilePath)
-	}
-
-	config := chunksGeneratorCR.Spec.ChunksGeneratorConfig
-	response, err := doclingClient.ChunkDoclingDocument(ctx, convertedFilePath, doclingDocument, chunkingOptionsFrom(config.HybridChunkerConfig))
-	if err != nil {
-		return err
-	}
-	logger.Info("docling accepted the chunking task", "taskID", response.TaskID, "file", convertedFilePath)
+// The configuration travels with the job rather than being read again when
+// the result arrives. The spec can change while the task runs, and the
+// artifact written then has to describe the chunking that actually ran.
+func (r *ChunksGeneratorReconciler) recordChunkJob(
+	ctx context.Context, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator,
+	convertedFile *unstructured.ConvertedFile, convertedFilePath string,
+	config operatorv1alpha1.ChunksGeneratorConfig, taskID string,
+) error {
+	log.FromContext(ctx).Info("chunking task accepted", "taskID", taskID, "file", convertedFilePath)
 
 	// A job left behind by a failed attempt carries the count forward. The
 	// count is the only record of how many times this file has been tried,
@@ -371,77 +462,84 @@ func (r *ChunksGeneratorReconciler) submitChunkJob(ctx context.Context, converte
 		attempt = previous.Attempts + 1
 	}
 
-	// The config travels with the job rather than being read again when the
-	// result arrives. The spec can change while the task runs, and the
-	// metadata written then has to describe the chunking that actually ran,
-	// or the next reconcile compares against a config this artifact was not
-	// produced under.
 	return controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
 		chunksGeneratorCR.AddOrUpdateJob(operatorv1alpha1.ChunkJob{
 			FilePath:              convertedFilePath,
 			FileIdentifier:        convertedFile.ConvertedDocument.Metadata.FileIdentifier,
 			ChunksGeneratorConfig: config,
-			TaskID:                response.TaskID,
-			Status:                response.TaskStatus,
+			TaskID:                taskID,
+			Status:                string(docling.TaskStatusPending),
 			CreatedOn:             time.Now().Format(time.RFC3339),
 			Attempts:              attempt,
 		})
 	})
 }
 
-// reconcileChunkJob asks docling where a submitted chunking task has got to,
-// and acts on the answer.
+// reconcileChunkJob collects a chunking task that a previous reconcile
+// started, and acts on what comes back.
 //
 // A task still running is left alone. One that has finished has its chunks
 // written and its job forgotten. One that ended badly is retried until the
 // attempt limit, after which the file is recorded as permanently failing.
 //
 // A job is never left on status carrying the id of a task that has ended.
-// Polling an ended task releases its semaphore slot a second time, and a
-// weighted semaphore keeps no record of who holds what, so the second release
-// takes a slot from a task that is still running rather than failing.
+// Collecting an ended task releases its semaphore slot a second time, and a
+// weighted semaphore keeps no record of who holds what, so the second
+// release takes a slot from a task that is still running rather than
+// failing.
 func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job operatorv1alpha1.ChunkJob,
 	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string) error {
 	logger := log.FromContext(ctx)
 
-	taskStatus, chunkResponse, err := doclingClient.GetChunks(ctx, job.TaskID)
+	chunker, err := chunkerFor(job.ChunksGeneratorConfig)
+	if err != nil {
+		return err
+	}
+
+	// Only a chunker whose work outlives the call can have produced a task,
+	// so a job for one that cannot is a bug rather than a condition to
+	// handle. Reporting it beats stubbing a Collect onto chunkers that
+	// finish before they return.
+	collector, ok := chunker.(unstructured.AsyncChunker)
+	if !ok {
+		return fmt.Errorf("a chunking task is recorded for %s under strategy %s, which does not defer work",
+			job.FilePath, job.ChunksGeneratorConfig.Strategy)
+	}
+
+	// Read before collecting, because the chunker resolves each chunk's
+	// elements against the document and the reconcile that submitted the
+	// task is long gone. The cost is one read per in flight task per pass,
+	// and the number in flight is capped by the client's own concurrency
+	// limit rather than by the size of the corpus.
+	convertedFile, err := r.retrieveConvertedFile(ctx, job.FilePath)
+	if err != nil {
+		return err
+	}
+
+	result, err := collector.Collect(ctx, job.TaskID, convertedFile.ConvertedDocument)
 	switch {
 	case err != nil && !errors.Is(err, docling.ErrChunkTaskEnded):
-		// The task is alive and still holds its slot, so the next pass polls
-		// the same id rather than starting again.
-		return fmt.Errorf("polling the chunking task for %s: %w", job.FilePath, err)
-
-	case errors.Is(err, docling.ErrNoChunksReturned):
-		// Deliberately not failed here. This is both how the chunker reports
-		// being unable to load its tokenizer and what a document with no
-		// content legitimately produces, and only the document can tell them
-		// apart, so the write below decides.
-		logger.Info("chunking task returned no chunks", "file", job.FilePath, "taskID", job.TaskID)
+		// The task is alive and still holds its slot, so the next pass
+		// collects the same id rather than starting again.
+		return fmt.Errorf("collecting the chunking task for %s: %w", job.FilePath, err)
 
 	case err != nil:
 		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
 
-	case taskStatus == docling.TaskStatusPending || taskStatus == docling.TaskStatusStarted:
-		logger.Info("chunking task is still running", "file", job.FilePath, "taskID", job.TaskID, "status", taskStatus)
+	case result.Pending():
+		logger.Info("chunking task is still running", "file", job.FilePath, "taskID", job.TaskID)
 		return nil
-
-	default:
-		// The task finished and returned chunks. Written below.
-	}
-
-	chunks := []docling.Chunk{}
-	if chunkResponse != nil {
-		chunks = chunkResponse.Chunks
 	}
 
 	// Any failure from here on goes through failChunkJob rather than being
 	// returned, even one as transient as a failed upload. The task has ended
 	// and given its slot back, so leaving the job with its id would have the
-	// next pass poll it again. Retrying means chunking the file afresh.
-	if err := r.writeChunksFile(ctx, job, chunks, inputPath, outputPath); err != nil {
+	// next pass collect it again. Retrying means chunking the file afresh.
+	chunksFilePath := unstructured.RemapToOutputDir(job.FilePath, inputPath, outputPath)
+	if err := r.storeChunks(ctx, convertedFile, job.ChunksGeneratorConfig, result.Chunks, chunksFilePath); err != nil {
 		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
 	}
-	logger.Info("stored chunks for file", "file", job.FilePath, "taskID", job.TaskID, "chunks", len(chunks))
+	logger.Info("stored chunks for file", "file", job.FilePath, "taskID", job.TaskID, "chunks", len(result.Chunks))
 
 	// Counted here, in the same patch that forgets the job, because the
 	// reconcile that submitted this task finished long ago.
@@ -454,8 +552,9 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 // failChunkJob gives a file another attempt, or gives up on it.
 //
 // Under the limit it keeps the job and clears the task id, which is what the
-// submit path reads as "retry this and carry the count". The count lives
-// nowhere else, so dropping the job here would restart it and retry forever.
+// submit path reads as "start this again and carry the count". The count
+// lives nowhere else, so dropping the job here would restart it and retry
+// forever.
 func (r *ChunksGeneratorReconciler) failChunkJob(ctx context.Context, job operatorv1alpha1.ChunkJob,
 	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, cause error) error {
 	logger := log.FromContext(ctx)
@@ -483,72 +582,6 @@ func (r *ChunksGeneratorReconciler) failChunkJob(ctx context.Context, job operat
 
 	return fmt.Errorf("chunking %s failed on attempt %d of %d: %w",
 		job.FilePath, job.Attempts, maxDoclingChunkingAttempts, cause)
-}
-
-// writeChunksFile stores what docling's chunker produced for one job.
-//
-// The metadata comes from the job rather than from the spec. A task can
-// outlive a change to the resource, and the artifact has to describe the
-// chunking that actually ran or the next reconcile compares it against a
-// configuration it was not produced under.
-func (r *ChunksGeneratorReconciler) writeChunksFile(ctx context.Context, job operatorv1alpha1.ChunkJob,
-	chunks []docling.Chunk, inputPath, outputPath string) error {
-	convertedFileRaw, err := r.fileStore.Retrieve(ctx, job.FilePath)
-	if err != nil {
-		return err
-	}
-
-	convertedFile := unstructured.ConvertedFile{}
-	if err := json.Unmarshal(convertedFileRaw, &convertedFile); err != nil {
-		return err
-	}
-	if err := convertedFile.Validate(); err != nil {
-		return err
-	}
-
-	// Docling numbers its chunks and this artifact is read by position, so
-	// the two have to agree. Sorting costs nothing and the alternative is a
-	// file whose text and provenance belong to different chunks, which
-	// nothing downstream can detect.
-	ordered := slices.Clone(chunks)
-	slices.SortFunc(ordered, func(a, b docling.Chunk) int {
-		return cmp.Compare(a.ChunkIndex, b.ChunkIndex)
-	})
-
-	// The contextualised text, with the heading trail, rather than the body
-	// alone. It is what gets embedded, so a passage stays findable under the
-	// section it came from.
-	texts := make([]string, 0, len(ordered))
-	for _, chunk := range ordered {
-		texts = append(texts, chunk.Text)
-	}
-
-	// The same guard the in process path uses, and the reason no chunks is
-	// not failed before reaching here. A document that genuinely held nothing
-	// is allowed to produce nothing; one that held content and produced
-	// nothing is the silent tokenizer failure.
-	if err := unstructured.ValidateChunks(convertedFile.ConvertedDocument.Content.Markdown, texts); err != nil {
-		return fmt.Errorf("chunking %s: %w", job.FilePath, err)
-	}
-
-	chunksFile := unstructured.ChunksFile{
-		ConvertedDocument: convertedFile.ConvertedDocument,
-		ChunksDocument: &unstructured.ChunksDocument{
-			Metadata: &unstructured.ChunksFileMetadata{
-				ChunkingTool:          unstructured.ChunkingToolForStrategy(job.ChunksGeneratorConfig.Strategy),
-				ChunksGeneratorConfig: job.ChunksGeneratorConfig,
-				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
-			},
-			Chunks: &unstructured.Chunks{Text: texts},
-		},
-	}
-
-	chunksFileBytes, err := json.Marshal(chunksFile)
-	if err != nil {
-		return err
-	}
-
-	return r.fileStore.Store(ctx, unstructured.RemapToOutputDir(job.FilePath, inputPath, outputPath), chunksFileBytes)
 }
 
 func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string) (bool, error) {
@@ -611,100 +644,6 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	}
 
 	return false, nil
-}
-
-func (r *ChunksGeneratorReconciler) chunkFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator) (*unstructured.ChunksFile, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("chunking file", "file", convertedFilePath)
-
-	// read the converted file from the filestore
-	convertedFileRaw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
-	if err != nil {
-		return nil, err
-	}
-
-	convertedFile := unstructured.ConvertedFile{}
-	err = json.Unmarshal(convertedFileRaw, &convertedFile)
-	if err != nil {
-		return nil, err
-	}
-	if err := convertedFile.Validate(); err != nil {
-		return nil, err
-	}
-
-	var chunker unstructured.Chunker
-	switch chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy {
-	case operatorv1alpha1.ChunkingStrategyRecursiveCharacter:
-		chunker = &unstructured.RecursiveCharacterSplitter{
-			LangchainClient: langchainClient,
-			Config: &textsplitter.Options{
-				Separators:    chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.Separators,
-				ChunkSize:     chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.ChunkSize,
-				ChunkOverlap:  chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.ChunkOverlap,
-				KeepSeparator: chunksGeneratorCR.Spec.ChunksGeneratorConfig.RecursiveCharacterSplitterConfig.KeepSeparator,
-			},
-		}
-	case operatorv1alpha1.ChunkingStrategyMarkdown:
-		chunker = &unstructured.MarkdownSplitter{
-			LangchainClient: langchainClient,
-			Config: &textsplitter.Options{
-				ChunkSize:            chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.ChunkSize,
-				ChunkOverlap:         chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.ChunkOverlap,
-				CodeBlocks:           chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.CodeBlocks,
-				ReferenceLinks:       chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.ReferenceLinks,
-				KeepHeadingHierarchy: chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.HeadingHierarchy,
-				JoinTableRows:        chunksGeneratorCR.Spec.ChunksGeneratorConfig.MarkdownSplitterConfig.JoinTableRows,
-			},
-		}
-	case operatorv1alpha1.ChunkingStrategyToken:
-		chunker = &unstructured.TokenSplitter{
-			LangchainClient: langchainClient,
-			Config: &textsplitter.Options{
-				ChunkSize:         chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.ChunkSize,
-				ChunkOverlap:      chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.ChunkOverlap,
-				ModelName:         chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.ModelName,
-				EncodingName:      chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.EncodingName,
-				AllowedSpecial:    chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.AllowedSpecial,
-				DisallowedSpecial: chunksGeneratorCR.Spec.ChunksGeneratorConfig.TokenSplitterConfig.DisallowedSpecial,
-			},
-		}
-	default:
-		return nil, fmt.Errorf("invalid strategy: %s", chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy)
-	}
-
-	content := convertedFile.ConvertedDocument.Content.Markdown
-	chunks, err := chunker.Chunk(content)
-	if err != nil {
-		return nil, err
-	}
-
-	// A parser that returns a document and no usable text chunks to nothing
-	// while every stage reports success, so the only place this can be caught
-	// is here, before the empty artifact is written. Observed against a
-	// vision-language parser on whole slide decks, which is why it is a hard
-	// failure rather than a warning: a deck missing from retrieval looks
-	// exactly like a deck nobody asked about.
-	//
-	// Unlike every other chunking failure, this one recurs identically on each
-	// reconcile: the input and the config are unchanged and the stage has no
-	// attempt limit.
-	if err := unstructured.ValidateChunks(content, chunks); err != nil {
-		return nil, fmt.Errorf("chunking %s: %w", convertedFilePath, err)
-	}
-
-	return &unstructured.ChunksFile{
-		ConvertedDocument: convertedFile.ConvertedDocument,
-		ChunksDocument: &unstructured.ChunksDocument{
-			Metadata: &unstructured.ChunksFileMetadata{
-				ChunkingTool:          unstructured.ChunkingToolForStrategy(chunksGeneratorCR.Spec.ChunksGeneratorConfig.Strategy),
-				ChunksGeneratorConfig: chunksGeneratorCR.Spec.ChunksGeneratorConfig,
-				ConvertedFileMetadata: convertedFile.ConvertedDocument.Metadata,
-			},
-			Chunks: &unstructured.Chunks{
-				Text: chunks,
-			},
-		},
-	}, nil
 }
 
 func (r *ChunksGeneratorReconciler) findDependents(ctx context.Context, obj client.Object) []reconcile.Request {
