@@ -94,9 +94,10 @@ const (
 	DefaultVLMPipelineModel = VLMModelNemotronParse
 
 	DefaultTableMode = "accurate"
-	// "placeholder" prevents raw base64 image data from leaking into markdown content
-	// that flows into chunking and embedding stages.
-	DefaultImageExportMode        = "placeholder"
+	// "referenced" keeps base64 out of the markdown that flows into chunking and
+	// embedding, and still returns page images inline. "embedded" leaks a data URI
+	// into the markdown even with include_images off.
+	DefaultImageExportMode        = "referenced"
 	DefaultImagesScale            = "2.0"
 	DefaultPictureDescMaxTokens   = 4096
 	DefaultPictureDescTimeout     = "60"
@@ -381,6 +382,7 @@ func (c *VLMPipelineCustomConfig) SetDefaults() {
 	}
 }
 
+// +kubebuilder:validation:XValidation:rule="!has(self.include_page_images) || !self.include_page_images || !has(self.image_export_mode) || self.image_export_mode != 'placeholder'",message="include_page_images requires image_export_mode other than placeholder, which discards every image"
 type DoclingConfig struct {
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
@@ -408,6 +410,14 @@ type DoclingConfig struct {
 	DoTableStructure *bool `json:"do_table_structure,omitempty"`
 	// +optional
 	IncludeImages *bool `json:"include_images,omitempty"`
+	// IncludePageImages returns a rendered image of each page, which is what a
+	// citation draws its highlight on. Only pdf and image inputs produce them.
+	//
+	// Defaults off under the "placeholder" export mode, which discards every
+	// image: defaulting it on there would reconvert the corpus and produce
+	// nothing. Setting both explicitly is rejected at admission.
+	// +optional
+	IncludePageImages *bool `json:"include_page_images,omitempty"`
 	// +optional
 	ImagesScale string `json:"images_scale,omitempty"`
 	// +optional
@@ -481,8 +491,18 @@ func (c *DoclingConfig) SetDefaults() {
 	if c.DoTableStructure == nil {
 		c.DoTableStructure = boolPtr(true)
 	}
+	// Off: these are per-picture crops, and the page image a citation needs is a
+	// separate field. Nothing downstream reads them.
 	if c.IncludeImages == nil {
-		c.IncludeImages = boolPtr(true)
+		c.IncludeImages = boolPtr(false)
+	}
+	// Not defaulted on under "placeholder", which discards every image. There
+	// is no defaulting webhook, so the API server never sees this field and
+	// the admission rule cannot catch the combination. Defaulting it on
+	// anyway would change DoclingConfig, reconvert the whole corpus, and
+	// return no images for it.
+	if c.IncludePageImages == nil {
+		c.IncludePageImages = boolPtr(c.ImageExportMode != "placeholder")
 	}
 	if c.ImagesScale == "" {
 		c.ImagesScale = DefaultImagesScale

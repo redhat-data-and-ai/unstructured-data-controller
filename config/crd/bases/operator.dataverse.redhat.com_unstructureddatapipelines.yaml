@@ -245,6 +245,15 @@ spec:
                               type: string
                             include_images:
                               type: boolean
+                            include_page_images:
+                              description: |-
+                                IncludePageImages returns a rendered image of each page, which is what a
+                                citation draws its highlight on. Only pdf and image inputs produce them.
+
+                                Defaults off under the "placeholder" export mode, which discards every
+                                image: defaulting it on there would reconvert the corpus and produce
+                                nothing. Setting both explicitly is rejected at admission.
+                              type: boolean
                             md_page_break_placeholder:
                               type: string
                             ocr_engine:
@@ -340,6 +349,12 @@ spec:
                                   type: string
                               type: object
                           type: object
+                          x-kubernetes-validations:
+                          - message: include_page_images requires image_export_mode
+                              other than placeholder, which discards every image
+                            rule: '!has(self.include_page_images) || !self.include_page_images
+                              || !has(self.image_export_mode) || self.image_export_mode
+                              != ''placeholder'''
                         type:
                           type: string
                       type: object

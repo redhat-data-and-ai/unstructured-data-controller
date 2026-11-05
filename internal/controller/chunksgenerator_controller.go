@@ -145,6 +145,10 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 
+	// Page images live beside the converted files and are not JSON, so
+	// decoding one as a converted file fails the whole stage.
+	filePaths = unstructured.WithoutPageImages(filePaths)
+
 	chunkingErrors := []error{}
 	skippedFiles := []string{}
 	var filesProcessed int64

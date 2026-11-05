@@ -125,6 +125,10 @@ func (r *DestinationSyncerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			logger.Error(err, "failed to list files in path", "stage", dep.Name)
 			return r.handleError(ctx, destinationSyncCR, err)
 		}
+		// Page images are an internal rendering the citation path reads, not
+		// content anyone asked to receive, and a single document can be tens
+		// of megabytes of them.
+		filePaths = unstructured.WithoutPageImages(filePaths)
 		logger.Info("files to ingest to destination", "stage", dep.Name, "count", len(filePaths))
 
 		if err := destination.SyncFilesToDestination(ctx, r.fileStore, filePaths); err != nil {

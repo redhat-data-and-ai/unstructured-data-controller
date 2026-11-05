@@ -20,6 +20,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -47,6 +48,43 @@ func MetadataPath(rawFilePath string) string {
 
 func PermissionsPath(rawFilePath string) string {
 	return rawFilePath + ".permissions.json"
+}
+
+// pageImageSuffix separates a page image from the raw file it renders. It
+// ends in .png so IsPageImagePath can recognise one without parsing.
+const pageImageSuffix = ".page-"
+
+// PageImagePath names the stored render of one page, counted from one.
+//
+// Derived from the raw file path rather than stored anywhere, so a citation
+// can find the image from the file path and page number it already has.
+func PageImagePath(rawFilePath string, pageNo int) string {
+	return rawFilePath + pageImageSuffix + strconv.Itoa(pageNo) + ".png"
+}
+
+// IsPageImagePath reports whether a path is one of those renders.
+func IsPageImagePath(filePath string) bool {
+	base := strings.TrimSuffix(filePath, ".png")
+	if base == filePath {
+		return false
+	}
+	index := strings.LastIndex(base, pageImageSuffix)
+	if index < 0 {
+		return false
+	}
+	pageNo, err := strconv.Atoi(base[index+len(pageImageSuffix):])
+	return err == nil && pageNo > 0
+}
+
+// WithoutPageImages returns the paths that are not page renders.
+func WithoutPageImages(filePaths []string) []string {
+	kept := make([]string, 0, len(filePaths))
+	for _, filePath := range filePaths {
+		if !IsPageImagePath(filePath) {
+			kept = append(kept, filePath)
+		}
+	}
+	return kept
 }
 
 func FilterRawFilePaths(filePaths []string) []string {

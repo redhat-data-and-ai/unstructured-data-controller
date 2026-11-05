@@ -116,6 +116,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		TableCellMatching:               cfg.TableCellMatching,
 		DoTableStructure:                cfg.DoTableStructure,
 		IncludeImages:                   cfg.IncludeImages,
+		IncludePageImages:               cfg.IncludePageImages,
 		ImagesScale:                     parseFloat64Ptr(cfg.ImagesScale),
 		DoCodeEnrichment:                cfg.DoCodeEnrichment,
 		DoFormulaEnrichment:             cfg.DoFormulaEnrichment,
@@ -211,6 +212,28 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
+// storePageImages writes one file per rendered page beside the converted
+// document, named so a citation can find it from the file path and page
+// number it already has.
+func (r *DocumentProcessorReconciler) storePageImages(ctx context.Context,
+	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string) error {
+	if len(pageImages) == 0 {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+	for _, pageImage := range pageImages {
+		imagePath := unstructured.RemapToOutputDir(
+			unstructured.PageImagePath(rawFilePath, pageImage.PageNo), inputPath, outputPath)
+		if err := r.fileStore.Store(ctx, imagePath, pageImage.Data); err != nil {
+			return fmt.Errorf("storing page %d image for %s: %w", pageImage.PageNo, rawFilePath, err)
+		}
+	}
+
+	logger.Info("stored page images", "filePath", rawFilePath, "pages", len(pageImages))
+	return nil
+}
+
 func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (err error) {
 	logger := log.FromContext(ctx)
 	// recover from panic semaphore panic
@@ -264,6 +287,32 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 			logger.Info("conversion returned no structured document, storing markdown only",
 				"taskID", job.TaskID, "filePath", job.FilePath)
 		}
+
+		// Lifted out before the document is stored. The chunking stage posts
+		// this document back to the conversion service, so rasters left
+		// inside it are uploaded again with every chunk request.
+		//
+		// Never fatal. The conversion itself succeeded, and failing here
+		// would discard it and leave a job that no attempt limit retires,
+		// so the file would never convert again. A citation with no image
+		// beats a stage that cannot move.
+		pageImages, strippedDocument, imageErr := docling.TakePageImages(content.DoclingDocument)
+		if imageErr != nil {
+			logger.Error(imageErr, "could not take page images, storing the document without them",
+				"taskID", job.TaskID, "filePath", job.FilePath)
+		} else {
+			content.DoclingDocument = strippedDocument
+			if err := r.storePageImages(ctx, pageImages, job.FilePath, inputPath, outputPath); err != nil {
+				logger.Error(err, "could not store page images, storing the document without them",
+					"taskID", job.TaskID, "filePath", job.FilePath)
+			}
+		}
+
+		// Docling writes an image link into the markdown under every export
+		// mode but "placeholder", and that markdown is what gets chunked and
+		// embedded. Reduced back to the placeholder form so enabling page
+		// images does not change anyone's chunk text.
+		content.Markdown = docling.StripImageLinks(content.Markdown)
 
 		convertedFile := unstructured.ConvertedFile{
 			ConvertedDocument: &unstructured.ConvertedDocument{

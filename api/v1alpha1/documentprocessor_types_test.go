@@ -80,11 +80,41 @@ func TestDoclingConfig_SetDefaults_EmptyConfig(t *testing.T) {
 	if c.DoTableStructure == nil || !*c.DoTableStructure {
 		t.Error("expected do_table_structure to be true")
 	}
-	if c.IncludeImages == nil || !*c.IncludeImages {
-		t.Error("expected include_images to be true")
+	// Off: per-picture crops that nothing downstream reads. The page image a
+	// citation needs is include_page_images, which is a separate field.
+	if c.IncludeImages == nil || *c.IncludeImages {
+		t.Error("expected include_images to be false")
+	}
+	if c.IncludePageImages == nil || !*c.IncludePageImages {
+		t.Error("expected include_page_images to be true")
 	}
 	if c.ImagesScale != DefaultImagesScale {
 		t.Errorf("expected images_scale %q, got %q", DefaultImagesScale, c.ImagesScale)
+	}
+}
+
+// The export mode governs both outputs. "embedded" writes a data URI into the
+// markdown that gets chunked and embedded, even with include_images off, so
+// chunks would carry base64. "referenced" leaves a short filename there and
+// still returns the page image inline.
+func TestDoclingConfig_SetDefaults_ExportModeKeepsBase64OutOfMarkdown(t *testing.T) {
+	c := DoclingConfig{}
+	c.SetDefaults()
+
+	if c.ImageExportMode != "referenced" {
+		t.Errorf("expected image_export_mode %q, got %q", "referenced", c.ImageExportMode)
+	}
+}
+
+// Defaulting page images on under "placeholder" would reconvert the corpus
+// and return nothing, and no admission rule can stop it: there is no
+// defaulting webhook, so the API server never sees the field.
+func TestDoclingConfig_SetDefaults_PlaceholderDoesNotAskForPageImages(t *testing.T) {
+	c := DoclingConfig{ImageExportMode: "placeholder"}
+	c.SetDefaults()
+
+	if c.IncludePageImages == nil || *c.IncludePageImages {
+		t.Error("expected include_page_images to stay off under placeholder")
 	}
 }
 
