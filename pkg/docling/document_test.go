@@ -110,11 +110,9 @@ func TestDocumentIndexRegions_OrdersTheVerticalEdges(t *testing.T) {
 	assert.Equal(t, [4]float64{0.1, 0.2, 0.5, 0.3}, regions[0].BBox)
 }
 
-// More than half of a real document's text elements have no placement: the
+// Most of a real document's text elements have no placement of their own: the
 // parser puts the box on the block and the text on the inline runs inside it.
-// Measured on a 143 page document, 1,317 of 2,454 text elements resolve this
-// way, so an implementation that reads only an element's own prov has worse
-// geometry than no structured output at all.
+// Reading only an element's own prov places almost nothing.
 func TestDocumentIndexRegions_ClimbsToAPlacedAncestor(t *testing.T) {
 	raw := json.RawMessage(`{
 	  "texts":[

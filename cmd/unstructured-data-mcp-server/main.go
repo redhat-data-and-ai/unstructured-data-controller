@@ -176,13 +176,9 @@ func main() {
 }
 
 // buildRerankerClient constructs the reranker from the environment. It returns
-// a nil client when reranking is switched off, and an error when it is switched
-// on but configured wrongly.
-//
-// Misconfiguration fails startup rather than degrading. The runtime fallback to
-// cosine ordering exists for a reranker that breaks in production, not for one
-// that was never configured correctly: a typo that silently halves retrieval
-// quality is far harder to notice than a pod that refuses to start.
+// a nil client when reranking is switched off, and an error when it is
+// switched on but configured wrongly: the runtime fallback to cosine ordering
+// is for a reranker that breaks later, not one never configured correctly.
 func buildRerankerClient() (reranker.Reranker, int, error) {
 	if !rerankerEnabled() {
 		slog.Info("reranking disabled, ENABLE_RERANKER is not true")

@@ -32,48 +32,39 @@ import (
 )
 
 // InputFormatDoclingDocument tells docling the file it is being handed is
-// already a DoclingDocument, so it reads it back instead of parsing it.
-//
-// It is an input *format* and not a source kind. The only kinds the server
-// accepts are "file" and "http", so a stored document is sent as a file whose
-// contents happen to be the document.
+// already a DoclingDocument, so it reads it back instead of parsing it. It is
+// an input format, not a source kind: the only kinds the server accepts are
+// "file" and "http".
 const InputFormatDoclingDocument = "json_docling"
 
 // ChunkerHybrid splits on the document's structure rather than on a character
-// count. It is the only chunker this client asks for; the endpoint is chosen
-// by path, and the field has to agree with it.
+// count. The endpoint is chosen by path and this field has to agree with it.
 const ChunkerHybrid = "hybrid"
 
 // ErrNoChunksReturned reports a chunk task that finished successfully and
 // produced nothing.
 //
-// This is how the chunker reports being unable to load its tokenizer: the
-// task status is success, the errors list is empty, and the chunks list is
-// empty too. Nothing else in the response distinguishes it from a document
-// that really had no content, which is why the chunks are returned alongside
-// this error rather than instead of it.
+// This is how the chunker reports being unable to load its tokenizer: success
+// status, empty errors, empty chunks. Nothing in the response tells that apart
+// from a document that really had no content, so the chunks are returned
+// alongside this error rather than instead of it.
 var ErrNoChunksReturned = errors.New("the chunk task succeeded and returned no chunks")
 
 // ErrChunkTaskEnded marks every error from GetChunks that means the task is
 // over and its semaphore slot has been given back.
 //
-// The distinction matters to the caller and cannot be made from the message.
-// A task that is over must not be polled again: the next poll would release
-// a slot a second time, and Release on a weighted semaphore is a bare
-// subtraction with no record of who holds what, so while another task holds a
-// slot the extra release takes that one instead of failing. An error that
-// leaves the task running, such as a status that could not be read, carries
-// no such marker and should be retried against the same task id.
+// A task that is over must not be polled again: a second release is a bare
+// subtraction on the weighted semaphore and would take a slot another task
+// holds. Errors that leave the task running, such as an unreadable status,
+// carry no such marker and should be retried against the same task id.
 var ErrChunkTaskEnded = errors.New("the chunk task has ended")
 
 // ChunkingOptions is what the chunk endpoints read as "chunking_options".
 //
-// Every value here is set explicitly because not one of docling's own
-// defaults suits this use. Leaving tokenizer out reaches for a model name it
-// has to download, and a download it cannot make returns success with zero
-// chunks. Leaving MaxTokens out falls back to the tokenizer's own limit,
-// several times an embedding window. The two flags default off, which returns
-// no text to display and serialises tables as value triplets.
+// Every value is set explicitly: an unset tokenizer reaches for a model docling
+// has to download, an unset MaxTokens falls back to the tokenizer's own limit
+// which is several times an embedding window, and both flags default off, which
+// returns no text to display and serialises tables as value triplets.
 type ChunkingOptions struct {
 	Chunker           string `json:"chunker"`
 	Tokenizer         string `json:"tokenizer"`
@@ -82,19 +73,16 @@ type ChunkingOptions struct {
 	UseMarkdownTables bool   `json:"use_markdown_tables"`
 }
 
-// ChunkConvertOptions is the "convert_options" block of a chunk request.
-//
-// Note the key. The convert endpoints read "options" and the chunk endpoints
-// read "convert_options", and docling drops a key it does not recognise and
-// still returns 200, so the wrong one here means every option is silently
-// discarded.
+// ChunkConvertOptions is the "convert_options" block of a chunk request. Mind
+// the key: the convert endpoints read "options" instead, and docling drops an
+// unrecognised key and still returns 200, so the wrong one is discarded
+// silently.
 type ChunkConvertOptions struct {
 	FromFormats []string `json:"from_formats"`
 }
 
-// ChunkFileSource carries the document inline. The chunk endpoints take the
-// same source kinds as the convert endpoints, and "file" is the one that can
-// carry bytes we hold rather than a URL something else must fetch.
+// ChunkFileSource carries the document inline. "file" is the source kind that
+// takes bytes we hold rather than a URL something else must fetch.
 type ChunkFileSource struct {
 	Kind         string `json:"kind"`
 	Filename     string `json:"filename"`
@@ -109,14 +97,10 @@ type ChunkRequestPayload struct {
 
 // Chunk is one chunk as docling returns it.
 //
-// It already carries almost everything a stored chunk needs. Text is the
-// contextualised form, with the heading trail prepended, and is what gets
-// embedded so a passage is findable under its section. RawText is the body
-// alone and is what gets displayed.
-//
-// What it does not carry is geometry. DocItems holds the addresses of the
-// elements the chunk was built from, for example "#/texts/4", and the
-// rectangles live in the DoclingDocument under those addresses.
+// Text is the contextualised form, with the heading trail prepended, and is
+// what gets embedded; RawText is the body alone and is what gets displayed.
+// Geometry is not included: DocItems names the elements, and the rectangles
+// live in the DoclingDocument under those addresses.
 type Chunk struct {
 	Filename   string   `json:"filename"`
 	ChunkIndex int      `json:"chunk_index"`
@@ -148,39 +132,22 @@ func (c *Client) chunkHybridSourceAsyncEndpoint() (string, error) {
 // ChunkDoclingDocument hands a stored DoclingDocument back to docling to be
 // chunked, and returns the task it accepted.
 //
-// Sending the stored document rather than the original file is not an
-// optimisation. Converting the same file twice produces a different document,
-// and a chunk names its elements by address, so addresses from one parse
-// resolve against another parse to the wrong elements. Reusing the stored
-// document is also the difference between seconds and milliseconds, since
-// nothing is parsed again.
-//
-// Asynchronous because a synchronous call holds the connection for as long as
-// the work takes, which on a real document is minutes, and on a misconfigured
-// tokenizer is a minute of waiting to be told nothing. The task it returns is
-// polled through GetTaskStatus and GetChunks, the same endpoints conversion
-// already uses.
+// The stored document is sent rather than the original file because
+// converting the same file twice produces different element addresses, and a
+// chunk names its elements by address. The returned task is polled through
+// GetTaskStatus and GetChunks.
 func (c *Client) ChunkDoclingDocument(
 	ctx context.Context, filename string, doclingDocument json.RawMessage, options ChunkingOptions,
 ) (*AsyncDoclingResponse, error) {
 	logger := log.FromContext(ctx)
 
-	// The same rule JSONDocument applies, for the same reason: the field is
-	// absent when nothing asked for it and the JSON literal null when docling
-	// ran and produced nothing, and null is four bytes, so a length test
-	// alone lets it through. Sending it would base64 "null" as a document and
-	// hold a slot until the resulting failure is collected.
+	// Docling writes the JSON literal null when it ran and produced nothing, so
+	// a length test alone lets four bytes of "null" through as a document.
 	if trimmed := bytes.TrimSpace(doclingDocument); len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, errors.New("cannot chunk an empty docling document")
 	}
-	// Checked here for the same reason the document is, and with a stronger
-	// case. Neither of these is rejected by the server. An empty tokenizer
-	// falls back to a model name docling has to download, and where it cannot
-	// the request returns HTTP 200 with zero chunks after the download times
-	// out, which was 58 seconds when measured. A MaxTokens of zero falls back
-	// to the tokenizer's own limit, several times an embedding window, so the
-	// chunks come back too large to embed. Both cost a submit, a poll and a
-	// semaphore slot to learn something knowable before any of them.
+	// The server rejects neither of these, and both waste a submit, a poll and
+	// a semaphore slot to learn something knowable here.
 	if strings.TrimSpace(options.Tokenizer) == "" {
 		return nil, errors.New("cannot chunk without a tokenizer: docling's default has to be " +
 			"downloaded, and a download it cannot make returns success with zero chunks")
@@ -247,11 +214,9 @@ func (c *Client) ChunkDoclingDocument(
 		return nil, fmt.Errorf("failed to unmarshal async chunk response: %w", err)
 	}
 
-	// Unmarshalling into this struct succeeds for any JSON object, so a 200
-	// carrying something that is not a task envelope leaves TaskID empty.
-	// Treating that as accepted would hold the slot for a task nobody can
-	// poll, and the only path that frees it runs on a poll, so it would be
-	// held until the process restarts.
+	// A 200 carrying something that is not a task envelope still unmarshals and
+	// leaves TaskID empty. Treating that as accepted would hold the slot until
+	// the process restarts, since only a poll ever frees it.
 	if asyncResponse.TaskID == "" {
 		return nil, errors.New("docling accepted the chunk request but returned no task id")
 	}
@@ -265,23 +230,14 @@ func (c *Client) ChunkDoclingDocument(
 //
 // A task still running returns its status and no chunks, which is the normal
 // answer and not an error. The semaphore slot taken at submission is released
-// here, on every outcome that ends the task, because this is the only place
+// here on every outcome that ends the task, because this is the only place
 // that learns the task has ended.
-//
-// It polls the same endpoints conversion does. Docling does not separate them
-// by task type, so the only thing specific to chunking is how the result is
-// decoded.
 func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *ChunkResponse, error) {
 	logger := log.FromContext(ctx)
 
-	// The slot is NOT released on either of these. Failing to read a status
-	// is not evidence that the task ended, and the task carries on holding
-	// docling's own capacity either way. Releasing here would also release
-	// again on the next attempt, and Release on a weighted semaphore is a
-	// bare subtraction with no record of who holds what, so while other
-	// tasks hold slots the extra release takes theirs instead of panicking.
-	// Real concurrency against docling then quietly exceeds the configured
-	// limit.
+	// The slot is NOT released on either of these: an unreadable status is no
+	// evidence the task ended, and releasing again on the next attempt would
+	// take a slot another task holds rather than panicking.
 	isValidStatus, taskStatus, err := c.getTaskStatus(ctx, taskID)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get task status: %w", err)
@@ -331,16 +287,9 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 	c.safeRelease()
 	logger.Info("chunk task completed", "task id", taskID, "chunks", len(chunkResponse.Chunks))
 
-	// Docling's documented silent failure, and the reason this is an error
-	// rather than a log line. A chunker that could not load its tokenizer
-	// answers with {"chunks": [], "status": "success", "errors": []}. Every
-	// signal above says the task succeeded, so a caller reading only the
-	// error would store an empty artifact, and the cache key would then match
-	// on the next reconcile and never retry it.
-	//
-	// The chunks are returned alongside, because this client cannot tell that
-	// case apart from a document that genuinely holds nothing. A caller that
-	// knows the input was empty can look at the error and carry on.
+	// A chunker that could not load its tokenizer answers with
+	// {"chunks": [], "status": "success", "errors": []}, so without this an
+	// empty artifact would be stored and the cache key would never retry it.
 	if len(chunkResponse.Chunks) == 0 {
 		return taskStatus.TaskStatus, &chunkResponse, fmt.Errorf("%w: %w", ErrChunkTaskEnded, ErrNoChunksReturned)
 	}

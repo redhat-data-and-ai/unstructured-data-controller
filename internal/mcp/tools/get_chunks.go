@@ -52,13 +52,9 @@ const (
 	maxChunkLimit = 100
 
 	// DefaultRerankerPool is the candidate pool depth used when
-	// RERANKER_CANDIDATE_POOL is unset. Published ablation on table-heavy
-	// corpora puts recall@5 at 0.458 for a pool of 20, 0.826 for 50 and 0.888
-	// for 100, with reranking doing nothing below about 20. 50 is the
-	// conservative point on that curve: a clear gain over a shallow pool
-	// without committing to the latency of 100, which is unmeasured against
-	// our own reranker. Taken from published figures on another corpus, not
-	// tuned on ours.
+	// RERANKER_CANDIDATE_POOL is unset. Recall climbs steeply with pool depth
+	// and reranking does little below about 20, so this is a clear gain over
+	// a shallow pool without the latency of a deeper one.
 	DefaultRerankerPool = 50
 
 	// MaxRerankerPool bounds an operator-supplied pool depth. Cross-encoder
@@ -241,12 +237,9 @@ func resolveLimit(requested int) int {
 }
 
 // resolveFetchLimit widens the candidate pool when reranking is enabled so the
-// cross-encoder has more to re-score than the caller ultimately wants back.
-//
-// The pool is an absolute depth rather than a multiple of the caller's limit,
-// because recall tracks how many candidates the cross-encoder sees, not the
-// ratio between that and what is returned. The limit is a lower bound only:
-// we cannot return more chunks than we fetched.
+// cross-encoder has more to re-score than the caller wants back. The pool is
+// an absolute depth, not a multiple of the caller's limit, because recall
+// tracks how many candidates the cross-encoder sees.
 func resolveFetchLimit(limit, poolDepth int, rerankEnabled bool) int {
 	if !rerankEnabled {
 		return limit
@@ -280,13 +273,10 @@ func retrieveChunks(ctx context.Context, cfg chunkSearchConfig, rerankerClient r
 		switch {
 		case rerankErr == nil:
 		case ctx.Err() != nil:
-			// The caller went away or ran out of time. Expected, not an outage,
-			// so this must not look like one in the logs.
-			//
-			// This asks the context directly rather than inspecting the error.
-			// The reranker client has its own timeout that surfaces as
-			// context.DeadlineExceeded too, and matching on the error would
-			// report a genuine reranker stall as a caller disconnect.
+			// The caller went away or ran out of time, which is expected and
+			// must not read as an outage. Asked of the context rather than
+			// the error, because the reranker's own timeout also surfaces as
+			// context.DeadlineExceeded.
 			log.Info("reranking aborted, request context ended", "error", rerankErr)
 		default:
 			// Reranking is best-effort: the cosine ordering is still valid, and
@@ -325,14 +315,10 @@ func convertFileGlobToSQL(glob string) string {
 // rerankChunks sends the chunk texts through a cross-encoder reranker, assigns
 // reranker scores, re-sorts by relevance, and truncates to limit.
 //
-// Chunk text is sent whole. Chunks are bounded at ingest by the pipeline's
-// configured chunk size, and a reranker that receives more than its context
-// window truncates at its own real limit, which beats guessing one here.
-//
-// Chunks the reranker did not score are appended afterwards in their original
-// cosine order, so reranking can only reorder results, never return fewer than
-// plain vector search would. Those keep a nil RerankerScore and are therefore
-// reported as un-scored.
+// Chunk text is sent whole: chunks are bounded at ingest, and a reranker over
+// its context window truncates at its own real limit. Chunks it did not score
+// are appended afterwards in their original cosine order, keeping a nil
+// RerankerScore, so reranking never returns fewer results than vector search.
 func rerankChunks(ctx context.Context, rerankerClient reranker.Reranker, query string, chunks []snowflake.ChunkResult, limit int) ([]snowflake.ChunkResult, error) {
 	log := logger.FromContext(ctx)
 

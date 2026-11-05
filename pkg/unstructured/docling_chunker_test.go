@@ -57,9 +57,8 @@ func convertedDocument(doclingDocument string) *ConvertedDocument {
 	}
 }
 
-// staticDocument hands Collect a document it already has. Production reads
-// it lazily, because most polls find the task still running and the stored
-// document is several megabytes.
+// staticDocument hands Collect a document it already has. Production reads it
+// lazily, because most polls find the task still running.
 func staticDocument(doclingDocument string) DocumentFunc {
 	return func() (*ConvertedDocument, error) { return convertedDocument(doclingDocument), nil }
 }
@@ -98,12 +97,9 @@ func TestDoclingChunkerChunkReturnsAReceiptAndNoChunks(t *testing.T) {
 }
 
 // The upload is named after what is being sent, not after the source file.
-// A DoclingDocument has no magic bytes, so the service reads the extension,
-// and a name ending .pdf resolves to a format from_formats does not allow.
-// Measured against the live service with an identical body: "report.json"
-// returned 172 chunks and "report.pdf" returned zero, both HTTP 200 and both
-// reporting success. Every test here used to pass a .json name while
-// production passed the raw path, so nothing caught it.
+// The service reads the extension, and a name ending .pdf resolves to a
+// format from_formats does not allow, which returns zero chunks with HTTP 200
+// and status success.
 func TestDoclingChunkerChunkNamesTheUploadAfterTheDocument(t *testing.T) {
 	var sent string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -142,10 +138,9 @@ func TestDoclingChunkerChunkRefusesAMarkdownOnlyDocument(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNoStructuredDocument)
 }
 
-// A length test alone lets the JSON literal null through, because null is
-// four bytes. Submitting it would base64 "null" as a document and hold a
-// slot until the resulting failure is collected, and indexing it would
-// unmarshal clean into an empty document and place no chunk anywhere.
+// A length test alone lets the JSON literal null through. Submitting it holds
+// a slot until the failure is collected, and indexing it unmarshals clean into
+// an empty document that places no chunk anywhere.
 func TestDoclingChunkerRefusesADocumentThatIsTheJSONLiteralNull(t *testing.T) {
 	for _, document := range []string{"null", "  null\n"} {
 		t.Run(document, func(t *testing.T) {
@@ -308,9 +303,8 @@ func TestDoclingChunkerCollectMarksAnEndedTaskWhenResolutionFails(t *testing.T) 
 	assert.ErrorIs(t, err, docling.ErrChunkTaskEnded)
 }
 
-// The document is read only once the task has finished. Most polls find it
-// still running, and the stored document is several megabytes, so reading it
-// on every poll decodes all of that to learn nothing.
+// The document is read only once the task has finished, since most polls find
+// it still running and would decode the whole document to learn nothing.
 func TestDoclingChunkerCollectDoesNotReadTheDocumentWhileTheTaskRuns(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeTestJSON(t, w, `{"task_id":"t-1","task_status":"started"}`)

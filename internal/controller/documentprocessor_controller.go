@@ -253,9 +253,8 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		}
 		content := &unstructured.Content{
 			Markdown: doclingResponse.Document.MDContent,
-			// Stored as it arrived. Nothing here reads it; the chunking stage
-			// posts it back to the conversion service to chunk the document
-			// without parsing the file again.
+			// Stored as it arrived: the chunking stage posts it back to the
+			// conversion service rather than parsing the file again.
 			DoclingDocument: doclingResponse.Document.JSONDocument(),
 		}
 		if content.DoclingDocument == nil {
@@ -549,9 +548,9 @@ func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj cl
 	return requests
 }
 
-// SetupWithManager sets up the controller with the Manager.
-// SetupWithManager registers this controller. Spec changes trigger via GenerationChangedPredicate.
-// Watches on other stage types trigger reconcile when an upstream dependency's status changes.
+// SetupWithManager registers this controller. Spec changes trigger via
+// GenerationChangedPredicate, and watches on other stage types trigger a
+// reconcile when an upstream dependency's status changes.
 func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
@@ -617,24 +616,15 @@ func injectAndValidateVLMConfig(cr *operatorv1alpha1.DocumentProcessor) error {
 	return nil
 }
 
-// injectVLMEngine builds the engine half of a vlm pipeline request: the model
-// settings come from the spec, which has already been defaulted, and the
-// address and credential from the ControllerConfig and its Secret.
+// injectVLMEngine builds the engine half of a vlm pipeline request: model
+// settings from the already-defaulted spec, address and credential from the
+// ControllerConfig and its Secret. It mutates only the wire config, never the
+// CR's own DoclingConfig, so that moving the service does not reconvert
+// documents and no credential is persisted into an artifact.
 //
-// That split is the point. Everything the spec supplies changes what the model
-// returns, and reaches ConvertedFileMetadata so that changing it reconverts.
-// Everything this function adds does not: moving the service to a new address
-// must leave existing documents alone, and a credential must never be
-// persisted into an artifact that reaches the destination bucket.
-//
-// It therefore mutates only the wire config, never the CR's own DoclingConfig.
-//
-// A no-op on any pipeline but "vlm". On "vlm" it fails rather than skipping,
-// because skipping cannot be noticed: docling drops the options it did not
-// receive, runs its own bundled model and answers 200, while the artifact is
-// still fingerprinted from the spec that named this one. Fixing the
-// configuration afterwards reconverts nothing, because that fingerprint never
-// changed.
+// A no-op on any pipeline but "vlm", where it fails rather than skipping:
+// docling would run its own bundled model and answer 200 while the artifact
+// is still fingerprinted from the spec, so a later fix reconverts nothing.
 func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alpha1.VLMPipelineCustomConfig) error {
 	if doclingCfg.Pipeline != operatorv1alpha1.PipelineVLM {
 		return nil
@@ -645,8 +635,7 @@ func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alph
 
 	// Both fail opaquely when absent: the task ends in failure and the result
 	// endpoint answers 404 without naming the field. SetDefaults fills them
-	// only for catalogued models, so an alias the server itself accepts still
-	// arrives here blank.
+	// only for catalogued models, so an alias arrives here blank.
 	if modelCfg.Prompt == "" {
 		return fmt.Errorf("vlm pipeline model %q has no prompt and no catalogued default; set prompt explicitly", modelCfg.Model)
 	}
@@ -676,9 +665,8 @@ func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alph
 
 	doclingCfg.VLMPipelineCustomConfig = &docling.VLMPipelineCustomConfig{
 		ModelSpec: docling.VLMModelSpec{
-			// Docling requires a name and only echoes it back, so the model id
-			// serves: a second, divergent label would only invite confusion
-			// about which one the endpoint actually answers to.
+			// Docling requires a name and only echoes it back, so the model
+			// id serves.
 			Name:           modelCfg.Model,
 			DefaultRepoID:  modelCfg.Model,
 			Prompt:         modelCfg.Prompt,

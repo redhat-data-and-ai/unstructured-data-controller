@@ -18,30 +18,24 @@ const (
 	DoclingChunkingTool ChunkingTool = "docling"
 )
 
-// ChunkingToolForStrategy reports which tool runs a strategy.
-//
-// Both the write of a chunks file and the check for whether one is current
-// have to agree on this. ChunksFileMetadata.Equal compares the tool, so a
-// label written by one and guessed by the other never matches and every file
-// is chunked again on every reconcile.
+// ChunkingToolForStrategy reports which tool runs a strategy. Writing a chunks
+// file and checking whether one is current must agree on this, because
+// ChunksFileMetadata.Equal compares the tool and a mismatch rechunks every
+// file on every reconcile.
 func ChunkingToolForStrategy(strategy v1alpha1.ChunkingStrategy) ChunkingTool {
 	if strategy == v1alpha1.ChunkingStrategyDoclingHybrid {
 		return DoclingChunkingTool
 	}
-	// The three in process splitters all run through langchain. A strategy
-	// with no case at all is rejected before any of this, so there is no third
-	// answer to give.
+	// The in process splitters all run through langchain, and an unknown
+	// strategy is rejected before this point.
 	return LangchainChunkingTool
 }
 
 // Chunks is the stored form of a document's chunks.
 //
-// Parallel arrays aligned by index, and deliberately NOT a list of chunk
-// objects. The warehouse view that reads this flattens chunks:text and picks
-// the rest out with GET(array, index). Point it at a list of objects and the
-// text column becomes NULL for every new file, with no error raised anywhere,
-// while files written earlier keep working. A half populated view reporting
-// success is worse than a loud failure.
+// Parallel arrays aligned by index, deliberately not a list of chunk objects:
+// the downstream view flattens chunks:text and reads the rest by index, and
+// would return NULL text for every new file without raising an error.
 type Chunks struct {
 	// Text is the only field that has always been here, and consumers that
 	// predate the rest still read it on its own.
@@ -57,18 +51,15 @@ type Chunks struct {
 	PageLast  []int              `json:"pageLast,omitempty"`
 }
 
-// NewChunks lays chunks out for storage.
-//
-// The geometry arrays are written only when something produced geometry.
-// Emitting them full of empty values for a chunker that splits text would
-// change every existing artifact and give the warehouse columns of nothing
-// to read.
+// NewChunks lays chunks out for storage. The geometry arrays are written only
+// when something produced geometry, so an artifact from a plain text splitter
+// is unchanged from before those fields existed.
 func NewChunks(chunks []Chunk) *Chunks {
 	stored := &Chunks{Text: ChunkTexts(chunks)}
 
-	// Any of the five, not just the addresses. A chunk can arrive with raw
-	// text and a page range and no addresses at all, and gating on addresses
-	// alone would drop the other four for the whole file.
+	// Any of the five, not just the addresses: a chunk can arrive with raw
+	// text and a page range and no addresses, and gating on addresses alone
+	// would drop the other four for the whole file.
 	located := slices.ContainsFunc(chunks, func(chunk Chunk) bool {
 		return chunk.RawText != "" || len(chunk.BlockIDs) > 0 || len(chunk.Regions) > 0 ||
 			chunk.PageFirst != 0 || chunk.PageLast != 0

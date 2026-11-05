@@ -102,7 +102,7 @@ func TestChunksFileMetadataEqual_DiffersOnChunkingTool(t *testing.T) {
 
 // A chunker that splits a string knows nothing about where its output came
 // from. Writing the geometry arrays full of empty values would change every
-// existing artifact and give the warehouse columns of nothing to read.
+// existing artifact for nothing.
 func TestNewChunks_TextOnlyChunkerWritesOnlyText(t *testing.T) {
 	stored := NewChunks(TextChunks([]string{"first", "second"}))
 
@@ -143,9 +143,9 @@ func TestNewChunks_LaysChunksOutAsParallelArrays(t *testing.T) {
 	assert.Equal(t, []int{1, 3}, stored.PageLast)
 }
 
-// Every array has to be the same length as Text, because the warehouse view
-// flattens Text and picks the rest out by the index that flatten produced. A
-// short array silently yields NULL for the chunks past its end.
+// Every array has to be the same length as Text, because the downstream view
+// flattens Text and reads the rest by that index. A short array silently
+// yields NULL for the chunks past its end.
 func TestNewChunks_EveryArrayIsTheSameLength(t *testing.T) {
 	chunks := []Chunk{
 		{Text: "a", BlockIDs: []string{"#/texts/0"}},

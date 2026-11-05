@@ -41,9 +41,8 @@ import (
 //
 // sample config for the docling hybrid chunker, which splits on the
 // document's structure rather than on character counts. Only the tokenizer
-// has to be given; the rest is defaulted. It is a path into docling's own
-// image rather than a model name, because a name has to be downloaded and a
-// download that fails returns no chunks and no error.
+// has to be given, as a path into docling's own image: a model name has to be
+// downloaded, and a failed download returns no chunks and no error.
 //
 //	config:
 //	  strategy: doclingHybridChunker
@@ -62,20 +61,10 @@ const (
 	// DefaultHybridMaxTokens is the context window of the embedding model
 	// these chunks are destined for.
 	//
-	// It is not reduced to leave room for the heading trail. The chunker
-	// measures the finished, contextualised string and subtracts the headings
-	// itself, so this is a cap on what comes out rather than on the body.
-	//
-	// It is not reduced for the tokenizer mismatch either, though the
-	// temptation is real: tokens are counted here by one tokenizer and the
-	// chunk is later embedded by a model with a different vocabulary.
-	// Measured over 171 chunks of a 143 page document, the counting tokenizer
-	// produced more tokens than the embedding model for every chunk large
-	// enough to approach this cap, so the error runs in the safe direction.
-	// The largest chunks measured came to 0.70 to 0.92 of this count. The
-	// ratio only exceeds 1.0 on chunks of a few hundred tokens, which cannot
-	// reach the cap, so budgeting against that worst case would cut the
-	// window by a quarter to protect chunks that are never at risk.
+	// Not reduced for the heading trail, which the chunker subtracts itself,
+	// nor for the mismatch between the counting tokenizer and the embedding
+	// model's vocabulary, which on chunks near this cap over-counts and so
+	// errs safe.
 	DefaultHybridMaxTokens = 2048
 )
 
@@ -188,12 +177,9 @@ func (c *ChunksGenerator) DeleteJobByFilePath(filePath string) {
 	c.Status.Jobs = remaining
 }
 
-// AddPermanentlyFailingFile records a file that will not be tried again
-// under the current spec.
-//
-// Without it a file that fails every attempt is resubmitted forever, because
-// the only other record of the attempts is the job, and giving up means
-// removing that job.
+// AddPermanentlyFailingFile records a file that will not be tried again under
+// the current spec. Without it such a file is resubmitted forever, since the
+// only other record of the attempts is the job that giving up removes.
 func (c *ChunksGenerator) AddPermanentlyFailingFile(filePath string) {
 	c.Status.PermanentlyFailingGeneration = c.Generation
 	if slices.Contains(c.Status.PermanentlyFailingFiles, filePath) {
@@ -203,12 +189,9 @@ func (c *ChunksGenerator) AddPermanentlyFailingFile(filePath string) {
 }
 
 // ResetPermanentlyFailingFiles forgets every file given up on under an older
-// spec, and reports whether it changed anything.
-//
-// The usual cause of giving up is the configuration rather than the file. An
-// unreachable tokenizer returns success with no chunks for every file in the
-// corpus, so without this, fixing the tokenizer recovers nothing and the only
-// way back is editing status by hand.
+// spec, and reports whether it changed anything. The usual cause is the
+// configuration rather than the file, so without this, fixing the
+// configuration recovers nothing short of editing status by hand.
 func (c *ChunksGenerator) ResetPermanentlyFailingFiles() bool {
 	if len(c.Status.PermanentlyFailingFiles) == 0 ||
 		c.Status.PermanentlyFailingGeneration == c.Generation {
@@ -249,18 +232,15 @@ func (c *ChunksGenerator) UpdateStatus(message string, err error) {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
-// The rule uses size() rather than comparing against an empty string literal.
-// Two adjacent apostrophes are what text editors and chat tools turn into a
-// typographic quote, and a marker is a comment, so Go, vet and the linters
-// all accept the result. It surfaces only when the API server compiles the
-// rule at CRD install. See TestKubebuilderMarkersAreASCII.
+// The rule uses size() rather than an empty string literal: two adjacent
+// apostrophes get autocorrected into a typographic quote, which every Go tool
+// accepts inside a comment and only the API server rejects at CRD install.
+// See TestKubebuilderMarkersAreASCII.
 // +kubebuilder:validation:XValidation:rule="self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig) && has(self.hybridChunkerConfig.tokenizer) && size(self.hybridChunkerConfig.tokenizer) > 0)",message="hybridChunkerConfig.tokenizer is required when strategy is doclingHybridChunker"
 type ChunksGeneratorConfig struct {
-	// Strategy selects the chunker.
-	//
-	// The empty string is accepted because this field is required in the
-	// generated CRD, so resources that want the default set it empty rather
-	// than omitting it, and SetDefaults fills it in.
+	// Strategy selects the chunker. The empty string is accepted because the
+	// generated CRD makes this field required, so a resource that wants the
+	// default sets it empty and SetDefaults fills it in.
 	// +kubebuilder:validation:Enum=recursiveCharacterTextSplitter;markdownTextSplitter;tokenTextSplitter;doclingHybridChunker;""
 	Strategy                         ChunkingStrategy                 `json:"strategy"`
 	RecursiveCharacterSplitterConfig RecursiveCharacterSplitterConfig `json:"recursiveCharacterSplitterConfig,omitempty"`
@@ -270,34 +250,24 @@ type ChunksGeneratorConfig struct {
 }
 
 // HybridChunkerConfig configures docling's own chunker, which splits on the
-// document's structure instead of on character counts. The other three
-// strategies split text in process; this one is a call to docling, and each
-// chunk it returns knows which part of the document it came from.
-//
-// Every one of docling's own defaults is wrong for this use, which is why all
-// four settings are explicit.
+// document's structure instead of on character counts. Unlike the in process
+// strategies it is a call to docling, and each chunk it returns knows which
+// part of the document it came from.
 type HybridChunkerConfig struct {
-	// Tokenizer counts the tokens MaxTokens is measured in. Required, and
-	// admission rejects an empty one, because there is no default that works
-	// and the failure is silent.
+	// Tokenizer counts the tokens MaxTokens is measured in. Required, because
+	// there is no default that works everywhere and the failure is silent.
 	//
-	// A HuggingFace model name only resolves if docling can reach
-	// huggingface.co. Where it cannot, an unreachable tokenizer is not an
-	// error: the request returns success with zero chunks once the download
-	// times out. Measured against a deployment with no egress, a HuggingFace
-	// name returned 0 chunks in 58s where a path to a tokenizer inside
-	// docling's own image returned 1 in 9.5s. Docling's own default is a
-	// HuggingFace name.
+	// A HuggingFace model name, which is docling's own default, only resolves
+	// if docling can reach huggingface.co; where it cannot, the request
+	// returns success with zero chunks once the download times out. Prefer a
+	// path to a tokenizer inside docling's own image.
 	// +optional
 	Tokenizer string `json:"tokenizer,omitempty"`
 
-	// MaxTokens caps the finished chunk, headings included, because the
-	// chunker subtracts the heading trail itself. Set it to the context
-	// window of the embedding model the chunks are destined for.
-	//
-	// Leaving it unset is not an option either. Docling falls back to the
-	// tokenizer's own limit, which is several times a typical embedding
-	// window, and produces chunks nothing can embed.
+	// MaxTokens caps the finished chunk, headings included. Set it to the
+	// context window of the embedding model the chunks are destined for;
+	// unset, docling falls back to the tokenizer's own limit and produces
+	// chunks nothing can embed.
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	MaxTokens int `json:"maxTokens,omitempty"`
@@ -310,21 +280,16 @@ type HybridChunkerConfig struct {
 	IncludeRawText *bool `json:"includeRawText,omitempty"`
 
 	// UseMarkdownTables serialises a table as markdown rather than as
-	// "RowLabel, ColumnName = value" triplets. Defaults true.
-	//
-	// Settable rather than fixed because on a table-dense corpus this is a
-	// genuine retrieval-quality tradeoff rather than an obvious improvement.
+	// "RowLabel, ColumnName = value" triplets. Defaults true, and settable
+	// because on a table-dense corpus it is a retrieval-quality tradeoff.
 	// +optional
 	UseMarkdownTables *bool `json:"useMarkdownTables,omitempty"`
 }
 
 // ChunkJob tracks one chunking task that docling has accepted and not yet
-// finished. Chunking is submitted and then polled, so without this a restart
-// loses every outstanding task and the files behind them are never completed.
-//
-// It carries the config that was in effect at submission. The result can
-// arrive after the spec has changed, and the metadata written then has to
-// describe the chunking that actually ran.
+// finished, so a restart does not lose it. It carries the config that was in
+// effect at submission, because the result can arrive after the spec has
+// changed and the metadata has to describe the chunking that ran.
 type ChunkJob struct {
 	FilePath              string                `json:"filePath,omitempty"`
 	FileIdentifier        string                `json:"fileIdentifier,omitempty"`
@@ -389,14 +354,11 @@ func (c *ChunksGeneratorConfig) SetDefaults() {
 			c.TokenSplitterConfig.ChunkOverlap = DefaultChunkOverlap
 		}
 	case ChunkingStrategyDoclingHybrid:
-		// Only this strategy, never unconditionally. This config travels into
-		// the metadata that decides whether a file needs chunking again, so
-		// filling it in for every generator would re-chunk every corpus,
-		// including those of the generators that never read it.
-		//
-		// Tokenizer is absent on purpose. There is no value that works
-		// everywhere, and admission already rejects an empty one for this
-		// strategy, so a default here could only be a wrong guess.
+		// Only this strategy: the config travels into the metadata that
+		// decides whether a file needs chunking again, so defaulting it for
+		// every generator would re-chunk every corpus. Tokenizer is left out
+		// because no value works everywhere and admission already rejects an
+		// empty one here.
 		if c.HybridChunkerConfig.MaxTokens == 0 {
 			c.HybridChunkerConfig.MaxTokens = DefaultHybridMaxTokens
 		}

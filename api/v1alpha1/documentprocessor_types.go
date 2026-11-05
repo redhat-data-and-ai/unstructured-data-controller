@@ -121,27 +121,17 @@ const (
 
 var defaultFromFormats = []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
 
-// defaultToFormats asks docling for two forms of every document.
-//
-// "md" is what every current consumer reads. "json" is the DoclingDocument:
-// the block tree, the per-block bounding boxes and the page dimensions. Docling
-// only populates json_content when "json" is listed here, so leaving it out
-// means the structure is simply never returned.
-//
-// Asking for both makes the response substantially larger, because the
-// DoclingDocument repeats the full text of the document alongside the markdown
-// and adds geometry for every element.
+// defaultToFormats asks docling for two forms of every document: "md", which
+// every current consumer reads, and "json", the DoclingDocument with the block
+// tree, bounding boxes and page dimensions. Docling populates json_content
+// only when "json" is listed here.
 var defaultToFormats = []string{"md", "json"}
 
 // vlmModelDefaults carries the settings that belong to a model rather than to
 // a pipeline, so that selecting a model is the only choice anyone has to make.
-//
-// Scale is the cheapest value that loses nothing. Nemotron Parse resizes every
-// page to a 2048 by 1664 canvas, and 2048 pixels tall on a letter page is 186
-// DPI, so 2.78 (200 DPI, since 200/72) clears it with nothing to spare. Higher
-// is scaled straight back down. MaxSize has to stay above the canvas or pages
-// are shrunk before the model sees them and the effective scale drops without
-// any error.
+// Scale is set just above the model's own canvas, since anything higher is
+// scaled back down, and MaxSize must stay above that canvas or pages shrink
+// before the model sees them with no error raised.
 //
 // Values are returned by copy. Add no slices or maps to this struct without
 // copying them too, or a caller mutating one reaches the shared default.
@@ -320,21 +310,14 @@ type PictureDescriptionAPI struct {
 // VLMPipelineCustomConfig describes the model the "vlm" pipeline sends each
 // page to. The standard pipeline ignores it.
 //
-// It holds only what changes the parse. This struct is copied into the
-// metadata that decides whether a file needs converting again, so a field here
-// is a field whose change reconverts the corpus. The endpoint, its credential,
-// its timeout and its concurrency are absent for that reason. Moving the
-// service to a new address must not reconvert anything.
+// It holds only what changes the parse, because this struct is copied into the
+// metadata that decides whether a file needs converting again. The endpoint,
+// its credential, its timeout and its concurrency are absent for that reason;
+// the credential is read from the controller's secret per request.
 //
-// No credential field, as on PictureDescriptionAPI. The key is read from the
-// controller's secret and added to the outbound request only.
-//
-// There is no field pinning the model's version. Docling only honours one when
-// it downloads the weights itself, and a model reached over an API is served
-// by whoever hosts it, so nothing we send here can fix the version. The gap is
-// real: the host can update the model and every document converted before that
-// still looks current. Recording what answered belongs with the output rather
-// than here, where it would only look like a guarantee.
+// Nothing here pins the model's version: a model reached over an API is served
+// by whoever hosts it, so the host can update it and documents converted
+// before that still look current.
 type VLMPipelineCustomConfig struct {
 	// Model is the model repository identifier, for example
 	// "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
@@ -348,42 +331,32 @@ type VLMPipelineCustomConfig struct {
 	Prompt string `json:"prompt,omitempty"`
 
 	// ResponseFormat names the decoder applied to the model's reply. No enum
-	// marker, because the set of decoders belongs to docling and grows between
-	// its releases, so pinning it here would reject values docling accepts. An
-	// unknown value is rejected by docling rather than ignored.
+	// marker, because the set of decoders grows between docling releases and
+	// docling rejects an unknown value rather than ignoring it.
 	// +optional
 	ResponseFormat string `json:"response_format,omitempty"`
 
 	// Scale is what pages are rasterised at before the model sees them, where
-	// 1.0 is 72 DPI. String for the same reason ImagesScale is.
-	//
-	// ImagesScale does not control this. That one scales images exported in
-	// the output.
+	// 1.0 is 72 DPI. String for the same reason ImagesScale is, and not to be
+	// confused with it: that one scales images exported in the output.
 	// +optional
 	Scale string `json:"scale,omitempty"`
 
-	// MaxSize caps a rasterised page's longest edge in pixels. A page that
-	// would exceed it is scaled down to fit, so the effective scale drops
-	// below Scale silently. Large and landscape pages hit this first, and
-	// raising Scale alone changes nothing for them.
+	// MaxSize caps a rasterised page's longest edge in pixels. A page over it
+	// is scaled down to fit, so the effective scale drops below Scale
+	// silently and raising Scale alone changes nothing for large pages.
 	// +optional
 	MaxSize int `json:"max_size,omitempty"`
 }
 
-// SetDefaults fills in the settings that follow from the model.
+// SetDefaults fills in the settings that follow from the model: prompt,
+// response format, scale and max size are properties of the model rather than
+// choices, and a wrong prompt returns a document that looks fine and is
+// missing whatever was not asked for.
 //
-// Prompt, response format, scale and max size are properties of the model
-// rather than choices, which is why they are derived from Model instead of
-// being left to whoever writes the CR. The prompt in particular is a row of
-// control tokens that the model answers to, and getting one wrong returns a
-// document that looks fine and is missing whatever was not asked for.
-//
-// They live in the spec rather than in the controller so that they reach the
-// stored metadata. A release that changes what we ask the model for then
-// reconverts, instead of leaving every existing document looking current.
-//
-// An unrecognised model is left alone rather than rejected, so a model we have
-// not catalogued can still be used by filling the fields in by hand.
+// They are defaulted into the spec, not the controller, so they reach the
+// stored metadata and a change to them reconverts. An unrecognised model is
+// left alone, so it can still be used by filling the fields in by hand.
 func (c *VLMPipelineCustomConfig) SetDefaults() {
 	if c.Model == "" {
 		c.Model = DefaultVLMPipelineModel
@@ -424,10 +397,8 @@ type DoclingConfig struct {
 	// +optional
 	Pipeline string `json:"pipeline,omitempty"`
 	// VLMPipelineCustomConfig describes the model to use when Pipeline is
-	// "vlm". It has no effect on any other pipeline.
-	//
-	// These fields reach ConvertedFileMetadata, so changing any of them
-	// reconverts. That is deliberate: each one changes what the parse returns.
+	// "vlm", and has no effect on any other pipeline. Its fields reach
+	// ConvertedFileMetadata, so changing one reconverts.
 	// +optional
 	VLMPipelineCustomConfig *VLMPipelineCustomConfig `json:"vlm_pipeline_custom_config,omitempty"`
 	TableMode               string                   `json:"table_mode,omitempty"`

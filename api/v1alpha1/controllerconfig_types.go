@@ -78,18 +78,14 @@ type ControllerConfigSpec struct {
 	// +optional
 	VLMModelID string `json:"vlmModelID,omitempty"`
 
-	// vlm pipeline
 	// vlmPipelineAPIURL is where the model named in a DocumentProcessor's
 	// doclingConfig.vlm_pipeline_custom_config is served. Not to be confused
 	// with vlmAPIURL above, which is the endpoint for picture description.
 	//
 	// The address lives here rather than on the CR so that moving the service
-	// does not reconvert anything: only the settings that change what the
-	// model returns belong in the spec, where they reach the conversion cache
-	// key. The matching API key is absent from this struct for a stronger
-	// reason: DoclingConfig is copied verbatim into ConvertedFileMetadata and
-	// shipped to the destination bucket, so a credential on any CR would be
-	// persisted into every converted artifact. It is read from the controller
+	// does not reconvert anything. The matching API key has no field at all,
+	// because DoclingConfig is copied verbatim into ConvertedFileMetadata and
+	// shipped to the destination bucket; it is read from the controller
 	// Secret instead.
 	// +optional
 	VLMPipelineAPIURL *string `json:"vlmPipelineAPIURL,omitempty"`

@@ -52,10 +52,9 @@ func operatorSecretSample(t *testing.T) corev1.Secret {
 }
 
 // A credential the controller looks for under one name and the sample
-// advertises under another is invisible: the settings stay unconfigured,
-// injection is skipped, and every document converts on the standard pipeline
-// while the stage reports success. Nothing else in the system would notice,
-// which is why this is asserted rather than left to review.
+// advertises under another is invisible: the settings stay unconfigured and
+// every document converts on the standard pipeline while the stage reports
+// success.
 func TestSampleSecretDeclaresTheKeysTheControllerReads(t *testing.T) {
 	secret := operatorSecretSample(t)
 
