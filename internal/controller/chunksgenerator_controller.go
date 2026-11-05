@@ -622,8 +622,13 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 // on every pass and the stage stays red with no way out.
 //
 // Giving up on the id may abandon a task that really is still running, and
-// its slot with it. That is the lesser cost: the slot returns when the
-// process restarts, and the alternative is a file that is never chunked.
+// its slot with it. Note whose slot: the client is shared with conversion,
+// so an abandoned permit is taken from both stages until the process
+// restarts. It is still the better of two bad options, because the
+// alternative is a file that is never chunked and a stage that never
+// recovers, but it is a cost this stage imposes on another one. The real
+// fix is for the client to account for permits per task, which also closes
+// the double release that conversion already has.
 func (r *ChunksGeneratorReconciler) failStuckChunkJob(ctx context.Context, job operatorv1alpha1.ChunkJob,
 	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, cause error) error {
 	created, err := time.Parse(time.RFC3339, job.CreatedOn)
