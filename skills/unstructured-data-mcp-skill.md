@@ -4,9 +4,9 @@ You have access to an MCP server that lets you search documents and knowledge ba
 
 ## Tools & Usage
 
-1. **`list_unstructured_data_pipelines_for_user`** — Returns pipelines the user can access along with their descriptions. Call at the start. If the user asks about a pipeline not in the original list, call again to refresh.
-2. **`get_chunks_for_embeddings`** — Semantic search over a pipeline's documents. Takes `pipeline_name` and `query`. Returns matching chunks with file IDs. Use descriptive natural language queries (not keywords — it's vector search). For broad questions, make multiple focused searches rather than one vague one.
-3. **`get_processed_document`** — Fetches the full processed markdown of a document by file ID. Use this when chunks from `get_chunks_for_embeddings` don't give enough context to answer confidently.
+1. **`list_unstructured_data_pipelines_for_user`**: Returns pipelines the user can access along with their descriptions. Call at the start. If the user asks about a pipeline not in the original list, call again to refresh.
+2. **`get_chunks_for_embeddings`**: Semantic search over a pipeline's documents. Takes `pipeline_name` and `query`; optionally `file_path_filter` (glob such as `*/README.md` to scope the search to specific files) and `limit` (number of chunks to return, defaults to 10). Use a lower `limit` for specific factual questions and a higher one for broad ones. Returns matching chunks with file IDs. Use descriptive natural language queries (not keywords; it's vector search). For broad questions, make multiple focused searches rather than one vague one.
+3. **`get_processed_document`**: Fetches the full processed markdown of a document, either by `file_id` or by `file_path_filter` glob (e.g. `*/README.md`); at least one of the two is required. Use this when chunks from `get_chunks_for_embeddings` don't give enough context to answer confidently.
 
 ## Key Rules
 
