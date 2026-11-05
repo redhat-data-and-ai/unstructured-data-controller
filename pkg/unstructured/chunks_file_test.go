@@ -177,12 +177,8 @@ func TestChunkIDRoundTrip(t *testing.T) {
 	}{
 		{name: "an ordinary path", id: ChunkID{FilePath: "convert/report.pdf.json", Index: 7}},
 		{name: "the first chunk", id: ChunkID{FilePath: "a.json", Index: 0}},
-		{
-			// A path may legally contain the separator, so parsing splits on
-			// the last one rather than the first.
-			name: "a path containing the separator",
-			id:   ChunkID{FilePath: "convert/q1#final.pdf.json", Index: 3},
-		},
+		{name: "a path containing the separator",
+			id: ChunkID{FilePath: "convert/q1#final.pdf.json", Index: 3}},
 		{name: "a path with spaces", id: ChunkID{FilePath: "convert/ACV Guidance.pdf.json", Index: 12}},
 	}
 
@@ -201,8 +197,7 @@ func TestChunkIDString(t *testing.T) {
 		ChunkID{FilePath: "convert/report.pdf.json", Index: 7}.String())
 }
 
-// The id comes from whoever is asking to see a citation, and names a file to
-// be read on their behalf, so it is validated rather than split.
+// The id is caller-supplied and names a file to read, so it is validated.
 func TestParseChunkIDRejectsWhatCannotNameAChunk(t *testing.T) {
 	tests := []struct {
 		name string
@@ -241,9 +236,8 @@ func TestChunksAt(t *testing.T) {
 	assert.Equal(t, 4, chunks.At(1).PageLast)
 }
 
-// A file chunked by a text splitter has only the text array, and an artifact
-// written before the others existed is the same shape. Reading one of those
-// must not panic.
+// A text splitter writes only the text array, as does an artifact written
+// before the others existed. Reading one must not panic.
 func TestChunksAt_ToleratesMissingAndShortArrays(t *testing.T) {
 	textOnly := NewChunks(TextChunks([]string{"first", "second"}))
 

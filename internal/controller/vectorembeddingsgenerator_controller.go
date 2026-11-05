@@ -252,18 +252,9 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 
 	logger.Info("successfully generated embeddings", "file", chunksFilePath, "embeddingCount", len(allEmbeddings))
 
-	// rearrange the embeddings
-	//
-	// Each vector carries the provenance of the chunk it was made from.
-	// Retrieval reads this artifact and not the chunks one, so a field left
-	// off here cannot be recovered later: the chunks document is nested in
-	// the same file, but the warehouse view reads each entry on its own and
-	// cannot reach it.
-	//
-	// The chunk id is derived rather than read. The chunks artifact holds
-	// none, and adding one there would not have helped, because it is not
-	// part of the cache key and every artifact written before it existed
-	// would still count as current.
+	// Each vector carries its chunk's provenance. A field left off here
+	// cannot be recovered later: the chunks document is nested in the same
+	// file, but each entry is read on its own and cannot reach it.
 	chunkedFilePath := chunkedFile.ConvertedDocument.Metadata.RawFilePath
 	embeddings := make([]*unstructured.Embeddings, len(allEmbeddings))
 	for i, embeddingVector := range allEmbeddings {

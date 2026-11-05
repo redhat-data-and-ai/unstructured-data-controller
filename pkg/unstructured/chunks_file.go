@@ -12,20 +12,12 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 )
 
-// chunkIDSeparator divides the two halves of a ChunkID. A file path may
-// legally contain one, which is why parsing splits on the last occurrence
-// rather than the first.
+// chunkIDSeparator divides the two halves of a ChunkID. A path may contain
+// one, so parsing splits on the last occurrence.
 const chunkIDSeparator = "#"
 
-// ChunkID identifies one chunk of one converted file.
-//
-// Derived rather than stored, so the two stages that need it cannot drift:
-// the chunks artifact holds no id of its own, and adding one would not have
-// helped, since it is not part of the cache key and every artifact written
-// before it existed would still be considered current.
-//
-// It is a type because a citation hands the id back to be resolved into a
-// file and a chunk again, and that is parsing rather than splitting.
+// ChunkID identifies one chunk of one converted file. It is derived from
+// both stages that need it rather than stored, so they cannot drift.
 type ChunkID struct {
 	// FilePath is the converted file the chunk came from.
 	FilePath string
@@ -33,16 +25,13 @@ type ChunkID struct {
 	Index int
 }
 
-// String renders the id for storage. This is the form the warehouse keeps in
-// a column, so it stays a plain scalar rather than becoming an object.
+// String renders the id as the scalar the artifact stores.
 func (id ChunkID) String() string {
 	return id.FilePath + chunkIDSeparator + strconv.Itoa(id.Index)
 }
 
-// ParseChunkID reads an id back.
-//
-// It validates rather than splits, because the id arrives from whoever is
-// asking to see a citation and names a file to be read on their behalf.
+// ParseChunkID reads an id back, returning ErrInvalidChunkID for one that
+// cannot name a chunk. The id is caller-supplied and names a file to read.
 func ParseChunkID(id string) (ChunkID, error) {
 	separator := strings.LastIndex(id, chunkIDSeparator)
 	if separator <= 0 {
@@ -143,11 +132,9 @@ func NewChunks(chunks []Chunk) *Chunks {
 	return stored
 }
 
-// At reads one chunk back out of the parallel arrays.
-//
-// Every array but Text is optional, and a file chunked by a text splitter
-// has none of them, so each is read only if it reaches this index. Without
-// that, reading a chunk of an older artifact panics.
+// At reads one chunk back out of the parallel arrays, returning the zero
+// Chunk for an index out of range. Every array but Text is optional, and an
+// array that stops short is read as absent rather than as an error.
 func (c *Chunks) At(index int) Chunk {
 	if c == nil || index < 0 || index >= len(c.Text) {
 		return Chunk{}

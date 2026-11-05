@@ -19,33 +19,21 @@ type EmbeddingFileMetadata struct {
 	GeminiEmbedding2Config  v1alpha1.GeminiEmbedding2Config  `json:"geminiEmbedding2Config,omitempty"`
 }
 
-// Embeddings is one vector and what it was made from.
-//
-// Retrieval queries this artifact and not the chunks one, so a row here is
-// everything a caller gets back from a match. The fields below the vector
-// are what turn that row into a citation: without them a match can be read
-// but not located, and the chunks it came from cannot be fetched again.
-//
-// They are copied from the chunks artifact rather than joined to it. This is
-// a list of objects and the warehouse view reads each field straight off the
-// flattened entry, so anything not on the entry is unreachable from SQL even
-// though the whole chunks document is nested in the same file.
+// Embeddings is one vector and what it was made from. Retrieval reads this
+// artifact rather than the chunks one, so the fields below the vector are
+// what let a match be located as well as read.
 type Embeddings struct {
 	Text      string    `json:"text"`
 	Embedding []float64 `json:"embedding"`
 
-	// ChunkID names the chunk this vector was made from, so a citation can
-	// be fetched back. Stored as a scalar because the warehouse keeps it in
-	// a column; see ChunkID and ParseChunkID for the two halves.
+	// ChunkID names the chunk this vector was made from. See ChunkID.
 	ChunkID string `json:"chunkId,omitempty"`
 
-	// RawText is the body without the heading trail, so a citation shows
-	// what the reader should see rather than what was embedded.
+	// RawText is the body without the heading trail, for display.
 	RawText string `json:"rawText,omitempty"`
 
-	// BlockIDs and Regions say which parts of the document the chunk came
-	// from and where they sit. Absent for a chunker that splits text, which
-	// cannot know either.
+	// BlockIDs and Regions locate the chunk in the document. Absent for a
+	// chunker that splits text, which knows neither.
 	BlockIDs []string         `json:"blockIds,omitempty"`
 	Regions  []docling.Region `json:"regions,omitempty"`
 }
