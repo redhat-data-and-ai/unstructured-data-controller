@@ -180,3 +180,155 @@ func TestChunksGeneratorConfig_SetDefaults_EmptyStrategyIsUnchanged(t *testing.T
 			ChunkingStrategyRecursiveCharacter, c.Strategy)
 	}
 }
+
+func TestChunksGenerator_AddOrUpdateJob_AppendsNewFiles(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "b.json", TaskID: "task-b"})
+
+	if len(generator.Status.Jobs) != 2 {
+		t.Fatalf("expected two jobs, got %d", len(generator.Status.Jobs))
+	}
+	if generator.Status.Jobs[0].TaskID != "task-a" || generator.Status.Jobs[1].TaskID != "task-b" {
+		t.Errorf("expected the jobs to be kept in submission order, got %+v", generator.Status.Jobs)
+	}
+}
+
+// A file has at most one job. A second entry for the same file would write the
+// same artifact twice and hold a second slot against the chunking service for
+// nothing.
+func TestChunksGenerator_AddOrUpdateJob_ReplacesTheJobForTheSameFile(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a", Attempts: 1})
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a-retry", Attempts: 2})
+
+	if len(generator.Status.Jobs) != 1 {
+		t.Fatalf("expected one job, got %d", len(generator.Status.Jobs))
+	}
+	if generator.Status.Jobs[0].TaskID != "task-a-retry" {
+		t.Errorf("expected the job to be replaced, got task id %q", generator.Status.Jobs[0].TaskID)
+	}
+	if generator.Status.Jobs[0].Attempts != 2 {
+		t.Errorf("expected the replacement's attempt count, got %d", generator.Status.Jobs[0].Attempts)
+	}
+}
+
+func TestChunksGenerator_GetJobByFilePath(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+
+	job := generator.GetJobByFilePath("a.json")
+	if job == nil {
+		t.Fatal("expected a job for a.json, got nil")
+	}
+	if job.TaskID != "task-a" {
+		t.Errorf("expected task id %q, got %q", "task-a", job.TaskID)
+	}
+}
+
+// Nil, not a zero value. The caller reads this as "already in flight", so a
+// zero ChunkJob would make every file look submitted and nothing would ever be
+// sent.
+func TestChunksGenerator_GetJobByFilePath_UnknownFileIsNil(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+
+	if job := generator.GetJobByFilePath("b.json"); job != nil {
+		t.Errorf("expected no job for an unsubmitted file, got %+v", job)
+	}
+	if job := (&ChunksGenerator{}).GetJobByFilePath("a.json"); job != nil {
+		t.Errorf("expected no job when none have been submitted, got %+v", job)
+	}
+}
+
+func TestChunksGenerator_DeleteJobByFilePath(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "b.json", TaskID: "task-b"})
+
+	generator.DeleteJobByFilePath("a.json")
+
+	if len(generator.Status.Jobs) != 1 {
+		t.Fatalf("expected one job to remain, got %d", len(generator.Status.Jobs))
+	}
+	if generator.Status.Jobs[0].FilePath != "b.json" {
+		t.Errorf("expected the other file's job to remain, got %q", generator.Status.Jobs[0].FilePath)
+	}
+}
+
+// Deleting something that is not there has to be harmless. The collect path
+// deletes after writing an artifact, and that can run twice if the status
+// patch is retried.
+func TestChunksGenerator_DeleteJobByFilePath_UnknownFileChangesNothing(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddOrUpdateJob(ChunkJob{FilePath: "a.json", TaskID: "task-a"})
+
+	generator.DeleteJobByFilePath("b.json")
+
+	if len(generator.Status.Jobs) != 1 {
+		t.Errorf("expected the existing job to be untouched, got %+v", generator.Status.Jobs)
+	}
+}
+
+func TestChunksGenerator_PermanentlyFailingFiles(t *testing.T) {
+	generator := &ChunksGenerator{}
+
+	if generator.IsFilePermanentlyFailing("a.json") {
+		t.Error("expected a file nobody has given up on to not be failing")
+	}
+
+	generator.AddPermanentlyFailingFile("a.json")
+	if !generator.IsFilePermanentlyFailing("a.json") {
+		t.Error("expected the file to be recorded as permanently failing")
+	}
+	if generator.IsFilePermanentlyFailing("b.json") {
+		t.Error("expected an unrelated file to be unaffected")
+	}
+}
+
+// The file is added once per give-up and the list is never pruned, so without
+// this the same path accumulates on status until the resource is edited.
+func TestChunksGenerator_AddPermanentlyFailingFile_IsNotRecordedTwice(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.AddPermanentlyFailingFile("a.json")
+	generator.AddPermanentlyFailingFile("a.json")
+
+	if len(generator.Status.PermanentlyFailingFiles) != 1 {
+		t.Errorf("expected one entry, got %v", generator.Status.PermanentlyFailingFiles)
+	}
+}
+
+// Chunking usually fails for the whole corpus at once, on configuration
+// rather than on the file. An unreachable tokenizer gives up on every file,
+// so fixing it has to recover them or the only way back is editing status.
+func TestChunksGenerator_ResetPermanentlyFailingFiles_OnASpecEdit(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.Generation = 4
+	generator.AddPermanentlyFailingFile("a.json")
+
+	if generator.ResetPermanentlyFailingFiles() {
+		t.Error("expected no reset while the spec is unchanged")
+	}
+
+	generator.Generation = 5
+	if !generator.ResetPermanentlyFailingFiles() {
+		t.Error("expected the edited spec to clear the list")
+	}
+	if generator.Status.PermanentlyFailingFiles != nil {
+		t.Errorf("expected the list to be cleared, got %v", generator.Status.PermanentlyFailingFiles)
+	}
+	if generator.IsFilePermanentlyFailing("a.json") {
+		t.Error("expected the file to be eligible again")
+	}
+}
+
+// It reports whether it changed anything, because the caller patches status
+// on the answer and an empty patch on every reconcile is pure noise.
+func TestChunksGenerator_ResetPermanentlyFailingFiles_NothingToReset(t *testing.T) {
+	generator := &ChunksGenerator{}
+	generator.Generation = 7
+
+	if generator.ResetPermanentlyFailingFiles() {
+		t.Error("expected no reset when no file has been given up on")
+	}
+}

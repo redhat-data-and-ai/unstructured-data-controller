@@ -29,13 +29,13 @@ func TestValidateChunks(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
-		chunks  []string
+		chunks  []Chunk
 		wantErr bool
 	}{
 		{
 			name:    "content that chunked normally",
 			content: "a paragraph of text",
-			chunks:  []string{"a paragraph of text"},
+			chunks:  []Chunk{{Text: "a paragraph of text"}},
 			wantErr: false,
 		},
 		{
@@ -47,7 +47,7 @@ func TestValidateChunks(t *testing.T) {
 		{
 			name:    "content that chunked to an empty, non-nil slice",
 			content: "a slide deck the parser returned no text for",
-			chunks:  []string{},
+			chunks:  []Chunk{},
 			wantErr: true,
 		},
 		{
@@ -70,7 +70,7 @@ func TestValidateChunks(t *testing.T) {
 			// chunker returning blanks, which is a separate concern.
 			name:    "an empty chunk still counts as a chunk",
 			content: "some text",
-			chunks:  []string{""},
+			chunks:  []Chunk{{Text: ""}},
 			wantErr: false,
 		},
 	}
