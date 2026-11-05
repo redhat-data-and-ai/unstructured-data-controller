@@ -423,7 +423,6 @@ func (r *ChunksGeneratorReconciler) storeChunks(
 	}
 
 	chunksFile := unstructured.ChunksFile{
-		ConvertedDocument: convertedFile.ConvertedDocument,
 		ChunksDocument: &unstructured.ChunksDocument{
 			Metadata: &unstructured.ChunksFileMetadata{
 				ChunkingTool:          unstructured.ChunkingToolForStrategy(config.Strategy),

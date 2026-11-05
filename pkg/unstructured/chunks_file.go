@@ -162,9 +162,11 @@ type ChunksDocument struct {
 	Chunks   *Chunks             `json:"chunks"`
 }
 
+// ChunksFile carries no converted document. The converted metadata consumers
+// read is already on ChunksDocument.Metadata, and the only other thing a
+// copy would add is the DoclingDocument, which nothing downstream reads.
 type ChunksFile struct {
-	ConvertedDocument *ConvertedDocument `json:"convertedDocument"`
-	ChunksDocument    *ChunksDocument    `json:"chunksDocument"`
+	ChunksDocument *ChunksDocument `json:"chunksDocument"`
 }
 
 func (c *ChunksFileMetadata) Equal(other *ChunksFileMetadata) bool {

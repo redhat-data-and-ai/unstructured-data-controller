@@ -176,8 +176,11 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 		return false, err
 	}
 
-	// Validate chunked file structure
-	if chunkedFile.ConvertedDocument == nil || chunkedFile.ChunksDocument == nil {
+	// Validate chunked file structure. Metadata is checked too, because
+	// everything below reads the converted metadata through it.
+	if chunkedFile.ChunksDocument == nil ||
+		chunkedFile.ChunksDocument.Metadata == nil ||
+		chunkedFile.ChunksDocument.Metadata.ConvertedFileMetadata == nil {
 		return false, errors.New("invalid chunks file structure: missing required fields")
 	}
 	if chunkedFile.ChunksDocument.Chunks == nil || len(chunkedFile.ChunksDocument.Chunks.Text) == 0 {
@@ -204,7 +207,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 	})
 
 	embeddingFileMetadata := &unstructured.EmbeddingFileMetadata{
-		ConvertedFileMetadata:   chunkedFile.ConvertedDocument.Metadata,
+		ConvertedFileMetadata:   chunkedFile.ChunksDocument.Metadata.ConvertedFileMetadata,
 		ChunkFileMetadata:       chunkedFile.ChunksDocument.Metadata,
 		ModelName:               modelName,
 		NomicEmbedTextV15Config: vegConfig.NomicEmbedTextV15Config,
@@ -255,7 +258,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 	// Each vector carries its chunk's provenance. A field left off here
 	// cannot be recovered later: the chunks document is nested in the same
 	// file, but each entry is read on its own and cannot reach it.
-	chunkedFilePath := chunkedFile.ConvertedDocument.Metadata.RawFilePath
+	chunkedFilePath := chunkedFile.ChunksDocument.Metadata.ConvertedFileMetadata.RawFilePath
 	embeddings := make([]*unstructured.Embeddings, len(allEmbeddings))
 	for i, embeddingVector := range allEmbeddings {
 		chunk := chunkedFile.ChunksDocument.Chunks.At(i)
@@ -271,8 +274,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 
 	// Create the complete embeddings file structure
 	embeddingsFile := &unstructured.EmbeddingsFile{
-		ConvertedDocument: chunkedFile.ConvertedDocument,
-		ChunksDocument:    chunkedFile.ChunksDocument,
+		ChunksDocument: chunkedFile.ChunksDocument,
 		EmbeddingDocument: &unstructured.EmbeddingDocument{
 			Metadata:   embeddingFileMetadata,
 			Embeddings: embeddings,
@@ -346,7 +348,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 		}
 
 		fileToEmbedMetadata := &unstructured.EmbeddingFileMetadata{
-			ConvertedFileMetadata:   chunkedFile.ConvertedDocument.Metadata,
+			ConvertedFileMetadata:   chunkedFile.ChunksDocument.Metadata.ConvertedFileMetadata,
 			ChunkFileMetadata:       chunkedFile.ChunksDocument.Metadata,
 			ModelName:               vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.ModelName,
 			NomicEmbedTextV15Config: vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.NomicEmbedTextV15Config,

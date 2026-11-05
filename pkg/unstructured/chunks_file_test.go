@@ -269,3 +269,53 @@ func TestTextChunksAndChunkTextsRoundTrip(t *testing.T) {
 	assert.Empty(t, chunks[0].BlockIDs, "a text splitter knows no addresses")
 	assert.Equal(t, texts, ChunkTexts(chunks))
 }
+
+// The DoclingDocument reached these artifacts only through an embedded
+// ConvertedDocument, and no stage ever read it. On the measured corpus the
+// two redundant copies were 44% of all bytes written, and the embeddings one
+// is what the syncer uploads.
+func TestDownstreamArtifactsDoNotCarryTheRendition(t *testing.T) {
+	metadata := &ChunksFileMetadata{
+		ConvertedFileMetadata: &ConvertedFileMetadata{RawFilePath: "crawl/report.pdf"},
+		ChunkingTool:          DoclingChunkingTool,
+	}
+	document := &ChunksDocument{Metadata: metadata, Chunks: NewChunks(TextChunks([]string{"body"}))}
+
+	for name, artifact := range map[string]any{
+		"chunks":     ChunksFile{ChunksDocument: document},
+		"embeddings": EmbeddingsFile{ChunksDocument: document, EmbeddingDocument: &EmbeddingDocument{}},
+	} {
+		encoded, err := json.Marshal(artifact)
+		require.NoError(t, err)
+
+		assert.NotContains(t, string(encoded), "convertedDocument", "%s artifact", name)
+		assert.NotContains(t, string(encoded), "doclingDocument", "%s artifact", name)
+		assert.Contains(t, string(encoded), "convertedFileMetadata",
+			"%s artifact still has to carry the metadata the views read", name)
+	}
+}
+
+// Every artifact already in object storage has the embedded document. The
+// field is gone from the struct, so it decodes to nothing, and the metadata
+// consumers read has to resolve from where it has always also been.
+func TestChunksFileDecodesAnArtifactWrittenBeforeTheRenditionWasDropped(t *testing.T) {
+	stored := []byte(`{
+		"convertedDocument": {
+			"metadata": {"rawFilePath": "crawl/report.pdf"},
+			"content": {"markdown": "# Title", "doclingDocument": {"texts": []}}
+		},
+		"chunksDocument": {
+			"metadata": {"convertedFileMetadata": {"rawFilePath": "crawl/report.pdf"}},
+			"chunks": {"text": ["body"]}
+		}
+	}`)
+
+	chunksFile := ChunksFile{}
+	require.NoError(t, json.Unmarshal(stored, &chunksFile))
+
+	require.NotNil(t, chunksFile.ChunksDocument)
+	require.NotNil(t, chunksFile.ChunksDocument.Metadata)
+	require.NotNil(t, chunksFile.ChunksDocument.Metadata.ConvertedFileMetadata)
+	assert.Equal(t, "crawl/report.pdf",
+		chunksFile.ChunksDocument.Metadata.ConvertedFileMetadata.RawFilePath)
+}
