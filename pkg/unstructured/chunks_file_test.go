@@ -170,6 +170,96 @@ func TestNewChunks_NoChunks(t *testing.T) {
 	assert.Nil(t, stored.BlockIDs)
 }
 
+func TestChunkIDRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		id   ChunkID
+	}{
+		{name: "an ordinary path", id: ChunkID{FilePath: "convert/report.pdf.json", Index: 7}},
+		{name: "the first chunk", id: ChunkID{FilePath: "a.json", Index: 0}},
+		{name: "a path containing the separator",
+			id: ChunkID{FilePath: "convert/q1#final.pdf.json", Index: 3}},
+		{name: "a path with spaces", id: ChunkID{FilePath: "convert/ACV Guidance.pdf.json", Index: 12}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := ParseChunkID(test.id.String())
+
+			require.NoError(t, err)
+			assert.Equal(t, test.id, parsed)
+		})
+	}
+}
+
+func TestChunkIDString(t *testing.T) {
+	assert.Equal(t, "convert/report.pdf.json#7",
+		ChunkID{FilePath: "convert/report.pdf.json", Index: 7}.String())
+}
+
+// The id is caller-supplied and names a file to read, so it is validated.
+func TestParseChunkIDRejectsWhatCannotNameAChunk(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{name: "empty", id: ""},
+		{name: "no separator", id: "convert/report.pdf.json"},
+		{name: "no index", id: "convert/report.pdf.json#"},
+		{name: "a non-numeric index", id: "convert/report.pdf.json#seven"},
+		{name: "a negative index", id: "convert/report.pdf.json#-1"},
+		{name: "no file path", id: "#7"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ParseChunkID(test.id)
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidChunkID)
+		})
+	}
+}
+
+func TestChunksAt(t *testing.T) {
+	region := docling.Region{PageNo: 2, BBox: [4]float64{0.1, 0.2, 0.5, 0.3}}
+	chunks := NewChunks([]Chunk{
+		{Text: "first", RawText: "one", BlockIDs: []string{"#/texts/0"},
+			Regions: []docling.Region{region}, PageFirst: 2, PageLast: 2},
+		{Text: "second", RawText: "two", BlockIDs: []string{"#/texts/1"}, PageFirst: 3, PageLast: 4},
+	})
+
+	assert.Equal(t, Chunk{
+		Text: "first", RawText: "one", BlockIDs: []string{"#/texts/0"},
+		Regions: []docling.Region{region}, PageFirst: 2, PageLast: 2,
+	}, chunks.At(0))
+	assert.Equal(t, 4, chunks.At(1).PageLast)
+}
+
+// A text splitter writes only the text array, as does an artifact written
+// before the others existed. Reading one must not panic.
+func TestChunksAt_ToleratesMissingAndShortArrays(t *testing.T) {
+	textOnly := NewChunks(TextChunks([]string{"first", "second"}))
+
+	assert.Equal(t, Chunk{Text: "second"}, textOnly.At(1))
+
+	short := &Chunks{
+		Text:     []string{"first", "second"},
+		RawText:  []string{"one"},
+		PageLast: []int{9},
+	}
+	assert.Equal(t, Chunk{Text: "second"}, short.At(1), "arrays that stop early are simply absent")
+	assert.Equal(t, Chunk{Text: "first", RawText: "one", PageLast: 9}, short.At(0))
+}
+
+func TestChunksAt_OutOfRange(t *testing.T) {
+	chunks := NewChunks(TextChunks([]string{"only"}))
+
+	assert.Equal(t, Chunk{}, chunks.At(1))
+	assert.Equal(t, Chunk{}, chunks.At(-1))
+	assert.Equal(t, Chunk{}, (*Chunks)(nil).At(0))
+}
+
 func TestTextChunksAndChunkTextsRoundTrip(t *testing.T) {
 	texts := []string{"first", "", "third"}
 

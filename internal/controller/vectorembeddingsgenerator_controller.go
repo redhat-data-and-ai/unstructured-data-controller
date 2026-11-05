@@ -252,12 +252,20 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 
 	logger.Info("successfully generated embeddings", "file", chunksFilePath, "embeddingCount", len(allEmbeddings))
 
-	// rearrange the embeddings
+	// Each vector carries its chunk's provenance. A field left off here
+	// cannot be recovered later: the chunks document is nested in the same
+	// file, but each entry is read on its own and cannot reach it.
+	chunkedFilePath := chunkedFile.ConvertedDocument.Metadata.RawFilePath
 	embeddings := make([]*unstructured.Embeddings, len(allEmbeddings))
 	for i, embeddingVector := range allEmbeddings {
+		chunk := chunkedFile.ChunksDocument.Chunks.At(i)
 		embeddings[i] = &unstructured.Embeddings{
 			Text:      texts[i],
 			Embedding: embeddingVector,
+			ChunkID:   unstructured.ChunkID{FilePath: chunkedFilePath, Index: i}.String(),
+			RawText:   chunk.RawText,
+			BlockIDs:  chunk.BlockIDs,
+			Regions:   chunk.Regions,
 		}
 	}
 
