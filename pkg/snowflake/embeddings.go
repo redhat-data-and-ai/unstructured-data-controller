@@ -20,12 +20,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
-// chunkColumns is the select list both searches share. The four citation
-// columns are empty for any file embedded before they existed, so a caller
-// has to treat them as optional.
-const chunkColumns = `FILE_ID, CHUNK_INDEX, CHUNK_TEXT, CHUNK_ID, RAW_TEXT, BLOCK_IDS, REGIONS`
+// chunkColumns are the columns both searches read, in select order. Score is
+// absent because the query computes it rather than reading it.
+//
+// Each has to match a db tag on ChunkResult or the scanner drops it without
+// complaining; TestChunkColumnsMatchTheStruct checks both directions.
+var chunkColumns = []string{
+	"FILE_ID", "CHUNK_INDEX", "CHUNK_TEXT", "CHUNK_ID", "RAW_TEXT", "BLOCK_IDS", "REGIONS",
+}
+
+// selectList renders chunkColumns for a query.
+func selectList() string {
+	return strings.Join(chunkColumns, ", ")
+}
 
 type ChunkResult struct {
 	FileID string `json:"file_id" db:"file_id"`
@@ -61,7 +71,7 @@ func SearchChunks(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral string, limit int,
 ) ([]ChunkResult, error) {
 	query := fmt.Sprintf(
-		`SELECT `+chunkColumns+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
+		`SELECT `+selectList()+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
 			`FROM %s.%s.%s ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)
@@ -78,7 +88,7 @@ func SearchChunksWithFileFilter(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral, filePattern string, limit int,
 ) ([]ChunkResult, error) {
 	query := fmt.Sprintf(
-		`SELECT `+chunkColumns+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
+		`SELECT `+selectList()+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
 			`FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\' ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)

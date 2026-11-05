@@ -26,30 +26,35 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Every name here has to match a column the view defines. A wrong one fails
-// the query for every caller rather than returning an empty field.
-func TestChunkColumnsMatchTheView(t *testing.T) {
-	assert.Equal(t,
-		"FILE_ID, CHUNK_INDEX, CHUNK_TEXT, CHUNK_ID, RAW_TEXT, BLOCK_IDS, REGIONS",
-		chunkColumns)
-}
-
-// The scanner maps columns onto fields by db tag, so a column with no tagged
-// field is read and dropped without complaint.
-func TestEveryChunkColumnHasAField(t *testing.T) {
+// The select list and the scanner's db tags are two statements of the same
+// thing. A column with no tagged field is read and dropped in silence, and a
+// tagged field with no column is never populated, so both directions matter.
+//
+// Score is excluded: the query computes it rather than reading it.
+func TestChunkColumnsMatchTheStruct(t *testing.T) {
 	tagged := map[string]bool{}
 	resultType := reflect.TypeOf(ChunkResult{})
 	for i := range resultType.NumField() {
-		if tag := resultType.Field(i).Tag.Get("db"); tag != "" {
+		if tag := resultType.Field(i).Tag.Get("db"); tag != "" && tag != "score" {
 			tagged[strings.ToLower(tag)] = true
 		}
 	}
 
-	for _, column := range []string{
-		"file_id", "chunk_index", "chunk_text", "chunk_id", "raw_text", "block_ids", "regions",
-	} {
-		assert.True(t, tagged[column], "no field is tagged db:%q", column)
+	selected := map[string]bool{}
+	for _, column := range chunkColumns {
+		name := strings.ToLower(column)
+		selected[name] = true
+		assert.True(t, tagged[name], "column %s is selected but no field is tagged db:%q", column, name)
 	}
+
+	for tag := range tagged {
+		assert.True(t, selected[tag], "field tagged db:%q is never selected", tag)
+	}
+}
+
+func TestSelectList(t *testing.T) {
+	assert.Equal(t, strings.Join(chunkColumns, ", "), selectList())
+	assert.Contains(t, selectList(), "CHUNK_ID")
 }
 
 // The two VARIANT columns arrive as JSON text. Left alone they would reach a
