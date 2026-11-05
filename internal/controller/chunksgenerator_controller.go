@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/google/go-cmp/cmp"
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
@@ -568,6 +569,26 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 			job.FilePath, job.ChunksGeneratorConfig.Strategy)
 	}
 
+	// The work may already be done. Storing the chunks and forgetting the
+	// job are two steps, so a failure in between leaves a job whose task has
+	// ended and whose output is already written. Collecting it again would
+	// release that task's permit a second time, taking one from a task that
+	// is still running, and would rewrite the artifact and count the file
+	// twice. So notice first, and never poll an ended task again.
+	chunksFilePath := unstructured.RemapToOutputDir(job.FilePath, inputPath, outputPath)
+	written, err := r.chunksAlreadyWritten(ctx, job, chunksFilePath)
+	if err != nil {
+		return err
+	}
+	if written {
+		logger.Info("chunks for this task are already stored, forgetting the job",
+			"file", job.FilePath, "taskID", job.TaskID)
+		return controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
+			chunksGeneratorCR.DeleteJobByFilePath(job.FilePath)
+			chunksGeneratorCR.Status.FilesProcessed++
+		})
+	}
+
 	// Handed over as a function, not read here. The chunker needs the
 	// document to resolve each chunk's elements, but only once the task has
 	// finished, and most polls find it still running. The stored document is
@@ -603,7 +624,6 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 	// returned, even one as transient as a failed upload. The task has ended
 	// and given its slot back, so leaving the job with its id would have the
 	// next pass collect it again. Retrying means chunking the file afresh.
-	chunksFilePath := unstructured.RemapToOutputDir(job.FilePath, inputPath, outputPath)
 	if err := r.storeChunks(ctx, convertedFile, job.ChunksGeneratorConfig, result.Chunks, chunksFilePath); err != nil {
 		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
 	}
@@ -615,6 +635,38 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 		chunksGeneratorCR.DeleteJobByFilePath(job.FilePath)
 		chunksGeneratorCR.Status.FilesProcessed++
 	})
+}
+
+// chunksAlreadyWritten reports whether this job's chunks are already stored.
+//
+// It compares against the job's own configuration rather than the spec's.
+// An artifact left by an earlier, different configuration is not this job's
+// output, and treating it as such would drop the job and leave the file
+// chunked by something the resource no longer asks for.
+func (r *ChunksGeneratorReconciler) chunksAlreadyWritten(
+	ctx context.Context, job operatorv1alpha1.ChunkJob, chunksFilePath string,
+) (bool, error) {
+	exists, err := r.fileStore.Exists(ctx, chunksFilePath)
+	if err != nil || !exists {
+		return false, err
+	}
+
+	raw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	if err != nil {
+		return false, fmt.Errorf("reading chunks file %s: %w", chunksFilePath, err)
+	}
+
+	chunksFile := unstructured.ChunksFile{}
+	if err := json.Unmarshal(raw, &chunksFile); err != nil {
+		return false, fmt.Errorf("decoding chunks file %s: %w", chunksFilePath, err)
+	}
+	if chunksFile.ChunksDocument == nil || chunksFile.ChunksDocument.Metadata == nil {
+		return false, nil
+	}
+
+	stored := chunksFile.ChunksDocument.Metadata
+	return stored.ChunkingTool == unstructured.ChunkingToolForStrategy(job.ChunksGeneratorConfig.Strategy) &&
+		cmp.Equal(stored.ChunksGeneratorConfig, job.ChunksGeneratorConfig), nil
 }
 
 // failStuckChunkJob counts an attempt against a job that cannot even be
