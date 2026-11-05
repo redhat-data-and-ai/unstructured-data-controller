@@ -1,135 +1,98 @@
-# unstructured-data-controller
-Unstructured Data Pipeline
+# Unstructured Data Controller
 
-## Description
-E2E pipeline to handle unstructured data
+A Kubernetes operator that turns unstructured documents into searchable knowledge for LLM agents. Pipelines crawl documents from S3, Git repositories, and Google Drive; convert them to Markdown with [docling](https://github.com/docling-project/docling-serve); chunk and embed them; store the embeddings in Snowflake; and sync the processed outputs to a destination S3 bucket. A companion OAuth-secured [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server exposes the results to AI agents (Cursor, Claude Code, custom agents).
 
-## Getting Started
+## How it works
 
-### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+An `UnstructuredDataPipeline` custom resource chains processing stages. The operator creates one custom resource per stage and wires the dependencies (`dependsOn`); each stage processes files as they appear in its input directory in the S3-backed filestore (`pipelines/<pipeline>/stages/<stage>/`).
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+| Stage | Custom resource | What it does |
+| ----- | --------------- | ------------ |
+| Crawl | `SourceCrawler` | Ingest from S3 (optionally driven by SQS event notifications), Git repositories, or Google Drive folders |
+| Convert | `DocumentProcessor` | Convert documents to Markdown using docling |
+| Chunk | `ChunksGenerator` | Split content (e.g. recursive character or Markdown text splitting) |
+| Embed | `VectorEmbeddingsGenerator` | Generate vector embeddings and store them in a Snowflake table (per-stage `queryConfig`) |
+| Sync | `DestinationSyncer` | Copy processed outputs to a destination S3 bucket |
 
-```sh
-make docker-build docker-push IMG=<some-registry>/unstructured-data-controller:tag
-```
+Operator-level infrastructure (filestore, docling, embedding/VLM endpoints, Google Drive and LDAP settings, Snowflake connection) is configured in a `ControllerConfig` custom resource.
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+All custom resources are served under the `operator.dataverse.redhat.com/v1alpha1` API group.
 
-**Install the CRDs into the cluster:**
+### MCP server
 
-```sh
+The MCP server (`cmd/unstructured-data-mcp-server`) lets agents discover pipelines and query them:
+
+- `list_unstructured_data_pipelines_for_user`: pipelines the authenticated user can access
+- `get_chunks_for_embeddings`: semantic (vector) search over a pipeline's documents
+- `get_processed_document`: full processed Markdown for a document
+
+Users authenticate through your OIDC identity provider (Keycloak, Red Hat SSO, Okta, Azure AD); the server acts as an OAuth Authorization Server proxy with PKCE and dynamic client registration. See [docs/mcp-server.md](docs/mcp-server.md).
+
+## Documentation
+
+- [Setting up LocalStack](docs/setup-localstack.md): local S3/SQS for development
+- [Setting up the controller](docs/setup-unstructured-controller.md): full local walkthrough (LocalStack, docling, Ollama)
+- [Processing your first file](docs/creating-sample-file.md)
+- [MCP server](docs/mcp-server.md): configuration, endpoints, OAuth flow, tools
+- [MCP skill file](skills/unstructured-data-mcp-skill.md): usage instructions for AI assistants
+
+## Quick start (local development)
+
+Prerequisites: Go 1.25+, `kubectl`, Docker or Podman, and a Kubernetes cluster (e.g. [Kind](https://kind.sigs.k8s.io/)). The full walkthrough also uses [LocalStack](https://localstack.cloud/), [docling-serve](https://github.com/docling-project/docling-serve), and [Ollama](https://ollama.com/). See the [setup guide](docs/setup-unstructured-controller.md) for details, including pointing the ControllerConfig at a locally running docling.
+
+```bash
+# 1. Namespace and secrets (see setup guide for prerequisites)
+kubectl create namespace unstructured-controller-namespace
+kubectl apply -f config/samples/unstructured-secret.yaml -n unstructured-controller-namespace
+
+# 2. Install CRDs and run the controller locally
 make install
+make run
+
+# 3. Create the operator config and a sample pipeline
+kubectl apply -f config/samples/operator_v1alpha1_controllerconfig.yaml -n unstructured-controller-namespace
+kubectl apply -f config/samples/operator_v1alpha1_unstructureddatapipeline.yaml -n unstructured-controller-namespace
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+Then [process your first file](docs/creating-sample-file.md). Sample pipelines for Git and Google Drive sources are provided alongside the S3 one in `config/samples/`.
 
-```sh
-make deploy IMG=<some-registry>/unstructured-data-controller:tag
+## Deploying to a cluster
+
+```bash
+# Controller
+make docker-build docker-push IMG=<registry>/unstructured-data-controller:tag
+make deploy IMG=<registry>/unstructured-data-controller:tag
+
+# MCP server (optional)
+make docker-build-mcp docker-push-mcp IMG_MCP=<registry>/unstructured-data-mcp-server:tag
+make deploy-mcp
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+`make deploy` and `make deploy-mcp` apply the manifests in `config/deploy` and `config/mcp` into `unstructured-controller-namespace` (override with `DEPLOYMENT_NAMESPACE=<ns>`). Undo with `make undeploy` / `make undeploy-mcp`, and remove the CRDs with `make uninstall`.
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+To generate a consolidated installer manifest (CRDs + controller deployment) for distribution:
 
-```sh
-kubectl apply -k config/samples/
+```bash
+make build-installer IMG=<registry>/unstructured-data-controller:tag
+# writes dist/install.yaml
+kubectl apply -f dist/install.yaml
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+## Development
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
-
-```sh
-kubectl delete -k config/samples/
+```bash
+make build      # build the controller binary
+make test       # unit tests (controller-runtime envtest)
+make test-e2e   # e2e tests on an isolated Kind cluster
+make lint       # golangci-lint + yamllint
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
-
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/unstructured-data-controller:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/unstructured-data-controller/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-operator-sdk edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+Run `make help` for the full list of targets.
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+Issues and pull requests are welcome. For substantial changes, please open an issue first to discuss what you would like to change.
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+[Apache License 2.0](LICENSE)
