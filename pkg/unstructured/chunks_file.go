@@ -1,12 +1,67 @@
 package unstructured
 
 import (
+	"errors"
+	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 )
+
+// chunkIDSeparator divides the two halves of a ChunkID. A file path may
+// legally contain one, which is why parsing splits on the last occurrence
+// rather than the first.
+const chunkIDSeparator = "#"
+
+// ChunkID identifies one chunk of one converted file.
+//
+// Derived rather than stored, so the two stages that need it cannot drift:
+// the chunks artifact holds no id of its own, and adding one would not have
+// helped, since it is not part of the cache key and every artifact written
+// before it existed would still be considered current.
+//
+// It is a type because a citation hands the id back to be resolved into a
+// file and a chunk again, and that is parsing rather than splitting.
+type ChunkID struct {
+	// FilePath is the converted file the chunk came from.
+	FilePath string
+	// Index is the chunk's position in that file, counted from zero.
+	Index int
+}
+
+// String renders the id for storage. This is the form the warehouse keeps in
+// a column, so it stays a plain scalar rather than becoming an object.
+func (id ChunkID) String() string {
+	return id.FilePath + chunkIDSeparator + strconv.Itoa(id.Index)
+}
+
+// ParseChunkID reads an id back.
+//
+// It validates rather than splits, because the id arrives from whoever is
+// asking to see a citation and names a file to be read on their behalf.
+func ParseChunkID(id string) (ChunkID, error) {
+	separator := strings.LastIndex(id, chunkIDSeparator)
+	if separator <= 0 {
+		return ChunkID{}, fmt.Errorf("%w: %q has no file path and index", ErrInvalidChunkID, id)
+	}
+
+	index, err := strconv.Atoi(id[separator+len(chunkIDSeparator):])
+	if err != nil {
+		return ChunkID{}, fmt.Errorf("%w: %q has no numeric index", ErrInvalidChunkID, id)
+	}
+	if index < 0 {
+		return ChunkID{}, fmt.Errorf("%w: %q has a negative index", ErrInvalidChunkID, id)
+	}
+
+	return ChunkID{FilePath: id[:separator], Index: index}, nil
+}
+
+// ErrInvalidChunkID reports an id that cannot name a chunk.
+var ErrInvalidChunkID = errors.New("not a chunk id")
 
 type ChunkingTool string
 
@@ -86,6 +141,36 @@ func NewChunks(chunks []Chunk) *Chunks {
 	}
 
 	return stored
+}
+
+// At reads one chunk back out of the parallel arrays.
+//
+// Every array but Text is optional, and a file chunked by a text splitter
+// has none of them, so each is read only if it reaches this index. Without
+// that, reading a chunk of an older artifact panics.
+func (c *Chunks) At(index int) Chunk {
+	if c == nil || index < 0 || index >= len(c.Text) {
+		return Chunk{}
+	}
+
+	chunk := Chunk{Text: c.Text[index]}
+	if index < len(c.RawText) {
+		chunk.RawText = c.RawText[index]
+	}
+	if index < len(c.BlockIDs) {
+		chunk.BlockIDs = c.BlockIDs[index]
+	}
+	if index < len(c.Regions) {
+		chunk.Regions = c.Regions[index]
+	}
+	if index < len(c.PageFirst) {
+		chunk.PageFirst = c.PageFirst[index]
+	}
+	if index < len(c.PageLast) {
+		chunk.PageLast = c.PageLast[index]
+	}
+
+	return chunk
 }
 
 type ChunksFileMetadata struct {
