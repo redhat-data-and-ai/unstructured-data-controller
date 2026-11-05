@@ -145,17 +145,14 @@ spec:
                       vlm_pipeline_custom_config:
                         description: |-
                           VLMPipelineCustomConfig describes the model to use when Pipeline is
-                          "vlm". It has no effect on any other pipeline.
-
-                          These fields reach ConvertedFileMetadata, so changing any of them
-                          reconverts. That is deliberate: each one changes what the parse returns.
+                          "vlm", and has no effect on any other pipeline. Its fields reach
+                          ConvertedFileMetadata, so changing one reconverts.
                         properties:
                           max_size:
                             description: |-
-                              MaxSize caps a rasterised page's longest edge in pixels. A page that
-                              would exceed it is scaled down to fit, so the effective scale drops
-                              below Scale silently. Large and landscape pages hit this first, and
-                              raising Scale alone changes nothing for them.
+                              MaxSize caps a rasterised page's longest edge in pixels. A page over it
+                              is scaled down to fit, so the effective scale drops below Scale
+                              silently and raising Scale alone changes nothing for large pages.
                             type: integer
                           model:
                             description: |-
@@ -171,17 +168,14 @@ spec:
                           response_format:
                             description: |-
                               ResponseFormat names the decoder applied to the model's reply. No enum
-                              marker, because the set of decoders belongs to docling and grows between
-                              its releases, so pinning it here would reject values docling accepts. An
-                              unknown value is rejected by docling rather than ignored.
+                              marker, because the set of decoders grows between docling releases and
+                              docling rejects an unknown value rather than ignoring it.
                             type: string
                           scale:
                             description: |-
                               Scale is what pages are rasterised at before the model sees them, where
-                              1.0 is 72 DPI. String for the same reason ImagesScale is.
-
-                              ImagesScale does not control this. That one scales images exported in
-                              the output.
+                              1.0 is 72 DPI. String for the same reason ImagesScale is, and not to be
+                              confused with it: that one scales images exported in the output.
                             type: string
                         type: object
                     type: object
@@ -368,17 +362,14 @@ spec:
                         vlm_pipeline_custom_config:
                           description: |-
                             VLMPipelineCustomConfig describes the model to use when Pipeline is
-                            "vlm". It has no effect on any other pipeline.
-
-                            These fields reach ConvertedFileMetadata, so changing any of them
-                            reconverts. That is deliberate: each one changes what the parse returns.
+                            "vlm", and has no effect on any other pipeline. Its fields reach
+                            ConvertedFileMetadata, so changing one reconverts.
                           properties:
                             max_size:
                               description: |-
-                                MaxSize caps a rasterised page's longest edge in pixels. A page that
-                                would exceed it is scaled down to fit, so the effective scale drops
-                                below Scale silently. Large and landscape pages hit this first, and
-                                raising Scale alone changes nothing for them.
+                                MaxSize caps a rasterised page's longest edge in pixels. A page over it
+                                is scaled down to fit, so the effective scale drops below Scale
+                                silently and raising Scale alone changes nothing for large pages.
                               type: integer
                             model:
                               description: |-
@@ -394,17 +385,14 @@ spec:
                             response_format:
                               description: |-
                                 ResponseFormat names the decoder applied to the model's reply. No enum
-                                marker, because the set of decoders belongs to docling and grows between
-                                its releases, so pinning it here would reject values docling accepts. An
-                                unknown value is rejected by docling rather than ignored.
+                                marker, because the set of decoders grows between docling releases and
+                                docling rejects an unknown value rather than ignoring it.
                               type: string
                             scale:
                               description: |-
                                 Scale is what pages are rasterised at before the model sees them, where
-                                1.0 is 72 DPI. String for the same reason ImagesScale is.
-
-                                ImagesScale does not control this. That one scales images exported in
-                                the output.
+                                1.0 is 72 DPI. String for the same reason ImagesScale is, and not to be
+                                confused with it: that one scales images exported in the output.
                               type: string
                           type: object
                       type: object
