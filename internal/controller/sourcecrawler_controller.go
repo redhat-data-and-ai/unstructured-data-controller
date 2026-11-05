@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -44,6 +45,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gitclient"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gitlab"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/pathfilter"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/unstructured"
 )
@@ -390,6 +392,18 @@ func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
 		}
 	}
 
+	// Create GitLab API client for permission sync when using GitLab provider.
+	// Uses the same token as git clone (requires read_api scope).
+	var gitLabClient *gitlab.Client
+	if gitConfig.Provider == operatorv1alpha1.GitProviderGitLab && token != "" {
+		baseURL, err := gitlab.BaseURLFromRepoURL(gitConfig.Repos[0].Repo)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to extract GitLab base URL: %w", err)
+		}
+		gitLabClient = gitlab.NewClient(baseURL, token)
+		defer gitLabClient.Close()
+	}
+
 	prevStatusMap := make(map[string]operatorv1alpha1.GitRepoStatus)
 	for _, rs := range sourceCrawlerCR.Status.GitRepoStatus {
 		prevStatusMap[rs.Repo] = rs
@@ -483,6 +497,13 @@ func (r *SourceCrawlerReconciler) buildAndSyncGitRepos(
 		})
 	}
 
+	// Sync project permissions for all repos. Members can change independently
+	// of commits, so this runs on every reconcile regardless of commit SHA.
+	if gitLabClient != nil {
+		r.syncAllGitLabPermissions(ctx, gitLabClient, gitConfig.Repos, outputDir)
+		r.gcOrphanedGitPermissions(ctx, outputDir, gitConfig.Repos)
+	}
+
 	if len(repoErrors) == len(gitConfig.Repos) {
 		return allStoredFiles, repoStatus, fmt.Errorf("all git repos failed: %s", strings.Join(repoErrors, "; "))
 	}
@@ -503,6 +524,73 @@ func gitRepoConfigHash(repo operatorv1alpha1.GitRepo) string {
 		_, _ = h.Write([]byte{0})
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
+// syncAllGitLabPermissions fetches and stores project members for each repo.
+// Permission failures are logged but do not fail the reconcile, since file
+// sync already succeeded and permissions will be retried on the next poll.
+func (r *SourceCrawlerReconciler) syncAllGitLabPermissions(
+	ctx context.Context,
+	gitLabClient *gitlab.Client,
+	repos []operatorv1alpha1.GitRepo,
+	outputDir string,
+) {
+	logger := log.FromContext(ctx)
+
+	for _, repo := range repos {
+		permissions, err := gitLabClient.GetProjectMembers(ctx, repo.Repo)
+		if err != nil {
+			logger.Error(err, "failed to fetch GitLab project members", "repo", repo.Repo)
+			continue
+		}
+
+		permissionsData, err := json.Marshal(permissions)
+		if err != nil {
+			logger.Error(err, "failed to marshal GitLab permissions", "repo", repo.Repo)
+			continue
+		}
+
+		permissionsPath := path.Join(outputDir, "permissions", repo.Name+".json")
+		if err := r.fileStore.Store(ctx, permissionsPath, permissionsData); err != nil {
+			logger.Error(err, "failed to store GitLab permissions", "repo", repo.Repo, "path", permissionsPath)
+			continue
+		}
+
+		logger.Info("synced GitLab project permissions",
+			"repo", repo.Repo, "memberCount", len(permissions))
+	}
+}
+
+// gcOrphanedGitPermissions removes permission files for repos that are no
+// longer in the pipeline configuration.
+func (r *SourceCrawlerReconciler) gcOrphanedGitPermissions(
+	ctx context.Context,
+	outputDir string,
+	repos []operatorv1alpha1.GitRepo,
+) {
+	logger := log.FromContext(ctx)
+
+	permissionsDir := path.Join(outputDir, "permissions")
+	localFiles, err := r.fileStore.ListFilesInPath(ctx, permissionsDir)
+	if err != nil {
+		logger.Error(err, "failed to list permission files for gc", "permissionsDir", permissionsDir)
+		return
+	}
+
+	activeRepos := make(map[string]bool, len(repos))
+	for _, repo := range repos {
+		activeRepos[repo.Name+".json"] = true
+	}
+
+	for _, filePath := range localFiles {
+		baseName := path.Base(filePath)
+		if !activeRepos[baseName] {
+			logger.Info("removing permission file for repo no longer in config", "file", filePath)
+			if err := r.fileStore.Delete(ctx, filePath); err != nil {
+				logger.Error(err, "failed to delete orphaned permission file", "file", filePath)
+			}
+		}
+	}
 }
 
 func (r *SourceCrawlerReconciler) handleError(ctx context.Context, sourceCrawlerCR *operatorv1alpha1.SourceCrawler, err error) error {
