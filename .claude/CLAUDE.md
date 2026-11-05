@@ -36,7 +36,7 @@ Always use `make` targets instead of raw `go` commands - they include the right 
 - Align with architecture. Changes must fit the established architecture - one controller per CRD, shared utils in controllerutils, pure library code in pkg/. If a change doesn't fit, discuss the architectural implication before proceeding.
 - Best practices over existing code. If something in this codebase contradicts Go, controller-runtime, or Kubernetes conventions, challenge it - do not blindly copy a bad pattern.
 - Always ask why. Poke holes in decisions - don't accept an approach just because it's what the existing code does. If you can't justify a pattern, question it.
-- Code is reviewed by humans. Add comments explaining the *why* behind decisions, choices, and non-obvious logic. Every conditional branch, fallback, retry, timeout, or workaround should have a comment explaining the reasoning. A future reader should understand the intent without asking the author.
+- Code is reviewed by humans. Comment the *why* behind non-obvious decisions, and keep it short - see Go Style > Comments. Obvious code gets no comment.
 - Be concise in code. Don't over-engineer - add just what's needed, nothing more. No premature abstractions, no speculative features, no unnecessary layers.
 - PRs do one thing. Keep PRs tightly scoped - no scope creep, no unrelated refactors, no drive-by cleanups mixed with feature work.
 - This is an open source project. Code, docs, and APIs should be usable by anyone - no assumptions about internal tooling, environments, or proprietary systems. Keep things generic and well-documented.
@@ -66,6 +66,29 @@ Write idiomatic Go. Follow Effective Go, Go Code Review Comments, and the Google
 - Acronyms are all-caps: `ID`, `HTTP`, `URL`, `API` - never `Id`, `Http`.
 - No getters: `Name()` not `GetName()`. The package name provides context.
 - Import aliases follow convention: `operatorv1alpha1`, `ctrl`, `appsv1`, `corev1`.
+
+### Comments
+
+Precise and concise. A comment earns its place by saying something the code cannot.
+
+- Default to one line. Two sentences is the ceiling for an inline comment. A doc comment on an exported identifier may add one short second paragraph, and only when a caller cannot use it correctly without one.
+- Doc comments start with the identifier name and say what it does in one sentence, plus the constraints a caller must know: nil behaviour, units, blocking, ownership, error cases.
+- One why per decision, stated once. Do not repeat the same rationale in the doc comment, at the call site, and in the commit message - put it in the single place a reader will be standing when they need it.
+- Leave out measured timings and benchmark numbers, narration of what was tried, arguments against alternatives that are not in the code, and anything already said in the commit message.
+- No comments that restate the code (`// increment i`), no section banners, no commented-out code.
+- If a comment needs several paragraphs to justify the code, either the code is wrong or the explanation belongs in a design doc - not in the file.
+
+```go
+// Good
+// TryAcquire rather than Acquire so a full queue returns to the reconciler.
+
+// Bad
+// TryAcquire rather than Acquire, so a full queue returns to the reconciler
+// instead of parking a worker on it. Parking a worker holds the slot for the
+// length of the work, which on a real document is minutes, and a blocked
+// worker is also a worker that cannot reconcile anything else, so a queue
+// that fills up stalls every pipeline and not just this one.
+```
 
 ### Error Handling
 
@@ -112,6 +135,7 @@ The existing `handleError` pattern in this project logs the error AND returns it
 - Overly broad RBAC - use minimum required verbs/resources
 - Making external API calls on every reconcile without checking generation/state
 - Non-descriptive variable names - `s`, `o`, `p` tell the reader nothing
+- Multi-paragraph comments that re-tell the commit message or quote benchmark numbers
 
 ## Security
 
