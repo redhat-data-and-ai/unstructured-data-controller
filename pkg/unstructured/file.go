@@ -76,6 +76,26 @@ func IsPageImagePath(filePath string) bool {
 	return err == nil && pageNo > 0
 }
 
+// DestinationKey returns where a file lands under the destination prefix.
+//
+// The syncer keys by the stage directory and drops everything above it, so
+// this reproduces that without needing the pipeline name. Returns "" for a
+// path that is not under a stage, since there is no destination for it.
+func DestinationKey(filePath string) string {
+	index := strings.Index(filePath, "stages/")
+	if index < 0 {
+		return ""
+	}
+	return filePath[index:]
+}
+
+// PageImageDestinationKey locates one page's render in the destination,
+// given the converted file it belongs to.
+func PageImageDestinationKey(convertedFilePath string, pageNo int) string {
+	rawFilePath := strings.TrimSuffix(convertedFilePath, ".json")
+	return DestinationKey(PageImagePath(rawFilePath, pageNo))
+}
+
 // WithoutPageImages returns the paths that are not page renders.
 func WithoutPageImages(filePaths []string) []string {
 	kept := make([]string, 0, len(filePaths))
