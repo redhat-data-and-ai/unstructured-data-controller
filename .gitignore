@@ -31,3 +31,7 @@ go.work
 !.claude/skills/
 !.claude/CLAUDE.md
 tmp/
+
+# Load test generated reports
+scripts/load/reports/*
+!scripts/load/reports/.gitkeep
