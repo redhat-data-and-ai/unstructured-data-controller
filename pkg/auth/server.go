@@ -229,12 +229,15 @@ func (s *OAuthServer) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// navigates to a clean /auth/complete URL with no sensitive parameters.
 	completionToken := s.store.StoreCompletion(redirectURL.String())
 
-	s.logger.Info("authentication successful, redirecting to client", "client_id", safePrefix(pending.ClientID))
+	s.logger.Info("authentication successful, redirecting to client",
+		"client_id", safePrefix(pending.ClientID),
+		"client_redirect", pending.RedirectURI,
+	)
 	http.Redirect(w, r, "/auth/complete/"+completionToken, http.StatusFound)
 }
 
 // HandleComplete serves the post-authentication success page at a clean URL
-// with no OAuth parameters exposed. It renders a meta-refresh redirect to the
+// with no OAuth parameters exposed. It renders a JS-redirect page to the
 // MCP client's redirect_uri.
 // GET /auth/complete/{token}
 func (s *OAuthServer) HandleComplete(w http.ResponseWriter, r *http.Request) {
