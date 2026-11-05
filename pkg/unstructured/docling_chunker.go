@@ -111,7 +111,7 @@ func doclingDocumentFilename(rawFilePath string) string {
 // badly wraps docling.ErrChunkTaskEnded, so the caller can tell it from a
 // poll it simply could not read.
 func (c *DoclingChunker) Collect(
-	ctx context.Context, taskID string, document *ConvertedDocument,
+	ctx context.Context, taskID string, document DocumentFunc,
 ) (ChunkResult, error) {
 	logger := log.FromContext(ctx)
 
@@ -135,15 +135,22 @@ func (c *DoclingChunker) Collect(
 		chunks = response.Chunks
 	}
 
-	resolved, err := c.resolve(ctx, chunks, document)
-	if err != nil {
-		// The task has ended and given its slot back, so the caller must not
-		// poll it again whatever went wrong after that.
-		return ChunkResult{}, fmt.Errorf("%w: %w", docling.ErrChunkTaskEnded, err)
+	// Read only now. The task has finished, so this is once per file rather
+	// than once per poll.
+	converted, err := document()
+	if err == nil {
+		var resolved []Chunk
+		resolved, err = c.resolve(ctx, chunks, converted)
+		if err == nil {
+			logger.Info("collected chunks from the conversion service",
+				"taskID", taskID, "chunks", len(resolved))
+			return ChunkResult{Chunks: resolved}, nil
+		}
 	}
 
-	logger.Info("collected chunks from the conversion service", "taskID", taskID, "chunks", len(resolved))
-	return ChunkResult{Chunks: resolved}, nil
+	// The task has ended and given its slot back, so the caller must not
+	// poll it again, whatever went wrong after that.
+	return ChunkResult{}, fmt.Errorf("%w: %w", docling.ErrChunkTaskEnded, err)
 }
 
 // resolve turns the service's chunks into ours, which mostly means finding
@@ -170,7 +177,11 @@ func (*DoclingChunker) resolve(
 	// alternative is an artifact pairing one chunk's text with another
 	// chunk's provenance, which nothing downstream can detect.
 	ordered := slices.Clone(chunks)
-	slices.SortFunc(ordered, func(a, b docling.Chunk) int {
+	// Stable, because an unstable sort reorders equal keys. If the service
+	// ever omits chunk_index every key is zero, and the artifact is read by
+	// position, so the scrambling would pair one chunk's text with another
+	// chunk's provenance and nothing downstream could detect it.
+	slices.SortStableFunc(ordered, func(a, b docling.Chunk) int {
 		return cmp.Compare(a.ChunkIndex, b.ChunkIndex)
 	})
 

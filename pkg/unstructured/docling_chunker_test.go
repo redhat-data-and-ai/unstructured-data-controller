@@ -19,6 +19,7 @@ package unstructured
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -54,6 +55,13 @@ func convertedDocument(doclingDocument string) *ConvertedDocument {
 		Metadata: &ConvertedFileMetadata{RawFilePath: "raw/report.pdf", FileIdentifier: "uid-1"},
 		Content:  content,
 	}
+}
+
+// staticDocument hands Collect a document it already has. Production reads
+// it lazily, because most polls find the task still running and the stored
+// document is several megabytes.
+func staticDocument(doclingDocument string) DocumentFunc {
+	return func() (*ConvertedDocument, error) { return convertedDocument(doclingDocument), nil }
 }
 
 func writeTestJSON(t *testing.T, w http.ResponseWriter, body string) {
@@ -153,7 +161,7 @@ func TestDoclingChunkerRefusesADocumentThatIsTheJSONLiteralNull(t *testing.T) {
 			_, chunkErr := testChunker(srv).Chunk(context.Background(), convertedDocument(document))
 			assert.ErrorIs(t, chunkErr, ErrNoStructuredDocument, "nothing should be submitted")
 
-			_, collectErr := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(document))
+			_, collectErr := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(document))
 			assert.ErrorIs(t, collectErr, ErrNoStructuredDocument,
 				"collecting against an empty document should say so, not return chunks with no regions")
 		})
@@ -185,7 +193,7 @@ func TestDoclingChunkerCollectReportsATaskStillRunning(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result, err := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(chunkerTestDocument))
+	result, err := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(chunkerTestDocument))
 
 	require.NoError(t, err)
 	assert.True(t, result.Pending())
@@ -205,7 +213,7 @@ func TestDoclingChunkerCollectResolvesChunks(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result, err := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(chunkerTestDocument))
+	result, err := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(chunkerTestDocument))
 
 	require.NoError(t, err)
 	assert.False(t, result.Pending())
@@ -239,7 +247,7 @@ func TestDoclingChunkerCollectOrdersChunksByIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result, err := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(chunkerTestDocument))
+	result, err := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(chunkerTestDocument))
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"first", "second", "third"}, ChunkTexts(result.Chunks))
@@ -259,7 +267,7 @@ func TestDoclingChunkerCollectPassesAnEmptyResultToTheCaller(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result, err := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(chunkerTestDocument))
+	result, err := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(chunkerTestDocument))
 
 	require.NoError(t, err)
 	assert.False(t, result.Pending())
@@ -275,7 +283,7 @@ func TestDoclingChunkerCollectMarksAnEndedTask(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(chunkerTestDocument))
+	_, err := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(chunkerTestDocument))
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, docling.ErrChunkTaskEnded)
@@ -294,10 +302,55 @@ func TestDoclingChunkerCollectMarksAnEndedTaskWhenResolutionFails(t *testing.T) 
 	}))
 	defer srv.Close()
 
-	_, err := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(`not a document`))
+	_, err := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(`not a document`))
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, docling.ErrChunkTaskEnded)
+}
+
+// The document is read only once the task has finished. Most polls find it
+// still running, and the stored document is several megabytes, so reading it
+// on every poll decodes all of that to learn nothing.
+func TestDoclingChunkerCollectDoesNotReadTheDocumentWhileTheTaskRuns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeTestJSON(t, w, `{"task_id":"t-1","task_status":"started"}`)
+	}))
+	defer srv.Close()
+
+	reads := 0
+	document := func() (*ConvertedDocument, error) {
+		reads++
+		return convertedDocument(chunkerTestDocument), nil
+	}
+
+	result, err := testChunker(srv).Collect(context.Background(), "t-1", document)
+
+	require.NoError(t, err)
+	assert.True(t, result.Pending())
+	assert.Zero(t, reads, "a running task should not cost a read of the document")
+}
+
+// Once the task has ended its slot is already back, so a failure to read the
+// document must not look like a task worth polling again.
+func TestDoclingChunkerCollectMarksAnEndedTaskWhenTheDocumentCannotBeRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == pollPath {
+			writeTestJSON(t, w, `{"task_id":"t-1","task_status":"success"}`)
+			return
+		}
+		writeTestJSON(t, w, `{"chunks":[{"chunk_index":0,"text":"body"}]}`)
+	}))
+	defer srv.Close()
+
+	document := func() (*ConvertedDocument, error) {
+		return nil, errors.New("the converted file was deleted")
+	}
+
+	_, err := testChunker(srv).Collect(context.Background(), "t-1", document)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, docling.ErrChunkTaskEnded)
+	assert.Contains(t, err.Error(), "the converted file was deleted")
 }
 
 // A transient failure to read a status leaves the task running and holding
@@ -308,7 +361,7 @@ func TestDoclingChunkerCollectDoesNotMarkATaskItCouldNotRead(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := testChunker(srv).Collect(context.Background(), "t-1", convertedDocument(chunkerTestDocument))
+	_, err := testChunker(srv).Collect(context.Background(), "t-1", staticDocument(chunkerTestDocument))
 
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, docling.ErrChunkTaskEnded)

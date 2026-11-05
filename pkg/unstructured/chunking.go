@@ -74,11 +74,17 @@ type Chunker interface {
 type AsyncChunker interface {
 	Chunker
 
-	// Collect returns the chunks of a task Chunk started. The document is
-	// passed again because the chunker resolves each chunk's elements
-	// against it, and the starting call is long gone.
-	Collect(ctx context.Context, taskID string, document *ConvertedDocument) (ChunkResult, error)
+	// Collect returns the chunks of a task Chunk started.
+	Collect(ctx context.Context, taskID string, document DocumentFunc) (ChunkResult, error)
 }
+
+// DocumentFunc returns the document a task's chunks resolve against.
+//
+// A function rather than the document itself, because Collect needs it only
+// once the task has finished and most calls find it still running. The
+// stored document is several megabytes, so reading it up front would decode
+// all of that on every poll to learn nothing.
+type DocumentFunc func() (*ConvertedDocument, error)
 
 // TextChunks wraps plain strings as chunks carrying nothing but their text,
 // which is all a chunker that splits a string can say about its output.

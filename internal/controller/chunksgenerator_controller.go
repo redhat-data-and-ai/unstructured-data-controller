@@ -568,17 +568,22 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 			job.FilePath, job.ChunksGeneratorConfig.Strategy)
 	}
 
-	// Read before collecting, because the chunker resolves each chunk's
-	// elements against the document and the reconcile that submitted the
-	// task is long gone. The cost is one read per in flight task per pass,
-	// and the number in flight is capped by the client's own concurrency
-	// limit rather than by the size of the corpus.
-	convertedFile, err := r.retrieveConvertedFile(ctx, job.FilePath)
-	if err != nil {
-		return r.failStuckChunkJob(ctx, job, chunksGeneratorCR, err)
+	// Handed over as a function, not read here. The chunker needs the
+	// document to resolve each chunk's elements, but only once the task has
+	// finished, and most polls find it still running. The stored document is
+	// several megabytes, so reading it up front would decode all of that on
+	// every poll to learn nothing.
+	var convertedFile *unstructured.ConvertedFile
+	readDocument := func() (*unstructured.ConvertedDocument, error) {
+		var readErr error
+		convertedFile, readErr = r.retrieveConvertedFile(ctx, job.FilePath)
+		if readErr != nil {
+			return nil, readErr
+		}
+		return convertedFile.ConvertedDocument, nil
 	}
 
-	result, err := collector.Collect(ctx, job.TaskID, convertedFile.ConvertedDocument)
+	result, err := collector.Collect(ctx, job.TaskID, readDocument)
 	switch {
 	case err != nil && !errors.Is(err, docling.ErrChunkTaskEnded):
 		// As far as we can tell the task is alive and still holds its slot,

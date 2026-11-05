@@ -66,8 +66,12 @@ type Chunks struct {
 func NewChunks(chunks []Chunk) *Chunks {
 	stored := &Chunks{Text: ChunkTexts(chunks)}
 
+	// Any of the five, not just the addresses. A chunk can arrive with raw
+	// text and a page range and no addresses at all, and gating on addresses
+	// alone would drop the other four for the whole file.
 	located := slices.ContainsFunc(chunks, func(chunk Chunk) bool {
-		return len(chunk.BlockIDs) > 0
+		return chunk.RawText != "" || len(chunk.BlockIDs) > 0 || len(chunk.Regions) > 0 ||
+			chunk.PageFirst != 0 || chunk.PageLast != 0
 	})
 	if !located {
 		return stored
