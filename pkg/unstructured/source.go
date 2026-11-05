@@ -87,8 +87,8 @@ func (s *S3BucketSource) SyncFilesToFilestore(ctx context.Context, fs *filestore
 		}
 		if stored {
 			logger.Info("successfully stored file", "file", file.FilePath)
-			storedFiles = append(storedFiles, file)
 		}
+		storedFiles = append(storedFiles, file)
 	}
 	// Listing all the file in the local s3 filestore
 	localFiles, err := fs.ListFilesInPath(ctx, s.outputPrefix())
