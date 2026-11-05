@@ -51,21 +51,17 @@ spec:
             properties:
               config:
                 description: |-
-                  The rule uses size() rather than comparing against an empty string literal.
-                  Two adjacent apostrophes are what text editors and chat tools turn into a
-                  typographic quote, and a marker is a comment, so Go, vet and the linters
-                  all accept the result. It surfaces only when the API server compiles the
-                  rule at CRD install. See TestKubebuilderMarkersAreASCII.
+                  The rule uses size() rather than an empty string literal: two adjacent
+                  apostrophes get autocorrected into a typographic quote, which every Go tool
+                  accepts inside a comment and only the API server rejects at CRD install.
+                  See TestKubebuilderMarkersAreASCII.
                 properties:
                   hybridChunkerConfig:
                     description: |-
                       HybridChunkerConfig configures docling's own chunker, which splits on the
-                      document's structure instead of on character counts. The other three
-                      strategies split text in process; this one is a call to docling, and each
-                      chunk it returns knows which part of the document it came from.
-
-                      Every one of docling's own defaults is wrong for this use, which is why all
-                      four settings are explicit.
+                      document's structure instead of on character counts. Unlike the in process
+                      strategies it is a call to docling, and each chunk it returns knows which
+                      part of the document it came from.
                     properties:
                       includeRawText:
                         description: |-
@@ -76,36 +72,27 @@ spec:
                         type: boolean
                       maxTokens:
                         description: |-
-                          MaxTokens caps the finished chunk, headings included, because the
-                          chunker subtracts the heading trail itself. Set it to the context
-                          window of the embedding model the chunks are destined for.
-
-                          Leaving it unset is not an option either. Docling falls back to the
-                          tokenizer's own limit, which is several times a typical embedding
-                          window, and produces chunks nothing can embed.
+                          MaxTokens caps the finished chunk, headings included. Set it to the
+                          context window of the embedding model the chunks are destined for;
+                          unset, docling falls back to the tokenizer's own limit and produces
+                          chunks nothing can embed.
                         minimum: 1
                         type: integer
                       tokenizer:
                         description: |-
-                          Tokenizer counts the tokens MaxTokens is measured in. Required, and
-                          admission rejects an empty one, because there is no default that works
-                          and the failure is silent.
+                          Tokenizer counts the tokens MaxTokens is measured in. Required, because
+                          there is no default that works everywhere and the failure is silent.
 
-                          A HuggingFace model name only resolves if docling can reach
-                          huggingface.co. Where it cannot, an unreachable tokenizer is not an
-                          error: the request returns success with zero chunks once the download
-                          times out. Measured against a deployment with no egress, a HuggingFace
-                          name returned 0 chunks in 58s where a path to a tokenizer inside
-                          docling's own image returned 1 in 9.5s. Docling's own default is a
-                          HuggingFace name.
+                          A HuggingFace model name, which is docling's own default, only resolves
+                          if docling can reach huggingface.co; where it cannot, the request
+                          returns success with zero chunks once the download times out. Prefer a
+                          path to a tokenizer inside docling's own image.
                         type: string
                       useMarkdownTables:
                         description: |-
                           UseMarkdownTables serialises a table as markdown rather than as
-                          "RowLabel, ColumnName = value" triplets. Defaults true.
-
-                          Settable rather than fixed because on a table-dense corpus this is a
-                          genuine retrieval-quality tradeoff rather than an obvious improvement.
+                          "RowLabel, ColumnName = value" triplets. Defaults true, and settable
+                          because on a table-dense corpus it is a retrieval-quality tradeoff.
                         type: boolean
                     type: object
                   markdownSplitterConfig:
@@ -138,11 +125,9 @@ spec:
                     type: object
                   strategy:
                     description: |-
-                      Strategy selects the chunker.
-
-                      The empty string is accepted because this field is required in the
-                      generated CRD, so resources that want the default set it empty rather
-                      than omitting it, and SetDefaults fills it in.
+                      Strategy selects the chunker. The empty string is accepted because the
+                      generated CRD makes this field required, so a resource that wants the
+                      default sets it empty and SetDefaults fills it in.
                     enum:
                     - recursiveCharacterTextSplitter
                     - markdownTextSplitter
@@ -264,32 +249,25 @@ spec:
                 items:
                   description: |-
                     ChunkJob tracks one chunking task that docling has accepted and not yet
-                    finished. Chunking is submitted and then polled, so without this a restart
-                    loses every outstanding task and the files behind them are never completed.
-
-                    It carries the config that was in effect at submission. The result can
-                    arrive after the spec has changed, and the metadata written then has to
-                    describe the chunking that actually ran.
+                    finished, so a restart does not lose it. It carries the config that was in
+                    effect at submission, because the result can arrive after the spec has
+                    changed and the metadata has to describe the chunking that ran.
                   properties:
                     attempts:
                       type: integer
                     chunksGeneratorConfig:
                       description: |-
-                        The rule uses size() rather than comparing against an empty string literal.
-                        Two adjacent apostrophes are what text editors and chat tools turn into a
-                        typographic quote, and a marker is a comment, so Go, vet and the linters
-                        all accept the result. It surfaces only when the API server compiles the
-                        rule at CRD install. See TestKubebuilderMarkersAreASCII.
+                        The rule uses size() rather than an empty string literal: two adjacent
+                        apostrophes get autocorrected into a typographic quote, which every Go tool
+                        accepts inside a comment and only the API server rejects at CRD install.
+                        See TestKubebuilderMarkersAreASCII.
                       properties:
                         hybridChunkerConfig:
                           description: |-
                             HybridChunkerConfig configures docling's own chunker, which splits on the
-                            document's structure instead of on character counts. The other three
-                            strategies split text in process; this one is a call to docling, and each
-                            chunk it returns knows which part of the document it came from.
-
-                            Every one of docling's own defaults is wrong for this use, which is why all
-                            four settings are explicit.
+                            document's structure instead of on character counts. Unlike the in process
+                            strategies it is a call to docling, and each chunk it returns knows which
+                            part of the document it came from.
                           properties:
                             includeRawText:
                               description: |-
@@ -300,36 +278,27 @@ spec:
                               type: boolean
                             maxTokens:
                               description: |-
-                                MaxTokens caps the finished chunk, headings included, because the
-                                chunker subtracts the heading trail itself. Set it to the context
-                                window of the embedding model the chunks are destined for.
-
-                                Leaving it unset is not an option either. Docling falls back to the
-                                tokenizer's own limit, which is several times a typical embedding
-                                window, and produces chunks nothing can embed.
+                                MaxTokens caps the finished chunk, headings included. Set it to the
+                                context window of the embedding model the chunks are destined for;
+                                unset, docling falls back to the tokenizer's own limit and produces
+                                chunks nothing can embed.
                               minimum: 1
                               type: integer
                             tokenizer:
                               description: |-
-                                Tokenizer counts the tokens MaxTokens is measured in. Required, and
-                                admission rejects an empty one, because there is no default that works
-                                and the failure is silent.
+                                Tokenizer counts the tokens MaxTokens is measured in. Required, because
+                                there is no default that works everywhere and the failure is silent.
 
-                                A HuggingFace model name only resolves if docling can reach
-                                huggingface.co. Where it cannot, an unreachable tokenizer is not an
-                                error: the request returns success with zero chunks once the download
-                                times out. Measured against a deployment with no egress, a HuggingFace
-                                name returned 0 chunks in 58s where a path to a tokenizer inside
-                                docling's own image returned 1 in 9.5s. Docling's own default is a
-                                HuggingFace name.
+                                A HuggingFace model name, which is docling's own default, only resolves
+                                if docling can reach huggingface.co; where it cannot, the request
+                                returns success with zero chunks once the download times out. Prefer a
+                                path to a tokenizer inside docling's own image.
                               type: string
                             useMarkdownTables:
                               description: |-
                                 UseMarkdownTables serialises a table as markdown rather than as
-                                "RowLabel, ColumnName = value" triplets. Defaults true.
-
-                                Settable rather than fixed because on a table-dense corpus this is a
-                                genuine retrieval-quality tradeoff rather than an obvious improvement.
+                                "RowLabel, ColumnName = value" triplets. Defaults true, and settable
+                                because on a table-dense corpus it is a retrieval-quality tradeoff.
                               type: boolean
                           type: object
                         markdownSplitterConfig:
@@ -362,11 +331,9 @@ spec:
                           type: object
                         strategy:
                           description: |-
-                            Strategy selects the chunker.
-
-                            The empty string is accepted because this field is required in the
-                            generated CRD, so resources that want the default set it empty rather
-                            than omitting it, and SetDefaults fills it in.
+                            Strategy selects the chunker. The empty string is accepted because the
+                            generated CRD makes this field required, so a resource that wants the
+                            default sets it empty and SetDefaults fills it in.
                           enum:
                           - recursiveCharacterTextSplitter
                           - markdownTextSplitter
