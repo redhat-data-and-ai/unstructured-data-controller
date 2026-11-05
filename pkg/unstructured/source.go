@@ -245,6 +245,7 @@ type FailedRootFolder struct {
 type GDriveSource struct {
 	GDriveClient        *gdrive.Client
 	FolderIDs           []string
+	FolderNamesByID     map[string]string
 	SkipFolderNames     []string
 	MaxRetries          int
 	ConcurrentFolders   int
@@ -285,7 +286,9 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 	}
 	_ = crawlGroup.Wait()
 
-	// Merge and filter crawl records to only successful non-folder files
+	// Merge and filter crawl records to only successful non-folder files.
+	// Dedup is per root folder so the same file shared across named folders
+	// appears in each folder's subdirectory.
 	var fileRecords []gdrive.CrawlRecord
 	seen := make(map[string]bool)
 	for i, r := range results {
@@ -310,8 +313,9 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 					"sizeMB", record.FileSize/(1<<20))
 				continue
 			}
-			if !seen[record.FileID] {
-				seen[record.FileID] = true
+			dedupKey := record.RootFolderID + ":" + record.FileID
+			if !seen[dedupKey] {
+				seen[dedupKey] = true
 				fileRecords = append(fileRecords, record)
 			}
 		}
@@ -326,24 +330,27 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 		"concurrentDownloads", g.ConcurrentDownloads,
 	)
 
-	// Phase 2: Download files, fetch permissions, store to filestore
+	// Phase 2: Download files, fetch permissions, store to filestore.
+	// Files are placed under <outputDir>/<folderName>/<fileID>.<ext> so each
+	// named folder gets its own subdirectory.
 	var mu sync.Mutex
 	var storedFiles []RawFileMetadata
 	errorList := map[string]error{}
-	// Maps fileID → expected fileName for GC rename detection
+	// Maps "<folderName>/<fileID>" -> extension for GC
 	currentFiles := make(map[string]string, len(fileRecords))
 
 	dlGroup, _ := errgroup.WithContext(ctx)
 	dlGroup.SetLimit(g.ConcurrentDownloads)
 
 	for _, record := range fileRecords {
+		folderName := g.FolderNamesByID[record.RootFolderID]
 		ext := path.Ext(record.FileName)
 		if strings.HasPrefix(record.MimeType, "application/vnd.google-apps.") {
 			ext = ".pdf"
 		}
-		currentFiles[record.FileID] = ext
+		currentFiles[folderName+"/"+record.FileID] = ext
 		dlGroup.Go(func() error {
-			filestorePath := path.Join(g.OutputDir, record.FileID+ext)
+			filestorePath := path.Join(g.OutputDir, folderName, record.FileID+ext)
 			uid := record.FileID + ":" + record.UpdatedAt
 			file := RawFileMetadata{
 				FilePath: filestorePath,
@@ -353,7 +360,8 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 			stored, err := g.storeFile(ctx, fs, &file, record.FileID)
 			if err != nil {
 				logger.Error(err, "failed to store gdrive file",
-					"fileID", record.FileID, "fileName", record.FileName)
+					"fileID", record.FileID, "fileName", record.FileName,
+					"folderName", folderName)
 				mu.Lock()
 				errorList[record.FileID] = err
 				mu.Unlock()
@@ -361,10 +369,10 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 			}
 			if stored {
 				logger.Info("stored gdrive file",
-					"fileID", record.FileID, "fileName", record.FileName)
+					"fileID", record.FileID, "fileName", record.FileName,
+					"folderName", folderName)
 			}
 
-			// still append the file to the storedFiles list,
 			mu.Lock()
 			storedFiles = append(storedFiles, file)
 			mu.Unlock()
@@ -374,34 +382,48 @@ func (g *GDriveSource) SyncFilesToFilestore(ctx context.Context, fs *filestore.F
 	}
 	_ = dlGroup.Wait()
 
-	// Phase 3: Garbage collection — delete files and permissions no longer in source
+	// Phase 3: Garbage collection -- delete files and permissions no longer in source.
+	// File layout: <outputDir>/<folderName>/<fileID>.<ext>
+	// Permissions:  <outputDir>/<folderName>/permissions/<fileID>.json
 	localFiles, err := fs.ListFilesInPath(ctx, g.OutputDir)
 	if err != nil {
 		logger.Error(err, "failed to list files in filestore for gc", "outputDir", g.OutputDir)
 	} else {
-		permissionsPrefix := path.Join(g.OutputDir, "permissions") + "/"
 		for _, localFilePath := range localFiles {
-			// Handle permissions directory: delete orphaned <fileID>.json files
-			if baseName, ok := strings.CutPrefix(localFilePath, permissionsPrefix); ok {
-				permFileID := strings.TrimSuffix(baseName, ".json")
-				if _, exists := currentFiles[permFileID]; !exists {
+			rel := strings.TrimPrefix(localFilePath, g.OutputDir)
+			rel = strings.TrimPrefix(rel, "/")
+			parts := strings.SplitN(rel, "/", 3)
+
+			switch len(parts) {
+			case 3:
+				// <folderName>/permissions/<fileID>.json
+				if parts[1] != "permissions" {
+					continue
+				}
+				permFileID := strings.TrimSuffix(parts[2], ".json")
+				gcKey := parts[0] + "/" + permFileID
+				if _, exists := currentFiles[gcKey]; !exists {
 					logger.Info("permissions file no longer in source, deleting", "file", localFilePath)
 					if err := fs.Delete(ctx, localFilePath); err != nil {
 						logger.Error(err, "failed to delete permissions file", "file", localFilePath)
 					}
 				}
-				continue
-			}
-
-			fileID := g.extractFileID(localFilePath)
-			if fileID == "" {
-				continue
-			}
-			if _, exists := currentFiles[fileID]; !exists {
-				logger.Info("file no longer in source, deleting from filestore", "file", localFilePath)
-				if err := fs.Delete(ctx, localFilePath); err != nil {
-					logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
+			case 2:
+				// <folderName>/<fileID>.<ext> or <folderName>/<fileID>.<ext>.json
+				name := strings.TrimSuffix(parts[1], ".json")
+				fileID := strings.TrimSuffix(name, path.Ext(name))
+				if fileID == "" {
+					fileID = name
 				}
+				gcKey := parts[0] + "/" + fileID
+				if _, exists := currentFiles[gcKey]; !exists {
+					logger.Info("file no longer in source, deleting from filestore", "file", localFilePath)
+					if err := fs.Delete(ctx, localFilePath); err != nil {
+						logger.Error(err, "failed to delete file from filestore", "file", localFilePath)
+					}
+				}
+			default:
+				continue
 			}
 		}
 	}
@@ -500,27 +522,10 @@ func (g *GDriveSource) storeFile(
 	if err != nil {
 		return false, fmt.Errorf("failed to marshal permissions for %s: %w", fileID, err)
 	}
-	permissionsPath := path.Join(g.OutputDir, "permissions", fileID+".json")
+	permissionsPath := path.Join(path.Dir(filePath), "permissions", fileID+".json")
 	if err := fs.Store(ctx, permissionsPath, permissionsData); err != nil {
 		return false, fmt.Errorf("failed to store permissions for %s: %w", fileID, err)
 	}
 
 	return fileChanged, nil
-}
-
-// extractFileID extracts the Google Drive file ID from a filestore
-// path like "<outputDir>/<fileID>.pdf" or "<outputDir>/<fileID>.pdf.json".
-func (g *GDriveSource) extractFileID(filestorePath string) string {
-	rel := strings.TrimPrefix(filestorePath, g.OutputDir)
-	rel = strings.TrimPrefix(rel, "/")
-	if rel == "" || strings.Contains(rel, "/") {
-		return ""
-	}
-	// Strip .json metadata suffix first, then the file extension
-	name := strings.TrimSuffix(rel, ".json")
-	fileID := strings.TrimSuffix(name, path.Ext(name))
-	if fileID == "" {
-		return name
-	}
-	return fileID
 }

@@ -300,12 +300,14 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 	}
 
 	folderIDs := make([]string, 0, len(gdriveConfig.Folders))
+	folderNamesByID := make(map[string]string, len(gdriveConfig.Folders))
 	for _, f := range gdriveConfig.Folders {
 		id, err := extractGDriveFolderID(f.URL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid Google Drive folder URL %q: %w", f.URL, err)
 		}
 		folderIDs = append(folderIDs, id)
+		folderNamesByID[id] = f.Name
 	}
 	skipFolderNames := make([]string, len(gdriveConfig.SkipFolders))
 	for i, s := range gdriveConfig.SkipFolders {
@@ -315,6 +317,7 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 	return &unstructured.GDriveSource{
 		GDriveClient:        gdriveClient,
 		FolderIDs:           folderIDs,
+		FolderNamesByID:     folderNamesByID,
 		SkipFolderNames:     skipFolderNames,
 		MaxRetries:          maxRetries,
 		ConcurrentFolders:   concurrentFolders,
@@ -353,7 +356,8 @@ func buildGDriveStatus(gds *unstructured.GDriveSource, gdriveConfig *operatorv1a
 	for i, f := range gdriveConfig.Folders {
 		folderID := gds.FolderIDs[i]
 		status := operatorv1alpha1.GDriveFolderStatus{
-			URL: f.URL,
+			Name: f.Name,
+			URL:  f.URL,
 		}
 		if errMsg, failed := failedMap[folderID]; failed {
 			status.Error = errMsg
