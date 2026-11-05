@@ -89,6 +89,37 @@ func TestDoclingChunkerChunkReturnsAReceiptAndNoChunks(t *testing.T) {
 	assert.Empty(t, result.Chunks)
 }
 
+// The upload is named after what is being sent, not after the source file.
+// A DoclingDocument has no magic bytes, so the service reads the extension,
+// and a name ending .pdf resolves to a format from_formats does not allow.
+// Measured against the live service with an identical body: "report.json"
+// returned 172 chunks and "report.pdf" returned zero, both HTTP 200 and both
+// reporting success. Every test here used to pass a .json name while
+// production passed the raw path, so nothing caught it.
+func TestDoclingChunkerChunkNamesTheUploadAfterTheDocument(t *testing.T) {
+	var sent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload docling.ChunkRequestPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decoding the submitted payload: %v", err)
+		}
+		if len(payload.Sources) > 0 {
+			sent = payload.Sources[0].Filename
+		}
+		writeTestJSON(t, w, `{"task_id":"t-1","task_status":"pending"}`)
+	}))
+	defer srv.Close()
+
+	document := convertedDocument(chunkerTestDocument)
+	document.Metadata.RawFilePath = "corpus/report.pdf"
+
+	_, err := testChunker(srv).Chunk(context.Background(), document)
+
+	require.NoError(t, err)
+	assert.Equal(t, "corpus/report.pdf.json", sent,
+		"a name carrying the source document's extension chunks to nothing, silently")
+}
+
 // Expected for anything converted before structured output was asked for.
 // Retrying cannot help while the converted file stays as it is.
 func TestDoclingChunkerChunkRefusesAMarkdownOnlyDocument(t *testing.T) {

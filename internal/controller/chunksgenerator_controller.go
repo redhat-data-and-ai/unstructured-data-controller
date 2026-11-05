@@ -266,6 +266,20 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}, nil
 	}
 
+	// Giving up on a file is not an error that reaches here: failChunkJob
+	// records the file and returns nil so one bad file does not stop the
+	// rest of the corpus. That makes this the only place the stage can
+	// report it, and reporting success instead is the exact silent failure
+	// this stage exists to avoid. A mistyped tokenizer returns success with
+	// no chunks for every file in a corpus, which would otherwise settle
+	// into a green resource that has written nothing.
+	if given := len(chunksGeneratorCR.Status.PermanentlyFailingFiles); given > 0 {
+		err := fmt.Errorf("gave up chunking %d file(s) after %d attempts each; "+
+			"see status.permanentlyFailingFiles, and editing the spec retries them",
+			given, maxDoclingChunkingAttempts)
+		return r.handleError(ctx, chunksGeneratorCR, err)
+	}
+
 	successMessage := fmt.Sprintf("successfully reconciled chunks generator: %s", chunksGeneratorCR.Name)
 	if err := controllerutils.StatusPatch(ctx, r.Client, chunksGeneratorCR, func() {
 		chunksGeneratorCR.UpdateStatus(successMessage, nil)

@@ -83,12 +83,25 @@ func (c *DoclingChunker) Chunk(ctx context.Context, document *ConvertedDocument)
 	}
 
 	response, err := c.Client.ChunkDoclingDocument(
-		ctx, document.Metadata.RawFilePath, document.Content.DoclingDocument, c.Options)
+		ctx, doclingDocumentFilename(document.Metadata.RawFilePath),
+		document.Content.DoclingDocument, c.Options)
 	if err != nil {
 		return ChunkResult{}, err
 	}
 
 	return ChunkResult{TaskID: response.TaskID}, nil
+}
+
+// doclingDocumentFilename names the upload after what is actually being sent.
+//
+// The name is not cosmetic. A DoclingDocument has no magic bytes, so the
+// service falls back to the extension to decide what it was handed, and a
+// name carrying the source document's extension resolves to a format that
+// from_formats does not allow. Measured against the live service with the
+// same body: "report.json" returned 172 chunks, "report.pdf" and "report"
+// both returned zero, each reporting HTTP 200 and status success.
+func doclingDocumentFilename(rawFilePath string) string {
+	return rawFilePath + ".json"
 }
 
 // Collect returns a started task's chunks, with their elements already
