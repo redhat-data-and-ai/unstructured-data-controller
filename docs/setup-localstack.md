@@ -35,7 +35,7 @@ awslocal s3 mb s3://data-storage-bucket
 awslocal sqs create-queue --queue-name unstructured-s3-queue
 ```
 
-This will provide the queue url
+The `create-queue` output includes the queue URL (e.g. `http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/unstructured-s3-queue`). You will need it in step 5.
 
 ## 3. Get the SQS queue ARN
 
@@ -72,7 +72,7 @@ Create a notification configuration file that sends S3 events to your SQS queue.
       "Id": "S3ToSQSNotification",
       "QueueArn": "arn:aws:sqs:us-east-1:000000000000:unstructured-s3-queue",
       "Events": [
-        "s3:ObjectCreated:*"
+        "s3:ObjectCreated:*",
         "s3:ObjectRemoved:*"
       ]
     }
@@ -89,6 +89,25 @@ awslocal s3api put-bucket-notification-configuration \
 ```
 
 From the project root, the path `test/resources/unstructured/notification.json` is relative to the current directory; adjust the path if you run the command from somewhere else.
+
+## 5. Wire the queue into the pipeline
+
+The queue created in step 2 is only used once the pipeline's crawl stage references it. After creating the pipeline (see [Setup Unstructured Data Controller](setup-unstructured-controller.md), step 8), add the queue URL to the crawl stage's `s3Config`:
+
+```bash
+kubectl edit unstructureddatapipeline my-pipeline -n unstructured-controller-namespace
+```
+
+Add `sqsQueueURL` under the crawl stage's `sourceCrawlerConfig.s3Config` so it reads:
+
+```yaml
+s3Config:
+  bucket: data-ingestion-bucket
+  prefix: documents/
+  sqsQueueURL: http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/unstructured-s3-queue
+```
+
+With `sqsQueueURL` set, the crawler reacts to S3 event notifications in near real time. Without it, the crawler still picks up new and changed files, but only via its periodic resync (every 2 minutes).
 
 ## Verifying
 
