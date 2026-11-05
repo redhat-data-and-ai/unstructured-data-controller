@@ -38,8 +38,10 @@ type Embeddings struct {
 	Regions  []docling.Region `json:"regions,omitempty"`
 }
 
+// EmbeddingsFile carries no converted document, for the reason given on
+// ChunksFile. This is the artifact the syncer uploads, so a copy here is
+// also egress and external table size.
 type EmbeddingsFile struct {
-	ConvertedDocument *ConvertedDocument `json:"convertedDocument"`
 	ChunksDocument    *ChunksDocument    `json:"chunksDocument"`
 	EmbeddingDocument *EmbeddingDocument `json:"embeddingDocument"`
 }
