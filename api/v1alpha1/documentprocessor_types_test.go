@@ -49,9 +49,8 @@ func TestDoclingConfig_SetDefaults_EmptyConfig(t *testing.T) {
 	c.SetDefaults()
 
 	// Written out rather than compared against defaultFromFormats and
-	// defaultToFormats. SetDefaults copies straight from those two, so
-	// comparing against them checks the function against its own input and
-	// passes whatever they happen to hold.
+	// defaultToFormats, which SetDefaults copies from: comparing against
+	// them would pass whatever they happen to hold.
 	inputFormats := []string{"docx", "pptx", "html", "image", "pdf", "asciidoc", "md", "csv", "xlsx"}
 	if !slices.Equal(c.FromFormats, inputFormats) {
 		t.Errorf("expected from_formats %v, got %v", inputFormats, c.FromFormats)
@@ -256,9 +255,8 @@ func TestVLMPipelineCustomConfig_SetDefaults_DoesNotAliasTheModelTable(t *testin
 }
 
 // TestDoclingConfig_SetDefaults_ToFormats pins the exact list that reaches
-// docling. Docling populates json_content only when "json" is in to_formats,
-// and it reports no error when it is missing, so losing it here fails
-// silently: conversions keep succeeding and the structure is never returned.
+// docling. Docling populates json_content only when "json" is in to_formats
+// and reports no error when it is missing, so losing it fails silently.
 func TestDoclingConfig_SetDefaults_ToFormats(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -25,16 +25,9 @@ import (
 )
 
 // TestKubebuilderMarkersAreASCII catches a curly quote in a kubebuilder
-// marker, which is otherwise expensive to find.
-//
-// A marker lives in a comment, so a smart quote in one compiles, vets, lints
-// and unit tests clean. In a CEL rule it then fails at CRD install with
-// "Syntax error: token recognition error", which is the slowest possible
-// place to learn about it: the e2e job, ten minutes later, and that job
-// reports only "exit status 2" because it does not keep kubectl's output.
-//
-// It happens because editors and chat tools substitute ' and " for their
-// typographic forms, and Go has no reason to complain.
+// marker, which is otherwise expensive to find: a marker lives in a comment,
+// so a smart quote compiles, vets and lints clean, and a CEL rule carrying
+// one fails only at CRD install.
 func TestKubebuilderMarkersAreASCII(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {

@@ -44,12 +44,9 @@ const (
 	SemaphorePanicError   = "semaphore: released more than held"
 )
 
-// ErrSemaphoreUnavailable reports that the client is already at its
-// configured concurrency and refused the work rather than queueing for it.
-// Callers should retry later instead of treating it as a failure.
-//
-// Its message is SemaphoreAcquireError, so callers still matching on the text
-// keep working.
+// ErrSemaphoreUnavailable reports that the client is already at its configured
+// concurrency and refused the work rather than queueing for it. Callers should
+// retry later instead of treating it as a failure.
 var ErrSemaphoreUnavailable = errors.New(SemaphoreAcquireError)
 
 type TaskStatus string
@@ -68,29 +65,20 @@ type PictureDescriptionAPI struct {
 	Headers     map[string]string           `json:"headers,omitempty"`
 }
 
-// VLMEngineTypeAPI selects docling's OpenAI-compatible HTTP engine.
-//
-// It has to be sent explicitly. Docling resolves engine_options to a concrete
-// type by looking engine_type up in a registry, and the API options class
-// registers under no particular value, so it is only reached by the fallback
-// that tests engine_type for an API variant. Omit the field and that test sees
-// nil, no engine matches, and the request is rejected.
+// VLMEngineTypeAPI selects docling's OpenAI-compatible HTTP engine. It has to
+// be sent explicitly: omit it and no engine matches, so the request is
+// rejected.
 const VLMEngineTypeAPI = "api"
 
 // VLMModelSpec is the model half of `vlm_pipeline_custom_config`: what to ask
-// for, independent of where it is served.
-//
-// Every field here is required by docling. Name is free text the server only
-// reports back, while the other three decide what comes out of the parse.
+// for, independent of where it is served. Docling requires every field; Name
+// is free text it only reports back.
 type VLMModelSpec struct {
 	Name string `json:"name"`
-	// DefaultRepoID is both the model docling asks the endpoint for and the
-	// only place that name may be set. Docling derives the request's `model`
-	// parameter from it, but only while `engine_options.params` is absent: it
-	// treats caller-supplied params as a complete override and drops the model
-	// name along with everything else it would have contributed. Sending even
-	// an empty params object is enough to lose it, which is why
-	// VLMEngineOptions has no field for one.
+	// DefaultRepoID is the model docling asks the endpoint for, and the only
+	// place it may be set. Docling derives the request's `model` parameter
+	// from it only while `engine_options.params` is absent, even an empty one,
+	// which is why VLMEngineOptions has no field for params.
 	DefaultRepoID string `json:"default_repo_id"`
 	// Prompt selects which outputs the model produces, as a row of control
 	// tokens. A wrong one returns a document that parses cleanly and is missing
@@ -103,13 +91,9 @@ type VLMModelSpec struct {
 }
 
 // VLMEngineOptions is the transport half of `vlm_pipeline_custom_config`:
-// where the model is reached and how to authenticate, and nothing about what
-// it returns. That split is why the credential can live in the controller's
-// Secret while the model settings live on the CR.
-//
-// Timeout and Concurrency are deliberately absent along with Params. Docling
-// defaults them to 60 seconds and 1, which is serial but correct, and adding
-// fields the operator never sets would only widen the wire surface.
+// where the model is reached and how to authenticate. That split is why the
+// credential can live in the controller's Secret while the model settings live
+// on the CR.
 type VLMEngineOptions struct {
 	EngineType string            `json:"engine_type"`
 	URL        string            `json:"url"`
@@ -118,31 +102,18 @@ type VLMEngineOptions struct {
 
 // VLMPipelineCustomConfig is docling-serve's `vlm_pipeline_custom_config`: the
 // remote vision-language model the "vlm" pipeline calls instead of one of the
-// bundled presets. The server needs remote services and custom VLM
-// configuration enabled for it, via DOCLING_SERVE_ENABLE_REMOTE_SERVICES and
-// DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG.
+// bundled presets. The server needs DOCLING_SERVE_ENABLE_REMOTE_SERVICES and
+// DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG for it.
 //
-// It travels in the request body, which is what lets the credential live in the
-// controller's Secret rather than in a CR or a server-side preset.
-//
-// This replaced `vlm_pipeline_model_api`, which docling marks deprecated and
-// whose own description points here. Both names were live at the time of
-// writing, so the change is not urgent in itself, but it is not cosmetic
-// either: the deprecated option is the one scheduled for removal, and docling
-// silently discards options it does not recognise rather than rejecting them,
-// so the day it goes the request still returns 200 having quietly run the
-// standard pipeline. Before moving to any other name, probe the target server
-// with a deliberately invalid enum value and check that it answers 422 rather
-// than 200.
+// It replaces the deprecated `vlm_pipeline_model_api`. Docling discards an
+// option name it does not recognise and still returns 200, so a wrong name
+// here quietly runs the standard pipeline instead of failing.
 type VLMPipelineCustomConfig struct {
 	ModelSpec     VLMModelSpec     `json:"model_spec"`
 	EngineOptions VLMEngineOptions `json:"engine_options"`
 	// Scale is the rasterisation factor applied to each page before the model
 	// sees it, where 1.0 is 72 DPI. Omitted rather than zeroed when unset, so
 	// the server applies its own default instead of rendering at nothing.
-	//
-	// Note this sits beside model_spec rather than inside it: rasterisation is
-	// something docling does before the model is involved.
 	Scale *float64 `json:"scale,omitempty"`
 	// MaxSize caps a rasterised page's longest edge in pixels. A page over it
 	// is scaled down to fit, which silently lowers the effective Scale.
@@ -213,16 +184,10 @@ type DoclingResponse struct {
 type DoclingResponseDocument struct {
 	FileName  string `json:"filename"`
 	MDContent string `json:"md_content"`
-	// JSONContent is the DoclingDocument, returned only when
-	// to_formats includes "json". Unlike its siblings it is a JSON object and
-	// not a string, so it is carried through as bytes rather than decoded
-	// into types of ours and built again. A round trip through our own types
-	// would silently drop every field they do not name, and addresses into
-	// the document such as "#/texts/59" index into its arrays, so losing or
-	// reordering anything moves them. Not decoding it is also the cheaper
-	// path for a payload this size.
-	//
-	// Prefer JSONDocument() over reading this field directly.
+	// JSONContent is the DoclingDocument, returned only when to_formats
+	// includes "json". It is carried as raw bytes because addresses such as
+	// "#/texts/59" index into its arrays, so a round trip through our own
+	// types would move them. Prefer JSONDocument() over reading it directly.
 	JSONContent    json.RawMessage `json:"json_content"`
 	HTMLContent    string          `json:"html_content"`
 	TextContent    string          `json:"text_content"`

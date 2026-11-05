@@ -13,14 +13,10 @@ import (
 // ErrNoChunksProduced reports a document that carried content and chunked to
 // nothing.
 //
-// Nothing downstream can tell that apart from a document that was genuinely
-// empty. The chunks file is written, the embeddings stage finds no text to
-// embed, the syncer uploads a row with no chunks, and the document is present
-// in the warehouse as a title with no body. It is then never retried: the
-// cache key is the converted file's metadata and the generator config, both
-// unchanged, so the next reconcile sees the artifact as current. A question
-// whose answer is in that document returns nothing, and no stage reports an
-// error at any point.
+// Without it the empty artifact is written and never retried: the cache key is
+// the converted file's metadata and the generator config, both unchanged, so
+// the next reconcile sees the artifact as current and no stage reports an
+// error.
 var ErrNoChunksProduced = errors.New("document has content but produced no chunks")
 
 // Chunk is one chunk as a chunker produced it. Only Text is filled by every
@@ -67,10 +63,7 @@ type Chunker interface {
 }
 
 // AsyncChunker is a Chunker whose work outlives the call that starts it.
-//
-// Separate from Chunker so a chunker that finishes within the call need not
-// declare a Collect it can never honour. Callers ask for it with a type
-// assertion, as they do for http.Flusher.
+// Callers ask for it with a type assertion, as they do for http.Flusher.
 type AsyncChunker interface {
 	Chunker
 
@@ -78,12 +71,9 @@ type AsyncChunker interface {
 	Collect(ctx context.Context, taskID string, document DocumentFunc) (ChunkResult, error)
 }
 
-// DocumentFunc returns the document a task's chunks resolve against.
-//
-// A function rather than the document itself, because Collect needs it only
-// once the task has finished and most calls find it still running. The
-// stored document is several megabytes, so reading it up front would decode
-// all of that on every poll to learn nothing.
+// DocumentFunc returns the document a task's chunks resolve against. A
+// function rather than the document itself, because Collect needs it only once
+// the task has finished and most polls find it still running.
 type DocumentFunc func() (*ConvertedDocument, error)
 
 // TextChunks wraps plain strings as chunks carrying nothing but their text,
@@ -107,11 +97,9 @@ func ChunkTexts(chunks []Chunk) []string {
 }
 
 // ValidateChunks reports ErrNoChunksProduced when content chunked to nothing.
-//
-// A document that really is empty is allowed through with no chunks, because
-// there is nothing to lose: the crawler accepts files that hold no extractable
-// text, and failing them would wedge the stage on input that can never
-// succeed. Whitespace counts as empty for the same reason.
+// Content that is empty or only whitespace passes with no chunks, since the
+// crawler accepts files with no extractable text and failing them would wedge
+// the stage.
 func ValidateChunks(content string, chunks []Chunk) error {
 	if len(chunks) == 0 && strings.TrimSpace(content) != "" {
 		return ErrNoChunksProduced
@@ -134,10 +122,9 @@ type TokenSplitter struct {
 	Config          *textsplitter.Options
 }
 
-// The three splitters below work on the markdown and finish within the call,
-// so none of them implements AsyncChunker. They take a context they do not
-// use, because the interface is shared with a chunker that calls out over the
-// network and must be cancellable.
+// The three splitters below finish within the call, so none implements
+// AsyncChunker. They ignore the context, which the interface carries for
+// chunkers that call out over the network.
 
 func (c *MarkdownSplitter) Chunk(_ context.Context, document *ConvertedDocument) (ChunkResult, error) {
 	texts, err := c.LangchainClient.SplitTextViaMarkdownTextSplitter(document.Content.Markdown, c.Config)

@@ -82,31 +82,28 @@ var (
 )
 
 // vlmPipelineAPIKeySecretKey is the Secret entry holding the credential for
-// the model the vlm pipeline parses with. Named rather than inlined so the
-// Secret and the reader cannot drift apart: a key the controller never finds
-// reads as "this endpoint needs no credential", and the request goes out
-// unauthenticated. It must match config/samples/unstructured-secret.yaml.
+// the model the vlm pipeline parses with. It must match
+// config/samples/unstructured-secret.yaml: a key the controller never finds
+// reads as "this endpoint needs no credential" and the request goes out
+// unauthenticated.
 const vlmPipelineAPIKeySecretKey = "VLM_PIPELINE_API_KEY"
 
 // vlmPipelineSettings is where the vlm pipeline's model is reached. Which
 // model it is, and what to ask it for, are spec fields on the
 // DocumentProcessor instead, because those change what the parse returns and
-// so have to reach the conversion cache key. An address does not.
+// so have to reach the conversion cache key.
 //
-// apiKey deliberately has no CRD field at all: DoclingConfig is copied
-// verbatim into ConvertedFileMetadata and shipped to the destination bucket
-// and the warehouse, so a credential on a CR would be persisted into every
-// converted artifact.
+// apiKey has no CRD field at all: DoclingConfig is copied verbatim into
+// ConvertedFileMetadata and shipped downstream, so a credential on a CR would
+// be persisted into every converted artifact.
 type vlmPipelineSettings struct {
 	apiKey string
 	apiURL string
 }
 
 // configured reports whether the model can be reached. Only the endpoint is
-// required: a model served without authentication is an ordinary deployment,
-// and a credential that turns out to be needed fails loudly at the gateway. A
-// missing endpoint cannot fail loudly, because docling then runs its own
-// bundled model and answers 200.
+// required: a missing credential fails loudly at the gateway, whereas a
+// missing endpoint has docling run its own bundled model and answer 200.
 func (s *vlmPipelineSettings) configured() bool {
 	return s != nil && s.apiURL != ""
 }

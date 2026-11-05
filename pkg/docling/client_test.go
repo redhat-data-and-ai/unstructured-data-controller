@@ -29,19 +29,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// optionsKey is the request key the convert endpoints read. The chunk
-// endpoints read "convert_options" instead, and docling answers 200 while
-// silently discarding every option sent under the wrong key, so the two are
-// worth naming rather than inlining.
+// optionsKey is the request key the convert endpoints read; the chunk
+// endpoints read "convert_options". Docling answers 200 while silently
+// discarding options sent under the wrong key.
 const optionsKey = "options"
 
-// TestDoclingRequestPayloadSendsToFormats checks that to_formats actually
-// reaches the wire, and reaches it under "options".
-//
-// Docling drops unknown keys without complaining. A payload sent under
-// "convert_options" returns 200 with a normal-looking document in which every
-// option was ignored, which means json_content comes back null and nothing
-// anywhere reports a problem. A unit test is the only cheap place to catch it.
+// TestDoclingRequestPayloadSendsToFormats checks that to_formats reaches the
+// wire under "options". Docling drops unknown keys without complaining, so a
+// payload under the wrong key returns 200 with json_content null and nothing
+// reports a problem.
 func TestDoclingRequestPayloadSendsToFormats(t *testing.T) {
 	payload, err := json.Marshal(DoclingRequestPayload{
 		Options: &DoclingConfig{ToFormats: []string{"md", "json"}},
@@ -118,9 +114,8 @@ func TestDoclingResponseDocumentJSONDocument(t *testing.T) {
 }
 
 // TestGetConvertedFileJSONContent walks the whole response path rather than
-// just the struct tags: a real HTTP body, through getTaskStatus and the result
-// endpoint, out to the caller. That is the plumbing a caller depends on, and
-// it is what would break if the field were hung off the wrong struct.
+// just the struct tags: a real HTTP body, through getTaskStatus and the
+// result endpoint, out to the caller.
 func TestGetConvertedFileJSONContent(t *testing.T) {
 	const doc = `{"schema_name":"DoclingDocument","pages":{"1":{"size":{"width":612,"height":792}}}}`
 
@@ -184,10 +179,9 @@ func TestGetConvertedFileJSONContent(t *testing.T) {
 	}
 }
 
-// The server silently discards options it does not recognise and returns 200,
-// so a wrong key here does not fail: it quietly runs the standard pipeline
-// while reporting success. These assertions pin the wire names against the
-// schema the server actually enforces, because nothing downstream will.
+// The server discards options it does not recognise and returns 200, so a
+// wrong key here quietly runs the standard pipeline. These assertions pin the
+// wire names, because nothing downstream will.
 func TestDoclingConfigVLMWireNames(t *testing.T) {
 	scale := 2.78
 	doclingConfig := DoclingConfig{

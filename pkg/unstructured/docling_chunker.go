@@ -37,14 +37,9 @@ import (
 var ErrNoStructuredDocument = errors.New("the converted file holds no structured document, only markdown")
 
 // hasStructuredDocument reports whether a converted file carries a document
-// worth sending or indexing.
-//
-// A length test alone is not enough, which is the same rule
-// docling.DoclingResponseDocument.JSONDocument states: the field is absent
-// when nothing asked for it and the JSON literal null when docling ran and
-// produced nothing, and null is four bytes. Letting null through sends "null"
-// to be chunked, and unmarshals clean into an empty index here, which would
-// resolve every chunk to no regions at all and say nothing about it.
+// worth sending or indexing. A length test alone is not enough: docling writes
+// the JSON literal null when it produced nothing, which unmarshals clean into
+// an empty index and would silently resolve every chunk to no regions.
 func hasStructuredDocument(document *ConvertedDocument) bool {
 	if document == nil || document.Metadata == nil || document.Content == nil {
 		return false
@@ -56,9 +51,8 @@ func hasStructuredDocument(document *ConvertedDocument) bool {
 // DoclingChunker splits on the document's structure by handing the stored
 // document back to the conversion service. It is the only chunker that can
 // produce a citation, because it is the only one that knows which elements a
-// chunk came from.
-//
-// Its work outlives the call, so it implements AsyncChunker too.
+// chunk came from. Its work outlives the call, so it implements AsyncChunker
+// too.
 type DoclingChunker struct {
 	Client  *docling.Client
 	Options docling.ChunkingOptions
@@ -71,12 +65,8 @@ var (
 	_ AsyncChunker = (*DoclingChunker)(nil)
 )
 
-// Chunk submits the stored document and returns the accepted task, not
-// chunks: the work has only started.
-//
-// The stored document is sent rather than the original file. A second
-// conversion produces a different document, and a chunk names its elements
-// by address, so those addresses would then point at the wrong elements.
+// Chunk submits the stored document and returns the accepted task, not chunks:
+// the work has only started.
 func (c *DoclingChunker) Chunk(ctx context.Context, document *ConvertedDocument) (ChunkResult, error) {
 	if !hasStructuredDocument(document) {
 		return ChunkResult{}, ErrNoStructuredDocument
@@ -93,13 +83,9 @@ func (c *DoclingChunker) Chunk(ctx context.Context, document *ConvertedDocument)
 }
 
 // doclingDocumentFilename names the upload after what is actually being sent.
-//
-// The name is not cosmetic. A DoclingDocument has no magic bytes, so the
-// service falls back to the extension to decide what it was handed, and a
-// name carrying the source document's extension resolves to a format that
-// from_formats does not allow. Measured against the live service with the
-// same body: "report.json" returned 172 chunks, "report.pdf" and "report"
-// both returned zero, each reporting HTTP 200 and status success.
+// The service decides the format from the extension, and a name keeping the
+// source document's extension returns zero chunks with HTTP 200 and status
+// success.
 func doclingDocumentFilename(rawFilePath string) string {
 	return rawFilePath + ".json"
 }
@@ -126,10 +112,9 @@ func (c *DoclingChunker) Collect(
 		return ChunkResult{TaskID: taskID}, nil
 	}
 
-	// A successful task with no chunks is deliberately not an error here. It
-	// is both how the chunker reports being unable to load its tokenizer and
-	// what a document with no content legitimately produces, and only the
-	// document tells them apart, so the caller decides.
+	// A successful task with no chunks is not an error here: it is both a
+	// tokenizer the chunker could not load and a document with no content, and
+	// only the caller can tell them apart.
 	chunks := []docling.Chunk{}
 	if response != nil {
 		chunks = response.Chunks
@@ -164,23 +149,20 @@ func (*DoclingChunker) resolve(
 		return nil, ErrNoStructuredDocument
 	}
 
-	// Built once per document. The chunks of one file all resolve against
-	// the same document, and building this per chunk would reparse several
-	// megabytes of JSON a hundred times over.
+	// Built once per document: every chunk of a file resolves against the same
+	// document, and building this per chunk would reparse the whole JSON.
 	index, err := docling.NewDocumentIndex(document.Content.DoclingDocument)
 	if err != nil {
 		return nil, err
 	}
 
 	// The service numbers its chunks and the stored artifact is read by
-	// position, so the two have to agree. Sorting costs nothing and the
-	// alternative is an artifact pairing one chunk's text with another
-	// chunk's provenance, which nothing downstream can detect.
+	// position, so the two have to agree. Out of order, the artifact pairs one
+	// chunk's text with another chunk's provenance and nothing downstream can
+	// detect it.
 	ordered := slices.Clone(chunks)
-	// Stable, because an unstable sort reorders equal keys. If the service
-	// ever omits chunk_index every key is zero, and the artifact is read by
-	// position, so the scrambling would pair one chunk's text with another
-	// chunk's provenance and nothing downstream could detect it.
+	// Stable, so that chunks all keyed zero, if the service ever omits
+	// chunk_index, keep the order they arrived in.
 	slices.SortStableFunc(ordered, func(a, b docling.Chunk) int {
 		return cmp.Compare(a.ChunkIndex, b.ChunkIndex)
 	})
@@ -202,8 +184,7 @@ func (*DoclingChunker) resolve(
 		})
 	}
 
-	// Logged rather than failed. It means the chunks and the document
-	// disagree about what is in the document, which is worth seeing, but a
+	// Logged rather than failed: the chunks and the document disagree, but a
 	// chunk with some of its rectangles still beats one with none.
 	if unresolvedTotal > 0 {
 		logger.Info("some chunk elements could not be placed on a page",

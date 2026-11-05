@@ -84,11 +84,9 @@ func TestChunksGeneratorConfig_SetDefaults_TokenStrategy(t *testing.T) {
 	}
 }
 
-// Selecting the strategy and a tokenizer has to be enough. Every one of
-// docling's own defaults for the remaining settings is wrong here: max_tokens
-// falls back to the tokenizer's limit, which is several times an embedding
-// window, and the two flags default off, which leaves no display text and
-// serialises tables as value triplets.
+// Selecting the strategy and a tokenizer has to be enough: docling's own
+// defaults fall back to the tokenizer's token limit, leave no display text
+// and serialise tables as value triplets.
 func TestChunksGeneratorConfig_SetDefaults_DoclingHybridStrategy(t *testing.T) {
 	c := ChunksGeneratorConfig{
 		Strategy:            ChunkingStrategyDoclingHybrid,
@@ -168,9 +166,9 @@ func TestChunksGeneratorConfig_SetDefaults_OtherStrategiesLeaveHybridUnset(t *te
 	}
 }
 
-// The empty string still has to reach the existing default. 75 resources set
-// it empty rather than omitting the field, because it is required in the
-// generated CRD, and changing what it resolves to re-chunks all of them.
+// The empty string still has to reach the existing default. Resources set it
+// empty rather than omitting the field, because the generated CRD makes it
+// required, and changing what it resolves to re-chunks all of them.
 func TestChunksGeneratorConfig_SetDefaults_EmptyStrategyIsUnchanged(t *testing.T) {
 	c := ChunksGeneratorConfig{}
 	c.SetDefaults()

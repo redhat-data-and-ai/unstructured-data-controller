@@ -24,14 +24,8 @@ import (
 	"strings"
 )
 
-// A chunk says which elements it was built from and nothing about where they
-// are. This file turns those addresses into rectangles on a page.
-//
-// Three things about the format drive the code below. An element is
-// addressed by "self_ref" and never by position. "pages" is an object keyed
-// by the page number as a string, not an array. And "prov" is empty on an
-// element docling did not place, which is most of them: on a 143 page
-// document, 1,317 of 2,454 text elements take their box from an ancestor.
+// A chunk names the elements it was built from, not where they are. This file
+// turns those addresses into rectangles on a page.
 
 const (
 	// CoordOriginBottomLeft measures a box from the bottom of the page
@@ -44,15 +38,13 @@ const (
 	CoordOriginTopLeft = "TOPLEFT"
 )
 
-// maxAncestorLevels bounds the climb to a placed ancestor. Four because
-// three is the deepest observed, and the parent chain is untrusted data: a
-// cycle in it would otherwise spin inside a reconcile.
+// maxAncestorLevels bounds the climb to a placed ancestor. The parent chain is
+// untrusted data, so a cycle in it would otherwise spin inside a reconcile.
 const maxAncestorLevels = 4
 
-// regionPrecision keeps five decimal places, which is well below what a
-// reader can see and stops a float division writing seventeen digits per
-// number. It also makes two identical boxes compare equal, which is what
-// deduplication relies on.
+// regionPrecision keeps five decimal places, which stops a float division
+// writing seventeen digits per number and makes two identical boxes compare
+// equal, which deduplication relies on.
 const regionPrecision = 5
 
 // Region is where a chunk's content sits: one page, one rectangle,
@@ -146,11 +138,8 @@ type document struct {
 	KeyValueItems []DocItem `json:"key_value_items"`
 	FormItems     []DocItem `json:"form_items"`
 
-	// Groups are the tree's branch nodes and carry no placement of their
-	// own, so nothing is ever found on one. They are still read, because the
-	// climb from a text element to a placed ancestor passes through them:
-	// measured on a 143 page document, 1,146 of 2,454 text elements take
-	// their box from exactly two levels up, with a group in between.
+	// Groups are branch nodes and carry no placement of their own. They are
+	// still read because the climb to a placed ancestor passes through them.
 	Groups []DocItem `json:"groups"`
 
 	// Pages is keyed by the page number written as a string, because JSON
@@ -159,7 +148,7 @@ type document struct {
 }
 
 // DocumentIndex answers "where is this element" for one document. Build it
-// once per file: per chunk would reparse megabytes of JSON each time.
+// once per file: per chunk would reparse the whole JSON each time.
 type DocumentIndex struct {
 	items map[string]*DocItem
 	pages map[string]Page
@@ -234,10 +223,8 @@ func (index *DocumentIndex) Regions(addresses []string) (regions []Region, unres
 
 // placement finds the element's own box, or the nearest one above it.
 //
-// Climbing is the common case, not a fallback: the parser puts the box on
-// the block and the text on the inline runs inside it. An element with its
-// own box keeps it, or a sentence would be drawn around its whole
-// paragraph.
+// Climbing is the common case, not a fallback: the parser puts the box on the
+// block and the text on the inline runs inside it.
 func (index *DocumentIndex) placement(item *DocItem) *Provenance {
 	for range maxAncestorLevels + 1 {
 		if own := item.ownPlacement(); own != nil {
@@ -269,9 +256,8 @@ func (item *DocItem) ownPlacement() *Provenance {
 }
 
 // normalise converts one placement into a 0 to 1 top-left rectangle, and
-// reports false for a page it cannot measure. Without the page's extent
-// there is nothing to divide by, and raw points in a field that claims to be
-// normalised would be far worse than no box.
+// reports false for a page whose extent is missing or zero, since there is
+// then nothing to divide by.
 func (index *DocumentIndex) normalise(placement Provenance) (Region, bool) {
 	page, ok := index.pages[strconv.Itoa(placement.PageNo)]
 	if !ok || page.Size.Width <= 0 || page.Size.Height <= 0 {

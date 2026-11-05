@@ -196,12 +196,9 @@ func TestInjectVLMEngineOmitsAnUnsetScale(t *testing.T) {
 
 // The credential is only safe to inject because it goes into the wire struct
 // and never into the CR spec, which is stored verbatim in
-// ConvertedFileMetadata and shipped to the destination bucket. If this test
-// fails, every converted artifact is carrying an API key.
-//
-// The endpoint is asserted absent for a different reason: it is deliberately
-// not part of the conversion identity, so that moving the service to a new
-// address does not reconvert the corpus.
+// ConvertedFileMetadata and shipped to the destination bucket. The endpoint
+// is asserted absent because it is not part of the conversion identity, so
+// moving the service does not reconvert the corpus.
 func TestInjectVLMEngineDoesNotLeakTheKeyIntoStoredMetadata(t *testing.T) {
 	withVLMPipelineSettings(t, vlmPipelineSettings{apiKey: testVLMAPIKey, apiURL: testVLMAPIURL})
 

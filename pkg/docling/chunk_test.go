@@ -30,11 +30,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// convertOptionsKey is the key the chunk endpoints read. The convert
-// endpoints read "options", and docling answers 200 while discarding
-// everything sent under a key it does not know, so sending the wrong one
-// means the request silently loses from_formats and parses the document
-// again instead of reading it back.
+// convertOptionsKey is the key the chunk endpoints read; the convert
+// endpoints read "options". Docling answers 200 while discarding everything
+// sent under a key it does not know, so the wrong one silently loses
+// from_formats.
 const convertOptionsKey = "convert_options"
 
 const (
@@ -45,12 +44,10 @@ const (
 const storedDocument = `{"schema_name":"DoclingDocument","version":"1.10.0",` +
 	`"texts":[{"self_ref":"#/texts/0","text":"hello"}]}`
 
-// writeJSON replies from a test handler and reports a failed write.
-//
-// A discarded write error leaves the client with a truncated body, so the
-// test fails on a decode error somewhere else and never says the write was
-// the problem. require must not be used here: handlers run on the server
-// goroutine, and a failed require there does not stop the test.
+// writeJSON replies from a test handler and reports a failed write, which
+// would otherwise surface as a decode error elsewhere. Do not use require
+// here: handlers run on the server goroutine, where it does not stop the
+// test.
 func writeJSON(t *testing.T, w http.ResponseWriter, body string) {
 	t.Helper()
 	if _, err := io.WriteString(w, body); err != nil {
@@ -141,10 +138,9 @@ func TestChunkDoclingDocumentSendsTheRightRequest(t *testing.T) {
 // fail the task, which costs a submit, a poll and a slot to learn something
 // knowable here.
 func TestChunkDoclingDocumentRejectsAnEmptyDocument(t *testing.T) {
-	// The JSON literal null is the one worth spelling out. It is what the
-	// convert response carries when docling ran and produced no document,
-	// it is four bytes, so a length test alone lets it through, and
-	// JSONDocument in this package already treats it as absent.
+	// The JSON literal null is worth spelling out: it is what the convert
+	// response carries when docling produced no document, and a length test
+	// alone lets its four bytes through.
 	for _, document := range []json.RawMessage{
 		nil,
 		json.RawMessage(``),
@@ -274,11 +270,9 @@ func TestGetChunksReleasesTheSlotWhenTheTaskFailed(t *testing.T) {
 	require.NoError(t, err, "the slot from the failed task was never released")
 }
 
-// Neither of these is rejected by the server, and both cost a submit, a poll
-// and a slot to learn something knowable before any of them. An empty
-// tokenizer returns success with zero chunks after a long timeout; a zero
-// budget falls back to the tokenizer's own limit and produces chunks too
-// large to embed.
+// Neither of these is rejected by the server: an empty tokenizer returns
+// success with zero chunks, and a zero budget falls back to the tokenizer's
+// own limit and produces chunks too large to embed.
 func TestChunkDoclingDocumentRejectsOptionsThatCannotWork(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -323,10 +317,9 @@ func TestChunkDoclingDocumentRejectsOptionsThatCannotWork(t *testing.T) {
 	}
 }
 
-// A 200 carrying something that is not a task envelope has to be refused.
-// Unmarshalling succeeds for any JSON object, so the task id comes back
-// empty, and a slot held for a task nobody can poll is never given back:
-// the only release path runs on a poll.
+// A 200 carrying something that is not a task envelope has to be refused: it
+// unmarshals with an empty task id, and a slot held for a task nobody can
+// poll is never given back.
 func TestChunkDoclingDocumentRejectsAResponseWithNoTaskID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, `{"detail":"something else entirely"}`)
@@ -352,13 +345,8 @@ func TestChunkDoclingDocumentRejectsAResponseWithNoTaskID(t *testing.T) {
 }
 
 // A poll that cannot be read is not evidence the task ended, so the slot
-// stays held.
-//
-// Releasing it would also release again on the next attempt, and Release on
-// a weighted semaphore is a bare subtraction with no record of who holds
-// what. While another task holds a slot, the extra release takes that one
-// rather than panicking, and real concurrency against docling quietly
-// exceeds the configured limit.
+// stays held. Releasing it would release again on the next attempt, taking a
+// slot another task holds rather than panicking.
 func TestGetChunksKeepsTheSlotWhenTheStatusCannotBeRead(t *testing.T) {
 	polls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -405,12 +393,9 @@ func TestGetChunksKeepsTheSlotWhenTheStatusCannotBeRead(t *testing.T) {
 		"a failed poll released a slot for a task that is still running")
 }
 
-// The silent failure this client exists to catch. A chunker that could not
-// load its tokenizer answers with a successful task, an empty errors list and
-// no chunks, so every other signal says it worked.
-//
-// The chunks come back alongside the error, because nothing here can tell
-// that case apart from a document that genuinely held nothing.
+// A chunker that could not load its tokenizer answers with a successful task,
+// an empty errors list and no chunks. The chunks come back alongside the
+// error, because nothing here can tell that apart from an empty document.
 func TestGetChunksReportsASuccessfulTaskThatProducedNothing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -454,9 +439,8 @@ func TestChunkDoclingDocumentReportsAFullClientAsASentinel(t *testing.T) {
 }
 
 // Whether a task has ended cannot be read from an error message, and the
-// caller has to know: polling a task that has ended releases its slot a
-// second time, and a weighted semaphore keeps no record of who holds what, so
-// the second release takes a slot from a task that is still running.
+// caller has to know: polling an ended task releases its slot a second time,
+// taking one from a task that is still running.
 func TestGetChunksMarksTheErrorsThatMeanTheTaskHasEnded(t *testing.T) {
 	tests := []struct {
 		name     string
