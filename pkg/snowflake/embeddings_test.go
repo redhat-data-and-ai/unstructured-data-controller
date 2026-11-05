@@ -52,11 +52,6 @@ func TestChunkColumnsMatchTheStruct(t *testing.T) {
 	}
 }
 
-func TestSelectList(t *testing.T) {
-	assert.Equal(t, strings.Join(chunkColumns, ", "), selectList())
-	assert.Contains(t, selectList(), "CHUNK_ID")
-}
-
 // The two VARIANT columns arrive as JSON text. Left alone they would reach a
 // caller as JSON inside a JSON string, needing two decodes.
 func TestPromoteVariants(t *testing.T) {

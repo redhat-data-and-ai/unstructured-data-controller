@@ -32,11 +32,6 @@ var chunkColumns = []string{
 	"FILE_ID", "CHUNK_INDEX", "CHUNK_TEXT", "CHUNK_ID", "RAW_TEXT", "BLOCK_IDS", "REGIONS",
 }
 
-// selectList renders chunkColumns for a query.
-func selectList() string {
-	return strings.Join(chunkColumns, ", ")
-}
-
 type ChunkResult struct {
 	FileID string `json:"file_id" db:"file_id"`
 	// ChunkIndex is the chunk's position in the flattened view, which is not
@@ -71,7 +66,7 @@ func SearchChunks(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral string, limit int,
 ) ([]ChunkResult, error) {
 	query := fmt.Sprintf(
-		`SELECT `+selectList()+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
+		`SELECT `+strings.Join(chunkColumns, ", ")+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
 			`FROM %s.%s.%s ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)
@@ -88,7 +83,7 @@ func SearchChunksWithFileFilter(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral, filePattern string, limit int,
 ) ([]ChunkResult, error) {
 	query := fmt.Sprintf(
-		`SELECT `+selectList()+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
+		`SELECT `+strings.Join(chunkColumns, ", ")+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
 			`FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\' ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)
