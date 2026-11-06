@@ -111,6 +111,11 @@ func TestPageList(t *testing.T) {
 	assert.Equal(t, "1, 4", pageList([]citedPage{{pageNo: 1}, {pageNo: 4}}))
 }
 
+func TestPageNumbers(t *testing.T) {
+	assert.Equal(t, "2, 7", pageNumbers([]int{2, 7}))
+	assert.Empty(t, pageNumbers(nil))
+}
+
 // The key comes out of a warehouse column and is joined onto the pipeline's
 // own prefix, so one that walks upwards reads another product's data out of
 // the same bucket. Refused before any request is made, so a nil s3Client is

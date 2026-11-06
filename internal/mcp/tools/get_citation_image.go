@@ -219,14 +219,16 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 				"Error: kubernetes client is not initialized"), nil, nil
 		}
 
-		// Every failure from here to the lookup renders as errCitationNotFound.
-		// Telling a missing pipeline from one the caller cannot read, or naming
-		// the warehouse in the message, is the existence oracle this tool is
-		// built not to be.
+		// Messages from here on name nothing the caller did not supply, since
+		// the model is told to repeat them to a user. They do still say which
+		// step failed: the allow-list above already decided this caller may
+		// ask about this pipeline, so a configuration fault is theirs to see.
+		// Only the chunk itself is hidden, below.
 		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName,
 			operatorv1alpha1.StageTypeVectorEmbeddingsGenerator)
 		if err != nil {
-			return toolError(log, "failed to get pipeline query config", err, errCitationNotFound), nil, nil
+			return toolError(log, "failed to get pipeline query config", err,
+				fmt.Sprintf("Error: could not resolve pipeline %q.", args.PipelineName)), nil, nil
 		}
 		if qc.Database == "" || qc.Schema == "" || qc.Table == "" {
 			return toolError(log, "pipeline query config has empty fields",
@@ -241,7 +243,12 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_")),
 			strings.ToUpper(qc.Schema), strings.ToUpper(qc.Table), args.ChunkID)
 		if err != nil {
-			return toolError(log, "failed to look up chunk", err, errCitationNotFound), nil, nil
+			// A failed query is not an absent chunk. Reporting it as one would
+			// have the model stop and tell the user their citation does not
+			// exist, when the warehouse was briefly unreachable.
+			return toolError(log, "failed to look up chunk", err,
+				fmt.Sprintf("Error: the lookup for chunk %q failed. This is not the same as the chunk being absent, so it is worth retrying.",
+					args.ChunkID)), nil, nil
 		}
 		if chunk == nil {
 			return toolError(log, "chunk not visible to caller", nil, errCitationNotFound), nil, nil
@@ -273,27 +280,38 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			summary += fmt.Sprintf(" (%d further page(s) omitted, which means this chunk's regions are wrong)",
 				dropped)
 		}
-		content := []mcp.Content{&mcp.TextContent{Text: summary}}
+		images := []mcp.Content{}
+		var missing []int
 		for _, page := range pages {
 			cropped, cropErr := cropPage(ctx, destination, regions, page)
 			if errors.Is(cropErr, errPageImageMissing) {
 				// The writer recorded an image the syncer never uploaded, most
 				// often because the destination does not sync the convert
-				// stage. Nothing the caller can act on, so say what is true.
+				// stage. Skipped rather than fatal, because the other pages of
+				// this chunk are still worth showing.
 				log.Info("page image is not in the destination", "page", page.pageNo, "error", cropErr)
-				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
-					Text: fmt.Sprintf("No page image is available for chunk %q. It was not found in this pipeline's destination.", args.ChunkID),
-				}}}, nil, nil
+				missing = append(missing, page.pageNo)
+				continue
 			}
 			if cropErr != nil {
 				return toolError(log, "failed to produce citation image", cropErr,
 					fmt.Sprintf("Error: unable to read the page image for page %d.", page.pageNo)), nil, nil
 			}
-			content = append(content, &mcp.ImageContent{Data: cropped, MIMEType: "image/png"})
+			images = append(images, &mcp.ImageContent{Data: cropped, MIMEType: "image/png"})
 		}
 
+		if len(images) == 0 {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+				Text: fmt.Sprintf("No page image is available for chunk %q. It was not found in this pipeline's destination.", args.ChunkID),
+			}}}, nil, nil
+		}
+		if len(missing) > 0 {
+			summary += fmt.Sprintf(" (page(s) %s are cited but not in the destination)", pageNumbers(missing))
+		}
+		content := append([]mcp.Content{&mcp.TextContent{Text: summary}}, images...)
+
 		log.Info("completed successfully", "pipeline", args.PipelineName,
-			"chunk_id", args.ChunkID, "images", len(pages))
+			"chunk_id", args.ChunkID, "images", len(images), "missing", len(missing))
 		return &mcp.CallToolResult{Content: content}, nil, nil
 	})
 }
@@ -353,6 +371,14 @@ func decodeRegions(raw json.RawMessage) ([]docling.Region, error) {
 		return nil, fmt.Errorf("decoding regions: %w", err)
 	}
 	return regions, nil
+}
+
+func pageNumbers(pages []int) string {
+	numbers := make([]string, len(pages))
+	for i, pageNo := range pages {
+		numbers[i] = fmt.Sprintf("%d", pageNo)
+	}
+	return strings.Join(numbers, ", ")
 }
 
 func pageList(pages []citedPage) string {
