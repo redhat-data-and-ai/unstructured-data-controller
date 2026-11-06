@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -227,49 +226,49 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 	logger.Info("generating embeddings for chunks", "file", chunksFilePath, "chunkCount", len(texts))
 
 	batchSize := vegConfig.BatchSize
-	allEmbeddings := make([][]float64, 0, len(texts))
+	// Indexed by chunk, not appended to: a skipped chunk has to leave a hole,
+	// or every later vector inherits the wrong chunk's provenance.
+	vectors := make([][]float64, len(texts))
+	var skippedChunks []int
 
 	for batchStart := 0; batchStart < len(texts); batchStart += batchSize {
 		batchEnd := min(batchStart+batchSize, len(texts))
-		batch := texts[batchStart:batchEnd]
 
-		logger.Info("processing batch", "batchStart", batchStart, "batchEnd", batchEnd, "batchSize", len(batch))
-		embeddingResult, err := embeddingClient.GenerateEmbeddings(ctx, batch, encodingFormat)
+		logger.Info("processing batch", "batchStart", batchStart, "batchEnd", batchEnd)
+		skipped, err := embedRange(ctx, embeddingClient, texts, batchStart, batchEnd, encodingFormat, vectors)
 		if err != nil {
-			if strings.Contains(err.Error(), "status 429") {
-				logger.Error(err, "embedding API rate limited (429), will retry on next reconciliation", "file", chunksFilePath, "batchStart", batchStart)
-			} else {
-				logger.Error(err, "failed to generate embeddings for batch", "file", chunksFilePath, "batchStart", batchStart, "batchEnd", batchEnd)
-			}
-			return false, err
+			return false, fmt.Errorf("embedding chunks [%d,%d) of %s: %w",
+				batchStart, batchEnd, chunksFilePath, err)
 		}
-		allEmbeddings = append(allEmbeddings, embeddingResult.Embeddings...)
-		logger.Info("successfully processed batch", "batchStart", batchStart, "batchEnd", batchEnd, "embeddingsGenerated", len(embeddingResult.Embeddings))
+		skippedChunks = append(skippedChunks, skipped...)
 	}
 
-	if len(allEmbeddings) != len(texts) {
-		err := fmt.Errorf("embedding count mismatch: expected %d, got %d", len(texts), len(allEmbeddings))
-		logger.Error(err, "embedding count does not match input text count", "file", chunksFilePath)
-		return false, err
+	if len(skippedChunks) > 0 {
+		logger.Info("chunks the model refused, absent from the embeddings file",
+			"file", chunksFilePath, "skipped", len(skippedChunks), "chunks", skippedChunks)
 	}
 
-	logger.Info("successfully generated embeddings", "file", chunksFilePath, "embeddingCount", len(allEmbeddings))
+	logger.Info("successfully generated embeddings", "file", chunksFilePath,
+		"embeddingCount", len(texts)-len(skippedChunks))
 
 	// Each vector carries its chunk's provenance. A field left off here
 	// cannot be recovered later: the chunks document is nested in the same
 	// file, but each entry is read on its own and cannot reach it.
 	chunkedFilePath := chunkedFile.ChunksDocument.Metadata.ConvertedFileMetadata.RawFilePath
-	embeddings := make([]*unstructured.Embeddings, len(allEmbeddings))
-	for i, embeddingVector := range allEmbeddings {
+	embeddings := make([]*unstructured.Embeddings, 0, len(vectors)-len(skippedChunks))
+	for i, embeddingVector := range vectors {
+		if embeddingVector == nil {
+			continue
+		}
 		chunk := chunkedFile.ChunksDocument.Chunks.At(i)
-		embeddings[i] = &unstructured.Embeddings{
+		embeddings = append(embeddings, &unstructured.Embeddings{
 			Text:      texts[i],
 			Embedding: embeddingVector,
 			ChunkID:   unstructured.ChunkID{FilePath: chunkedFilePath, Index: i}.String(),
 			RawText:   chunk.RawText,
 			BlockIDs:  chunk.BlockIDs,
 			Regions:   chunk.Regions,
-		}
+		})
 	}
 
 	// Create the complete embeddings file structure
@@ -296,6 +295,50 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 
 	logger.Info("successfully processed and stored embedded file", "file", chunksFilePath, "embeddingsFile", embeddingsFilePath)
 	return true, nil
+}
+
+// embedRange fills vectors[start:end] from a single request.
+//
+// A terminal rejection is bisected rather than returned: the API rejects the
+// whole request for one unembeddable input, and the rest of the range is still
+// good. Returns the chunk indices it had to give up on.
+func embedRange(
+	ctx context.Context, embeddingClient embedding.EmbeddingGenerator,
+	texts []string, start, end int, encodingFormat string, vectors [][]float64,
+) ([]int, error) {
+	logger := log.FromContext(ctx)
+
+	result, err := embeddingClient.GenerateEmbeddings(ctx, texts[start:end], encodingFormat)
+	if err == nil {
+		if len(result.Embeddings) != end-start {
+			return nil, fmt.Errorf("embedding count mismatch for chunks [%d,%d): got %d",
+				start, end, len(result.Embeddings))
+		}
+		copy(vectors[start:end], result.Embeddings)
+		return nil, nil
+	}
+
+	var apiErr *embedding.APIError
+	if !errors.As(err, &apiErr) || apiErr.Retryable() {
+		return nil, err
+	}
+
+	if end-start == 1 {
+		logger.Info("embedding API rejected this chunk, skipping it",
+			"chunk", start, "reason", err.Error())
+		return []int{start}, nil
+	}
+
+	mid := start + (end-start)/2
+	skippedLeft, err := embedRange(ctx, embeddingClient, texts, start, mid, encodingFormat, vectors)
+	if err != nil {
+		return nil, err
+	}
+	skippedRight, err := embedRange(ctx, embeddingClient, texts, mid, end, encodingFormat, vectors)
+	if err != nil {
+		return nil, err
+	}
+	return append(skippedLeft, skippedRight...), nil
 }
 
 func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string) (bool, error) {
