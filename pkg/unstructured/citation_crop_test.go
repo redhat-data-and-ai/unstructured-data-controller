@@ -150,12 +150,12 @@ func TestCropCitation_ZeroSizedRegion(t *testing.T) {
 
 	cropped, err := CropCitation(page, regions, 1)
 
-	// The margin saves this one, so assert it produced something real
-	// rather than that it failed.
+	// The margin saves this one, so assert the crop it produced rather than
+	// that it merely did not fail: 0.48 to 0.52 of 4 pixels, rounded outward.
 	require.NoError(t, err)
 	width, height := decodeSize(t, cropped)
-	assert.Positive(t, width)
-	assert.Positive(t, height)
+	assert.Equal(t, 2, width)
+	assert.Equal(t, 2, height)
 }
 
 // image.Rect swaps an inverted rectangle rather than refusing it, so a box

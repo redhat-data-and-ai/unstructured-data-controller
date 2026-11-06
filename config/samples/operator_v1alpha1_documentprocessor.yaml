@@ -14,7 +14,9 @@ spec:
     doclingConfig:
       from_formats: [docx, pptx, html, image, pdf, asciidoc, md, csv, xlsx]
       to_formats: [md, json]
-      image_export_mode: embedded
+      # "embedded" buys nothing: the stored markdown is reduced to the
+      # comment "placeholder" mode writes whichever mode produced it.
+      image_export_mode: referenced
       do_ocr: true
       ocr_preset: auto
       pdf_backend: docling_parse
