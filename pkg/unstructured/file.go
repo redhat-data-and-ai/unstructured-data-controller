@@ -50,8 +50,32 @@ func PermissionsPath(rawFilePath string) string {
 	return rawFilePath + ".permissions.json"
 }
 
-// pageImageSuffix separates a page image from the raw file it renders. It
-// ends in .png so IsPageImagePath can recognise one without parsing.
+// convertedFileSuffix is what the document processor appends to a raw file
+// path to name the document it converted.
+const convertedFileSuffix = ".json"
+
+// ConvertedFilePath names the document processor's output for one raw file.
+func ConvertedFilePath(rawFilePath string) string {
+	return rawFilePath + convertedFileSuffix
+}
+
+// ConvertedFilePaths returns only the converted documents in a listing of
+// the convert stage's output.
+//
+// A whitelist rather than an exclusion of what else is in there today: the
+// stage already writes page images beside these, and anything added later
+// is ignored without this having to learn about it.
+func ConvertedFilePaths(filePaths []string) []string {
+	converted := make([]string, 0, len(filePaths))
+	for _, filePath := range filePaths {
+		if strings.HasSuffix(filePath, convertedFileSuffix) {
+			converted = append(converted, filePath)
+		}
+	}
+	return converted
+}
+
+// pageImageSuffix separates a page image from the raw file it renders.
 const pageImageSuffix = ".page-"
 
 // PageImagePath names the stored render of one page, counted from one.
@@ -60,20 +84,6 @@ const pageImageSuffix = ".page-"
 // can find the image from the file path and page number it already has.
 func PageImagePath(rawFilePath string, pageNo int) string {
 	return rawFilePath + pageImageSuffix + strconv.Itoa(pageNo) + ".png"
-}
-
-// IsPageImagePath reports whether a path is one of those renders.
-func IsPageImagePath(filePath string) bool {
-	base := strings.TrimSuffix(filePath, ".png")
-	if base == filePath {
-		return false
-	}
-	index := strings.LastIndex(base, pageImageSuffix)
-	if index < 0 {
-		return false
-	}
-	pageNo, err := strconv.Atoi(base[index+len(pageImageSuffix):])
-	return err == nil && pageNo > 0
 }
 
 // DestinationKey returns where a file lands under the destination prefix.
@@ -92,19 +102,8 @@ func DestinationKey(filePath string) string {
 // PageImageDestinationKey locates one page's render in the destination,
 // given the converted file it belongs to.
 func PageImageDestinationKey(convertedFilePath string, pageNo int) string {
-	rawFilePath := strings.TrimSuffix(convertedFilePath, ".json")
+	rawFilePath := strings.TrimSuffix(convertedFilePath, convertedFileSuffix)
 	return DestinationKey(PageImagePath(rawFilePath, pageNo))
-}
-
-// WithoutPageImages returns the paths that are not page renders.
-func WithoutPageImages(filePaths []string) []string {
-	kept := make([]string, 0, len(filePaths))
-	for _, filePath := range filePaths {
-		if !IsPageImagePath(filePath) {
-			kept = append(kept, filePath)
-		}
-	}
-	return kept
 }
 
 func FilterRawFilePaths(filePaths []string) []string {

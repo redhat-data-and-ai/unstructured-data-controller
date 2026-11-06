@@ -315,7 +315,8 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		if err != nil {
 			return err
 		}
-		convertedFilePath := unstructured.RemapToOutputDir(job.FilePath+".json", inputPath, outputPath)
+		convertedFilePath := unstructured.RemapToOutputDir(
+			unstructured.ConvertedFilePath(job.FilePath), inputPath, outputPath)
 		if err := r.fileStore.Store(ctx, convertedFilePath, convertedFileBytes); err != nil {
 			return err
 		}
@@ -458,7 +459,8 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 
 	// does the converted file exist in the output directory?
-	convertedFilePath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+	convertedFilePath := unstructured.RemapToOutputDir(
+		unstructured.ConvertedFilePath(rawFilePath), inputPath, outputPath)
 	convertedFileExists, err := r.fileStore.Exists(ctx, convertedFilePath)
 	if err != nil {
 		return false, err
