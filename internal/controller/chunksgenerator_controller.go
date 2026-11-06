@@ -421,11 +421,15 @@ func (r *ChunksGeneratorReconciler) storeChunks(
 	convertedFilePath, chunksFilePath string,
 ) error {
 	// Written here rather than by the chunker, which resolves geometry and
-	// has no business knowing where files live.
+	// has no business knowing where files live. Left empty for a page that
+	// rendered no image, which most input formats do not, so a reader can
+	// tell "no image exists" from a path that would 404.
 	for chunkIndex := range chunks {
 		for regionIndex := range chunks[chunkIndex].Regions {
 			region := &chunks[chunkIndex].Regions[regionIndex]
-			region.Image = unstructured.PageImageDestinationKey(convertedFilePath, region.PageNo)
+			if convertedFile.ConvertedDocument.Content.HasRenderedPage(region.PageNo) {
+				region.Image = unstructured.PageImageDestinationKey(convertedFilePath, region.PageNo)
+			}
 		}
 	}
 

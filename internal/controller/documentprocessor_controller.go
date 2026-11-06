@@ -213,24 +213,25 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 // storePageImages writes one file per rendered page beside the converted
-// document, under the name PageImagePath gives it.
+// document, under the name PageImagePath gives it, and returns the pages it
+// wrote. On failure that is the pages written before it, so a caller never
+// records an image it does not have.
 func (r *DocumentProcessorReconciler) storePageImages(ctx context.Context,
-	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string) error {
-	if len(pageImages) == 0 {
-		return nil
-	}
-
-	logger := log.FromContext(ctx)
+	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string) ([]int, error) {
+	stored := make([]int, 0, len(pageImages))
 	for _, pageImage := range pageImages {
 		imagePath := unstructured.RemapToOutputDir(
 			unstructured.PageImagePath(rawFilePath, pageImage.PageNo), inputPath, outputPath)
 		if err := r.fileStore.Store(ctx, imagePath, pageImage.Data); err != nil {
-			return fmt.Errorf("storing page %d image for %s: %w", pageImage.PageNo, rawFilePath, err)
+			return stored, fmt.Errorf("storing page %d image for %s: %w", pageImage.PageNo, rawFilePath, err)
 		}
+		stored = append(stored, pageImage.PageNo)
 	}
 
-	logger.Info("stored page images", "filePath", rawFilePath, "pages", len(pageImages))
-	return nil
+	if len(stored) > 0 {
+		log.FromContext(ctx).Info("stored page images", "filePath", rawFilePath, "pages", len(stored))
+	}
+	return stored, nil
 }
 
 func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (err error) {
@@ -290,16 +291,21 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		// Never fatal: the conversion succeeded, and failing here would
 		// discard it and leave a job that no attempt limit retires, so the
 		// file would never convert again.
+		//
+		// The document is only stripped once its images are safely stored,
+		// so a failed store leaves them where they were rather than losing
+		// them from both places.
 		pageImages, strippedDocument, imageErr := docling.TakePageImages(content.DoclingDocument)
 		if imageErr != nil {
-			logger.Error(imageErr, "could not take page images, storing the document without them",
+			logger.Error(imageErr, "could not take page images, storing the document with them",
 				"taskID", job.TaskID, "filePath", job.FilePath)
+		} else if stored, storeErr := r.storePageImages(
+			ctx, pageImages, job.FilePath, inputPath, outputPath); storeErr != nil {
+			logger.Error(storeErr, "could not store page images, storing the document with them",
+				"taskID", job.TaskID, "filePath", job.FilePath, "storedBeforeFailing", len(stored))
 		} else {
 			content.DoclingDocument = strippedDocument
-			if err := r.storePageImages(ctx, pageImages, job.FilePath, inputPath, outputPath); err != nil {
-				logger.Error(err, "could not store page images, storing the document without them",
-					"taskID", job.TaskID, "filePath", job.FilePath)
-			}
+			content.RenderedPages = stored
 		}
 
 		content.Markdown = docling.StripImageLinks(content.Markdown)
