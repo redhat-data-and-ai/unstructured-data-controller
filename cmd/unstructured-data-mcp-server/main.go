@@ -98,6 +98,7 @@ func main() {
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
 	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
+	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
 
 	oauthStore := auth.NewOAuthStore()
 	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection)

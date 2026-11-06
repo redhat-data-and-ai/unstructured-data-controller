@@ -32,6 +32,23 @@ type AWSConfig struct {
 	Endpoint        string `json:"endpoint"`
 }
 
+// DestinationSecretPrefix is what a pipeline's destination credentials are
+// keyed by inside its secret.
+const DestinationSecretPrefix = "DESTINATION_S3_"
+
+// ConfigFromSecretData reads credentials out of a secret's data, where each
+// key is the prefix followed by the field name. A missing key reads as empty,
+// which is how the SDK is told to fall back to the ambient environment.
+func ConfigFromSecretData(data map[string][]byte, prefix string) *AWSConfig {
+	return &AWSConfig{
+		Region:          string(data[prefix+"REGION"]),
+		AccessKeyID:     string(data[prefix+"ACCESS_KEY_ID"]),
+		SecretAccessKey: string(data[prefix+"SECRET_ACCESS_KEY"]),
+		SessionToken:    string(data[prefix+"SESSION_TOKEN"]),
+		Endpoint:        string(data[prefix+"ENDPOINT"]),
+	}
+}
+
 // getAWSConfig initializes and returns an AWS configuration using the provided context and AWSConfig details.
 func getAWSConfig(ctx context.Context, awsConfig *AWSConfig) (aws.Config, error) {
 	credentialsProvider := credentials.NewStaticCredentialsProvider(

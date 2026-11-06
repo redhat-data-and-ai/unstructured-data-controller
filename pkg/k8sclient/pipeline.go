@@ -22,6 +22,8 @@ import (
 	"os"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -108,4 +110,58 @@ func (c *Client) GetPipelineQueryConfig(
 		return nil, fmt.Errorf("pipeline %q has no Snowflake query config for stage type %q", name, stageType)
 	}
 	return qc, nil
+}
+
+// DestinationConfig is where a pipeline's output lands and how to read it.
+type DestinationConfig struct {
+	Bucket string
+	Prefix string
+	AWS    *awsclienthandler.AWSConfig
+}
+
+// GetPipelineDestination resolves where a pipeline writes its output and the
+// credentials to read it back.
+//
+// The location comes from the destination syncer stage and the credentials
+// from the pipeline's own secret, so a path handling mistake cannot reach
+// another product's bucket.
+func (c *Client) GetPipelineDestination(ctx context.Context, name string) (*DestinationConfig, error) {
+	namespace := pipelineNamespace()
+	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pipeline); err != nil {
+		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
+	}
+
+	var s3Config *operatorv1alpha1.S3Config
+	for _, stage := range pipeline.Spec.Stages {
+		if stage.Type == operatorv1alpha1.StageTypeDestinationSyncer &&
+			stage.DestinationSyncerConfig != nil &&
+			stage.DestinationSyncerConfig.Type == operatorv1alpha1.TypeS3 {
+			s3Config = &stage.DestinationSyncerConfig.S3DestinationConfig
+			break
+		}
+	}
+	if s3Config == nil || s3Config.Bucket == "" {
+		return nil, fmt.Errorf("pipeline %q has no S3 destination", name)
+	}
+
+	destination := &DestinationConfig{
+		Bucket: s3Config.Bucket,
+		Prefix: s3Config.Prefix,
+		AWS:    &awsclienthandler.AWSConfig{},
+	}
+
+	// Read at request time rather than held, so rotating the secret takes
+	// effect without a restart.
+	if pipeline.Spec.SecretRef != "" {
+		secret := &corev1.Secret{}
+		key := client.ObjectKey{Namespace: namespace, Name: pipeline.Spec.SecretRef}
+		if err := c.client.Get(ctx, key, secret); err != nil {
+			return nil, fmt.Errorf("failed to get secret for pipeline %q: %w", name, err)
+		}
+		destination.AWS = awsclienthandler.ConfigFromSecretData(
+			secret.Data, awsclienthandler.DestinationSecretPrefix)
+	}
+
+	return destination, nil
 }

@@ -95,6 +95,31 @@ func SearchChunksWithFileFilter(
 	return promoteVariants(chunks), nil
 }
 
+// GetChunkByID returns one chunk, or nil when the caller cannot see it.
+//
+// This is the authorization check for anything derived from a chunk: the
+// query runs as the caller, so a row access policy hiding the chunk returns
+// no rows, and a hidden chunk is indistinguishable from a missing one. The
+// id is bound rather than interpolated, since it is caller supplied.
+func GetChunkByID(
+	ctx context.Context, oauthToken, database, schema, table, chunkID string,
+) (*ChunkResult, error) {
+	query := fmt.Sprintf(
+		`SELECT `+strings.Join(chunkColumns, ", ")+`, 0 AS score `+
+			`FROM %s.%s.%s WHERE CHUNK_ID = ? LIMIT 1`,
+		database, schema, table,
+	)
+
+	chunks, err := queryRows[ChunkResult](ctx, oauthToken, query, chunkID)
+	if err != nil {
+		return nil, err
+	}
+	if len(chunks) == 0 {
+		return nil, nil
+	}
+	return &promoteVariants(chunks)[0], nil
+}
+
 // promoteVariants moves the two VARIANT columns into real JSON.
 //
 // The scanner renders every column as a string, so a caller would otherwise
