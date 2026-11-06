@@ -22,10 +22,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// DestinationKey reproduces where the syncer puts a file, so that a citation
-// can name a page image it never uploaded itself. Two implementations of one
-// convention, and if they drift every citation image is a 404 that no other
-// test would catch.
+// DestinationKey is where the syncer puts a file, so that a citation can name
+// a page image it never uploaded itself. The syncer calls it too, so this
+// pins the prefix join the two sides have to agree on.
 func TestDestinationKeyMatchesTheSyncer(t *testing.T) {
 	destination := &S3Destination{Prefix: "my-product/destination", StageName: "convert"}
 
@@ -37,10 +36,22 @@ func TestDestinationKeyMatchesTheSyncer(t *testing.T) {
 		// mistaken for the stage directory.
 		"pipelines/p/stages/convert/docs/stages/report.pdf.page-2.png",
 		"pipelines/p/stages/convert/docs/odd name 2026.pdf.page-12.png",
+		// A pipeline name ending in "stages", which matching on a bare
+		// "stages/" would find before the stage directory.
+		"pipelines/doc-stages/stages/convert/report.pdf.page-1.png",
 	} {
-		assert.Equal(t, destination.s3Key(filePath), destination.Prefix+"/"+DestinationKey(filePath),
+		assert.Equal(t,
+			destination.s3Key(filePath),
+			destination.Prefix+"/"+DestinationKey(filePath, destination.StageName),
 			"key for %q", filePath)
 	}
+}
+
+// A path under a different stage has no key here, since the syncer for this
+// stage would never have uploaded it.
+func TestDestinationKeyIgnoresAnotherStage(t *testing.T) {
+	assert.Empty(t, DestinationKey("pipelines/p/stages/crawl/report.pdf", "convert"))
+	assert.Empty(t, DestinationKey("report.pdf", "convert"))
 }
 
 // The page image path is built from the converted file the chunk came from,
@@ -49,10 +60,24 @@ func TestPageImageDestinationKeyMatchesTheSyncer(t *testing.T) {
 	destination := &S3Destination{Prefix: "my-product/destination", StageName: "convert"}
 	convertedFilePath := "pipelines/p/stages/convert/docs/report.pdf.json"
 
-	key := PageImageDestinationKey(convertedFilePath, 3)
+	key := PageImageDestinationKey(convertedFilePath, destination.StageName, 3)
 
 	assert.Equal(t, "stages/convert/docs/report.pdf.page-3.png", key)
 	assert.Equal(t,
 		destination.s3Key("pipelines/p/stages/convert/docs/report.pdf.page-3.png"),
+		destination.Prefix+"/"+key)
+}
+
+// A pipeline whose name ends in "stages" used to resolve to a key the syncer
+// never wrote, so every citation image for it was a 404.
+func TestPageImageDestinationKeyWithAStagesInThePipelineName(t *testing.T) {
+	destination := &S3Destination{Prefix: "my-product/destination", StageName: "convert"}
+	convertedFilePath := "pipelines/doc-stages/stages/convert/report.pdf.json"
+
+	key := PageImageDestinationKey(convertedFilePath, destination.StageName, 1)
+
+	assert.Equal(t, "stages/convert/report.pdf.page-1.png", key)
+	assert.Equal(t,
+		destination.s3Key("pipelines/doc-stages/stages/convert/report.pdf.page-1.png"),
 		destination.Prefix+"/"+key)
 }

@@ -120,7 +120,8 @@ type DestinationConfig struct {
 }
 
 // GetPipelineDestination resolves where a pipeline writes its output and the
-// credentials to read it back.
+// credentials to read it back. Errors if the pipeline has no S3 destination
+// syncer stage or names no secret.
 //
 // The location comes from the destination syncer stage and the credentials
 // from the pipeline's own secret, so a path handling mistake cannot reach
@@ -132,36 +133,42 @@ func (c *Client) GetPipelineDestination(ctx context.Context, name string) (*Dest
 		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
 	}
 
-	var s3Config *operatorv1alpha1.S3Config
-	for _, stage := range pipeline.Spec.Stages {
-		if stage.Type == operatorv1alpha1.StageTypeDestinationSyncer &&
-			stage.DestinationSyncerConfig != nil &&
-			stage.DestinationSyncerConfig.Type == operatorv1alpha1.TypeS3 {
-			s3Config = &stage.DestinationSyncerConfig.S3DestinationConfig
-			break
-		}
-	}
-	if s3Config == nil || s3Config.Bucket == "" {
+	s3Config := s3Destination(pipeline)
+	if s3Config == nil {
 		return nil, fmt.Errorf("pipeline %q has no S3 destination", name)
 	}
 
-	destination := &DestinationConfig{
+	// Refused rather than defaulted: the SDK is handed these as static
+	// credentials, so an empty set fails every request instead of falling
+	// back to the pod's own role.
+	if pipeline.Spec.SecretRef == "" {
+		return nil, fmt.Errorf("pipeline %q names no secret to read its destination with", name)
+	}
+	secret := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: namespace, Name: pipeline.Spec.SecretRef}
+	if err := c.client.Get(ctx, key, secret); err != nil {
+		return nil, fmt.Errorf("failed to get secret for pipeline %q: %w", name, err)
+	}
+
+	return &DestinationConfig{
 		Bucket: s3Config.Bucket,
 		Prefix: s3Config.Prefix,
-		AWS:    &awsclienthandler.AWSConfig{},
-	}
+		AWS: awsclienthandler.ConfigFromSecretData(
+			secret.Data, awsclienthandler.DestinationSecretPrefix),
+	}, nil
+}
 
-	// Read at request time rather than held, so rotating the secret takes
-	// effect without a restart.
-	if pipeline.Spec.SecretRef != "" {
-		secret := &corev1.Secret{}
-		key := client.ObjectKey{Namespace: namespace, Name: pipeline.Spec.SecretRef}
-		if err := c.client.Get(ctx, key, secret); err != nil {
-			return nil, fmt.Errorf("failed to get secret for pipeline %q: %w", name, err)
+// s3Destination returns the bucket a pipeline's first usable S3 destination
+// syncer writes to, or nil when it has none.
+func s3Destination(pipeline *operatorv1alpha1.UnstructuredDataPipeline) *operatorv1alpha1.S3Config {
+	for _, stage := range pipeline.Spec.Stages {
+		if stage.Type != operatorv1alpha1.StageTypeDestinationSyncer ||
+			stage.DestinationSyncerConfig == nil ||
+			stage.DestinationSyncerConfig.Type != operatorv1alpha1.TypeS3 ||
+			stage.DestinationSyncerConfig.S3DestinationConfig.Bucket == "" {
+			continue
 		}
-		destination.AWS = awsclienthandler.ConfigFromSecretData(
-			secret.Data, awsclienthandler.DestinationSecretPrefix)
+		return &stage.DestinationSyncerConfig.S3DestinationConfig
 	}
-
-	return destination, nil
+	return nil
 }

@@ -332,7 +332,7 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 	}
 
 	if err := r.storeChunks(ctx, convertedFile, config, result.Chunks,
-		convertedFilePath, chunksFilePath); err != nil {
+		chunksGeneratorCR.Spec.DependsOn[0].Name, convertedFilePath, chunksFilePath); err != nil {
 		return false, err
 	}
 
@@ -418,7 +418,7 @@ func (r *ChunksGeneratorReconciler) retrieveConvertedFile(
 func (r *ChunksGeneratorReconciler) storeChunks(
 	ctx context.Context, convertedFile *unstructured.ConvertedFile,
 	config operatorv1alpha1.ChunksGeneratorConfig, chunks []unstructured.Chunk,
-	convertedFilePath, chunksFilePath string,
+	convertStage, convertedFilePath, chunksFilePath string,
 ) error {
 	// Written here rather than by the chunker, which resolves geometry and
 	// has no business knowing where files live. Left empty for a page that
@@ -428,7 +428,8 @@ func (r *ChunksGeneratorReconciler) storeChunks(
 		for regionIndex := range chunks[chunkIndex].Regions {
 			region := &chunks[chunkIndex].Regions[regionIndex]
 			if convertedFile.ConvertedDocument.Content.HasRenderedPage(region.PageNo) {
-				region.Image = unstructured.PageImageDestinationKey(convertedFilePath, region.PageNo)
+				region.Image = unstructured.PageImageDestinationKey(
+					convertedFilePath, convertStage, region.PageNo)
 			}
 		}
 	}
@@ -585,7 +586,7 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 	// returned, even a transient upload error: the task has ended, so leaving
 	// the job with its id would have the next pass collect it again.
 	if err := r.storeChunks(ctx, convertedFile, job.ChunksGeneratorConfig, result.Chunks,
-		job.FilePath, chunksFilePath); err != nil {
+		chunksGeneratorCR.Spec.DependsOn[0].Name, job.FilePath, chunksFilePath); err != nil {
 		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
 	}
 	logger.Info("stored chunks for file", "file", job.FilePath, "taskID", job.TaskID, "chunks", len(result.Chunks))

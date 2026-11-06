@@ -27,7 +27,7 @@ import (
 )
 
 func TestCitedPages(t *testing.T) {
-	pages := citedPages([]docling.Region{
+	pages, dropped := citedPages([]docling.Region{
 		{PageNo: 3, BBox: [4]float64{0, 0, 1, 1}, Image: "stages/convert/f.pdf.page-3.png"},
 		{PageNo: 1, BBox: [4]float64{0, 0, 1, 1}, Image: "stages/convert/f.pdf.page-1.png"},
 		// Same page again, which is the common case: a chunk is several
@@ -36,6 +36,7 @@ func TestCitedPages(t *testing.T) {
 	})
 
 	require.Len(t, pages, 2)
+	assert.Zero(t, dropped)
 	assert.Equal(t, 1, pages[0].pageNo, "ascending, so the caller sees the first page first")
 	assert.Equal(t, 3, pages[1].pageNo)
 	assert.Equal(t, "stages/convert/f.pdf.page-1.png", pages[0].image)
@@ -44,7 +45,7 @@ func TestCitedPages(t *testing.T) {
 // Most input formats render no pages, and the writer leaves Image empty for
 // those. Returning a page for one would send the reader after a 404.
 func TestCitedPages_SkipsRegionsWithNoImage(t *testing.T) {
-	pages := citedPages([]docling.Region{
+	pages, _ := citedPages([]docling.Region{
 		{PageNo: 1, Image: ""},
 		{PageNo: 2, Image: "stages/convert/f.pdf.page-2.png"},
 	})
@@ -54,21 +55,28 @@ func TestCitedPages_SkipsRegionsWithNoImage(t *testing.T) {
 }
 
 func TestCitedPages_NoRegions(t *testing.T) {
-	assert.Empty(t, citedPages(nil))
-	assert.Empty(t, citedPages([]docling.Region{{PageNo: 1, Image: ""}}))
+	pages, dropped := citedPages(nil)
+	assert.Empty(t, pages)
+	assert.Zero(t, dropped)
+
+	pages, _ = citedPages([]docling.Region{{PageNo: 1, Image: ""}})
+	assert.Empty(t, pages)
 }
 
 // A chunk covers a handful of pages. A larger number means the regions are
 // wrong, and the cost of being wrong is one S3 read and one crop per page.
+// The count comes back so the caller can say so rather than present a
+// truncated citation as a whole one.
 func TestCitedPages_BoundsTheNumberOfImages(t *testing.T) {
 	regions := make([]docling.Region, 0, maxCitationPages*2)
 	for pageNo := 1; pageNo <= maxCitationPages*2; pageNo++ {
 		regions = append(regions, docling.Region{PageNo: pageNo, Image: "stages/convert/f.pdf.png"})
 	}
 
-	pages := citedPages(regions)
+	pages, dropped := citedPages(regions)
 
 	assert.Len(t, pages, maxCitationPages)
+	assert.Equal(t, maxCitationPages, dropped)
 	assert.Equal(t, 1, pages[0].pageNo, "kept from the start, so the bound drops the tail")
 }
 
@@ -101,4 +109,25 @@ func TestDecodeRegions_Malformed(t *testing.T) {
 
 func TestPageList(t *testing.T) {
 	assert.Equal(t, "1, 4", pageList([]citedPage{{pageNo: 1}, {pageNo: 4}}))
+}
+
+// The key comes out of a warehouse column and is joined onto the pipeline's
+// own prefix, so one that walks upwards reads another product's data out of
+// the same bucket. Refused before any request is made, so a nil s3Client is
+// enough to prove it never got that far.
+func TestFetchRefusesAKeyThatIsNotAPlainRelativePath(t *testing.T) {
+	destination := &destinationClient{bucket: "shared", prefix: "my-product/destination"}
+
+	for _, key := range []string{
+		"",
+		"../other-product/destination/stages/convert/secret.pdf.page-1.png",
+		"stages/convert/../../../other-product/secret.pdf.page-1.png",
+		"/etc/passwd",
+		"./stages/convert/f.pdf.page-1.png",
+	} {
+		_, err := destination.fetch(t.Context(), key)
+
+		require.Error(t, err, "key %q", key)
+		assert.Contains(t, err.Error(), "not a plain relative path")
+	}
 }

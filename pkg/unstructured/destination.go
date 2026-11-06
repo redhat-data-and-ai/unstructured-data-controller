@@ -7,8 +7,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -35,15 +35,11 @@ type S3Destination struct {
 //
 //	→ "<prefix>/stages/crawl/permissions/1ABC.json"
 func (d *S3Destination) s3Key(filePath string) string {
-	rel := filePath
-	if idx := strings.Index(filePath, "stages/"+d.StageName+"/"); idx >= 0 {
-		rel = filePath[idx+len("stages/"+d.StageName+"/"):]
+	key := DestinationKey(filePath, d.StageName)
+	if key == "" {
+		key = path.Join("stages", d.StageName, filePath)
 	}
-	key := filepath.Join(d.Prefix, "stages", d.StageName, rel)
-	if filepath.Separator != '/' {
-		key = filepath.ToSlash(key)
-	}
-	return key
+	return path.Join(d.Prefix, key)
 }
 
 func (d *S3Destination) SyncFilesToDestination(ctx context.Context, fs *filestore.FileStore,

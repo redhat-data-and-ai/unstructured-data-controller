@@ -81,10 +81,13 @@ func regionExtent(regions []docling.Region, pageNo int) ([4]float64, bool) {
 			continue
 		}
 		found = true
-		extent[0] = math.Min(extent[0], region.BBox[0])
-		extent[1] = math.Min(extent[1], region.BBox[1])
-		extent[2] = math.Max(extent[2], region.BBox[2])
-		extent[3] = math.Max(extent[3], region.BBox[3])
+		// Min and max of each pair rather than the edges as given: a box that
+		// arrives the wrong way round would otherwise survive to image.Rect,
+		// which swaps it silently and crops the complement.
+		extent[0] = math.Min(extent[0], math.Min(region.BBox[0], region.BBox[2]))
+		extent[1] = math.Min(extent[1], math.Min(region.BBox[1], region.BBox[3]))
+		extent[2] = math.Max(extent[2], math.Max(region.BBox[0], region.BBox[2]))
+		extent[3] = math.Max(extent[3], math.Max(region.BBox[1], region.BBox[3]))
 	}
 	if !found {
 		return extent, false

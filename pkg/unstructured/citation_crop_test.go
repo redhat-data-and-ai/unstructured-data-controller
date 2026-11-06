@@ -158,6 +158,22 @@ func TestCropCitation_ZeroSizedRegion(t *testing.T) {
 	assert.Positive(t, height)
 }
 
+// image.Rect swaps an inverted rectangle rather than refusing it, so a box
+// that arrives the wrong way round would crop the complement of the citation
+// and look entirely plausible doing it.
+func TestCropCitation_BoxTheWrongWayRound(t *testing.T) {
+	page := pagePNG(t, 1000, 1000)
+	upright := []docling.Region{{PageNo: 1, BBox: [4]float64{0.2, 0.3, 0.6, 0.4}}}
+	inverted := []docling.Region{{PageNo: 1, BBox: [4]float64{0.6, 0.4, 0.2, 0.3}}}
+
+	fromUpright, err := CropCitation(page, upright, 1)
+	require.NoError(t, err)
+	fromInverted, err := CropCitation(page, inverted, 1)
+	require.NoError(t, err)
+
+	assert.Equal(t, fromUpright, fromInverted, "the same region, however its edges arrive")
+}
+
 // A box outside the page clamps to its far edge, which is the one way the
 // extent survives the margin and still covers no pixels.
 func TestCropCitation_RejectsAnEmptyCrop(t *testing.T) {

@@ -38,7 +38,9 @@ const DestinationSecretPrefix = "DESTINATION_S3_"
 
 // ConfigFromSecretData reads credentials out of a secret's data, where each
 // key is the prefix followed by the field name. A missing key reads as empty,
-// which is how the SDK is told to fall back to the ambient environment.
+// and an empty AccessKeyID or SecretAccessKey makes every request fail: the
+// SDK is given these as static credentials, so it never falls back to the
+// ambient environment. Only Region and Endpoint are safe to leave unset.
 func ConfigFromSecretData(data map[string][]byte, prefix string) *AWSConfig {
 	return &AWSConfig{
 		Region:          string(data[prefix+"REGION"]),

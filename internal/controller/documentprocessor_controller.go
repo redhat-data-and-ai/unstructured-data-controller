@@ -289,12 +289,7 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		}
 
 		// Never fatal: the conversion succeeded, and failing here would
-		// discard it and leave a job that no attempt limit retires, so the
-		// file would never convert again.
-		//
-		// The document is only stripped once its images are safely stored,
-		// so a failed store leaves them where they were rather than losing
-		// them from both places.
+		// discard it and leave a job that no attempt limit retires.
 		pageImages, strippedDocument, imageErr := docling.TakePageImages(content.DoclingDocument)
 		if imageErr != nil {
 			logger.Error(imageErr, "could not take page images, storing the document with them",

@@ -19,6 +19,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,9 +27,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
@@ -50,10 +52,20 @@ type getCitationImageArgs struct {
 // handful of pages at most, so a larger number means the regions are wrong.
 const maxCitationPages = 10
 
+// maxPageImageBytes bounds one page read. The server runs on 512Mi and
+// decoding costs several times the encoded size, so an unexpectedly large
+// object at that key has to be refused rather than read.
+const maxPageImageBytes = 32 << 20
+
 // errCitationNotFound is returned for a chunk that does not exist and for one
 // the caller may not read, which must be indistinguishable: telling them
 // apart would make the tool an existence oracle over other tenants' data.
 const errCitationNotFound = "Error: no chunk with that chunk_id is available in this pipeline."
+
+// destinationClientTTL is how long a built client is reused. The credentials
+// inside it are static, so without an expiry a rotated secret would break
+// every citation until the pod restarts.
+const destinationClientTTL = 5 * time.Minute
 
 // destinationClients hands out an S3 client per pipeline, built from that
 // pipeline's own credentials.
@@ -72,6 +84,7 @@ type destinationClient struct {
 	s3Client *s3.Client
 	bucket   string
 	prefix   string
+	builtAt  time.Time
 }
 
 func newDestinationClients(k8sClient *k8sclient.Client) *destinationClients {
@@ -79,13 +92,14 @@ func newDestinationClients(k8sClient *k8sclient.Client) *destinationClients {
 }
 
 func (d *destinationClients) get(ctx context.Context, pipelineName string) (*destinationClient, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if cached, ok := d.clients[pipelineName]; ok {
+	if cached := d.cached(pipelineName); cached != nil {
 		return cached, nil
 	}
 
+	// Built outside the lock: it reads a pipeline and a Secret from the API
+	// server, and holding a process-wide lock across that would make one slow
+	// pipeline stall every other pipeline's citations. A lost race just
+	// rebuilds a client.
 	destination, err := d.k8sClient.GetPipelineDestination(ctx, pipelineName)
 	if err != nil {
 		return nil, err
@@ -95,26 +109,64 @@ func (d *destinationClients) get(ctx context.Context, pipelineName string) (*des
 		return nil, fmt.Errorf("creating destination client for pipeline %q: %w", pipelineName, err)
 	}
 
-	client := &destinationClient{s3Client: s3Client, bucket: destination.Bucket, prefix: destination.Prefix}
+	client := &destinationClient{
+		s3Client: s3Client,
+		bucket:   destination.Bucket,
+		prefix:   destination.Prefix,
+		builtAt:  time.Now(),
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.clients[pipelineName] = client
 	return client, nil
 }
 
-// fetch reads one object, named relative to the destination prefix.
+func (d *destinationClients) cached(pipelineName string) *destinationClient {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	cached, ok := d.clients[pipelineName]
+	if !ok || time.Since(cached.builtAt) > destinationClientTTL {
+		return nil
+	}
+	return cached
+}
+
+// errPageImageMissing reports a key that is not in the destination, which is
+// an ordinary outcome rather than a failure: the syncer only uploads the
+// stages a pipeline asked it to.
+var errPageImageMissing = errors.New("page image is not in the destination")
+
+// fetch reads one object, named relative to the destination prefix. The key
+// comes out of a warehouse column, so a key that escapes the prefix or an
+// object larger than maxPageImageBytes is refused rather than read.
 func (d *destinationClient) fetch(ctx context.Context, key string) ([]byte, error) {
+	// path.Join resolves ".." rather than refusing it, which would walk out
+	// of this pipeline's prefix and into another product's data in the same
+	// bucket, so the key is checked before it is joined.
+	if key == "" || path.IsAbs(key) || key != path.Clean(key) || strings.HasPrefix(key, "../") {
+		return nil, fmt.Errorf("page image key %q is not a plain relative path", key)
+	}
 	fullKey := path.Join(d.prefix, key)
-	object, err := d.s3Client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(d.bucket),
-		Key:    aws.String(fullKey),
-	})
+
+	object, err := awsclienthandler.GetObject(ctx, d.s3Client, d.bucket, fullKey)
 	if err != nil {
+		var noSuchKey *s3types.NoSuchKey
+		var notFound *s3types.NotFound
+		if errors.As(err, &noSuchKey) || errors.As(err, &notFound) {
+			return nil, fmt.Errorf("%w: %s", errPageImageMissing, fullKey)
+		}
 		return nil, fmt.Errorf("reading %s: %w", fullKey, err)
 	}
 	defer object.Body.Close() //nolint:errcheck // read-only body
 
-	data, err := io.ReadAll(object.Body)
+	data, err := io.ReadAll(io.LimitReader(object.Body, maxPageImageBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", fullKey, err)
+	}
+	if len(data) > maxPageImageBytes {
+		return nil, fmt.Errorf("page image %s is larger than %d bytes", fullKey, maxPageImageBytes)
 	}
 	return data, nil
 }
@@ -140,38 +192,47 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		log.Info("tool invoked", "pipeline_name", args.PipelineName, "chunk_id", args.ChunkID)
 
 		if args.PipelineName == "" || args.ChunkID == "" {
-			return toolError(log, "missing required parameters",
+			return toolError(log, "missing required parameters", nil,
 				"Error: pipeline_name and chunk_id are required. Call get_chunks_for_embeddings first."), nil, nil
 		}
 
-		// Validated rather than split: it is caller supplied, and it names a
-		// file that will be fetched.
+		// Validated rather than split: it is caller supplied, and it is bound
+		// into a query against another tenant's warehouse.
 		_, parseErr := unstructured.ParseChunkID(args.ChunkID)
 		if parseErr != nil {
-			return toolError(log, "malformed chunk id",
-				fmt.Sprintf("Error: %q is not a valid chunk_id: %v", args.ChunkID, parseErr)), nil, nil
+			return toolError(log, "malformed chunk id", parseErr,
+				fmt.Sprintf("Error: %q is not a valid chunk_id.", args.ChunkID)), nil, nil
 		}
 
 		if !isPipelineAllowed(ctx, args.PipelineName) {
-			return toolError(log, "pipeline not in per-client allow-list",
+			return toolError(log, "pipeline not in per-client allow-list", nil,
 				fmt.Sprintf("Error: pipeline %q is not accessible in this session.", args.PipelineName)), nil, nil
 		}
 
 		oauthToken, ok := auth.AccessTokenFromContext(ctx)
 		if !ok {
-			return toolError(log, "oauth token not found in context", errOAuthTokenNotFound), nil, nil
+			return toolError(log, "oauth token not found in context", nil, errOAuthTokenNotFound), nil, nil
 		}
 
 		if k8sClient == nil {
-			return toolError(log, "kubernetes client is nil",
+			return toolError(log, "kubernetes client is nil", nil,
 				"Error: kubernetes client is not initialized"), nil, nil
 		}
 
+		// Every failure from here to the lookup renders as errCitationNotFound.
+		// Telling a missing pipeline from one the caller cannot read, or naming
+		// the warehouse in the message, is the existence oracle this tool is
+		// built not to be.
 		qc, err := k8sClient.GetPipelineQueryConfig(ctx, args.PipelineName,
 			operatorv1alpha1.StageTypeVectorEmbeddingsGenerator)
 		if err != nil {
-			return toolError(log, "failed to get pipeline query config",
-				fmt.Sprintf("Error resolving pipeline %q: %v", args.PipelineName, err)), nil, nil
+			return toolError(log, "failed to get pipeline query config", err, errCitationNotFound), nil, nil
+		}
+		if qc.Database == "" || qc.Schema == "" || qc.Table == "" {
+			return toolError(log, "pipeline query config has empty fields",
+				fmt.Errorf("database %q, schema %q, table %q", qc.Database, qc.Schema, qc.Table),
+				fmt.Sprintf("Error: pipeline %q has incomplete Snowflake query configuration",
+					args.PipelineName)), nil, nil
 		}
 
 		// The authorization check. Runs as the caller, so a chunk their row
@@ -180,20 +241,19 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_")),
 			strings.ToUpper(qc.Schema), strings.ToUpper(qc.Table), args.ChunkID)
 		if err != nil {
-			return toolError(log, "failed to look up chunk",
-				fmt.Sprintf("Error looking up chunk: %v", err)), nil, nil
+			return toolError(log, "failed to look up chunk", err, errCitationNotFound), nil, nil
 		}
 		if chunk == nil {
-			return toolError(log, "chunk not visible to caller", errCitationNotFound), nil, nil
+			return toolError(log, "chunk not visible to caller", nil, errCitationNotFound), nil, nil
 		}
 
 		regions, regionErr := decodeRegions(chunk.Regions)
 		if regionErr != nil {
-			return toolError(log, "chunk regions could not be read",
-				fmt.Sprintf("Error: this chunk's page regions are unreadable: %v", regionErr)), nil, nil
+			return toolError(log, "chunk regions could not be read", regionErr,
+				"Error: this chunk's page regions are unreadable."), nil, nil
 		}
 
-		pages := citedPages(regions)
+		pages, dropped := citedPages(regions)
 		if len(pages) == 0 {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
 				Text: fmt.Sprintf("No page image is available for chunk %q. Its source format has no pages to render, or it was processed before page images were stored.", args.ChunkID),
@@ -202,20 +262,32 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 
 		destination, err := destinations.get(ctx, args.PipelineName)
 		if err != nil {
-			return toolError(log, "failed to resolve destination",
-				fmt.Sprintf("Error resolving the destination for pipeline %q: %v", args.PipelineName, err)), nil, nil
+			return toolError(log, "failed to resolve destination", err,
+				fmt.Sprintf("Error: unable to resolve the destination for pipeline %q.",
+					args.PipelineName)), nil, nil
 		}
 
-		content := []mcp.Content{&mcp.TextContent{
-			Text: fmt.Sprintf("Citation for chunk %q from %s, %d page(s): %s",
-				args.ChunkID, chunk.FileID, len(pages), pageList(pages)),
-		}}
+		summary := fmt.Sprintf("Citation for chunk %q from %s, %d page(s): %s",
+			args.ChunkID, chunk.FileID, len(pages), pageList(pages))
+		if dropped > 0 {
+			summary += fmt.Sprintf(" (%d further page(s) omitted, which means this chunk's regions are wrong)",
+				dropped)
+		}
+		content := []mcp.Content{&mcp.TextContent{Text: summary}}
 		for _, page := range pages {
 			cropped, cropErr := cropPage(ctx, destination, regions, page)
+			if errors.Is(cropErr, errPageImageMissing) {
+				// The writer recorded an image the syncer never uploaded, most
+				// often because the destination does not sync the convert
+				// stage. Nothing the caller can act on, so say what is true.
+				log.Info("page image is not in the destination", "page", page.pageNo, "error", cropErr)
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+					Text: fmt.Sprintf("No page image is available for chunk %q. It was not found in this pipeline's destination.", args.ChunkID),
+				}}}, nil, nil
+			}
 			if cropErr != nil {
-				log.Error("could not produce the citation image", "page", page.pageNo, "error", cropErr)
-				return toolError(log, "failed to produce citation image",
-					fmt.Sprintf("Error reading the page image for page %d: %v", page.pageNo, cropErr)), nil, nil
+				return toolError(log, "failed to produce citation image", cropErr,
+					fmt.Sprintf("Error: unable to read the page image for page %d.", page.pageNo)), nil, nil
 			}
 			content = append(content, &mcp.ImageContent{Data: cropped, MIMEType: "image/png"})
 		}
@@ -232,10 +304,11 @@ type citedPage struct {
 	image  string
 }
 
-// citedPages returns the distinct pages a chunk covers that have an image,
-// in page order. A region with no image is skipped: most input formats
-// render no pages, and the writer leaves the field empty for those.
-func citedPages(regions []docling.Region) []citedPage {
+// citedPages returns the distinct pages a chunk covers that have an image, in
+// page order, capped at maxCitationPages, and how many the cap dropped. A
+// region with no image is skipped: most input formats render no pages, and
+// the writer leaves the field empty for those.
+func citedPages(regions []docling.Region) (pages []citedPage, dropped int) {
 	seen := map[int]string{}
 	for _, region := range regions {
 		if region.Image == "" {
@@ -246,16 +319,17 @@ func citedPages(regions []docling.Region) []citedPage {
 		}
 	}
 
-	pages := make([]citedPage, 0, len(seen))
+	pages = make([]citedPage, 0, len(seen))
 	for pageNo, image := range seen {
 		pages = append(pages, citedPage{pageNo: pageNo, image: image})
 	}
 	sort.Slice(pages, func(i, j int) bool { return pages[i].pageNo < pages[j].pageNo })
 
 	if len(pages) > maxCitationPages {
+		dropped = len(pages) - maxCitationPages
 		pages = pages[:maxCitationPages]
 	}
-	return pages
+	return pages, dropped
 }
 
 // cropPage fetches one page's image and cuts the cited part out of it.
@@ -289,10 +363,15 @@ func pageList(pages []citedPage) string {
 	return strings.Join(numbers, ", ")
 }
 
-// toolError logs and renders the same message, so a caller and the logs
-// never disagree about what went wrong.
-func toolError(log *slog.Logger, logMessage, userMessage string) *mcp.CallToolResult {
-	log.Error(logMessage)
+// toolError logs the failure with its cause and renders the message the
+// caller sees, which carries no infrastructure detail: the caller is a model
+// that was told to repeat the error verbatim to a user.
+func toolError(log *slog.Logger, logMessage string, cause error, userMessage string) *mcp.CallToolResult {
+	if cause != nil {
+		log.Error(logMessage, "error", cause)
+	} else {
+		log.Error(logMessage)
+	}
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: userMessage}},
 		IsError: true,

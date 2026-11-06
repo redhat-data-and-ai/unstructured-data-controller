@@ -68,6 +68,10 @@ func TakePageImages(document json.RawMessage) ([]PageImage, json.RawMessage, err
 	if err := json.Unmarshal(rawPages, &pages); err != nil {
 		return nil, nil, fmt.Errorf("reading document pages: %w", err)
 	}
+	// Dropped before the images are decoded: it is the same rasters a second
+	// time, and a long document is hundreds of megabytes of them. Every
+	// return below either rewrites this key or discards root.
+	root["pages"] = nil
 
 	var images []PageImage
 	for key, page := range pages {
@@ -120,8 +124,11 @@ func TakePageImages(document json.RawMessage) ([]PageImage, json.RawMessage, err
 }
 
 // artifactImageLink matches the markdown image link docling writes for each
-// picture, whose target is one of its own generated artifact names.
-var artifactImageLink = regexp.MustCompile(`!\[[^\]]*\]\((?:data:image/[^)]*|(?:image|page)_[0-9a-f_]+\.[a-z]+)\)`)
+// picture, whose target is one of its own generated artifact names. The
+// optional "<stem>_artifacts/" directory is matched because docling's
+// referenced mode writes the name either way, and a miss here is silent.
+var artifactImageLink = regexp.MustCompile(
+	`!\[[^\]]*\]\((?:data:image/[^)]*|(?:[^)\s/]*_artifacts/)?(?:image|page)_[0-9a-fA-F_]+\.[a-zA-Z]+)\)`)
 
 // StripImageLinks replaces docling's generated image links with the comment
 // its "placeholder" export mode writes.

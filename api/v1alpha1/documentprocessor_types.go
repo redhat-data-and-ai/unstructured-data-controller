@@ -384,11 +384,9 @@ func (c *VLMPipelineCustomConfig) SetDefaults() {
 
 // +kubebuilder:validation:XValidation:rule="!(has(self.include_page_images) && self.include_page_images && has(self.image_export_mode) && self.image_export_mode == 'placeholder')",message="include_page_images requires image_export_mode other than placeholder, which discards every image"
 type DoclingConfig struct {
-	// The rule above is one negated conjunction rather than a chain of
-	// disjunctions: the chain is costed per term against every list this
-	// config sits in, which puts it over the CEL budget and makes the CRD
-	// unservable. Kept out of the doc comment, which controller-gen publishes
-	// as this field's description.
+	// One negated conjunction, not a chain of disjunctions: the chain is
+	// costed per term against every list this config sits in and goes over
+	// the CEL budget. Outside the doc comment, which controller-gen publishes.
 
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
@@ -417,7 +415,9 @@ type DoclingConfig struct {
 	// +optional
 	IncludeImages *bool `json:"include_images,omitempty"`
 	// IncludePageImages returns a rendered image of each page, which is what a
-	// citation draws its highlight on. Only pdf and image inputs produce them.
+	// citation draws its highlight on. Only pdf and image inputs produce them,
+	// and a citation can only read one if the destination syncer depends on
+	// this stage.
 	//
 	// Defaults off under the "placeholder" export mode, which discards every
 	// image. Setting both explicitly is rejected at admission.

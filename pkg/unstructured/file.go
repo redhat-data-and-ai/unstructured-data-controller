@@ -89,21 +89,22 @@ func PageImagePath(rawFilePath string, pageNo int) string {
 // DestinationKey returns where a file lands under the destination prefix.
 //
 // The syncer keys by the stage directory and drops everything above it, so
-// this reproduces that without needing the pipeline name. Returns "" for a
-// path that is not under a stage, since there is no destination for it.
-func DestinationKey(filePath string) string {
-	index := strings.Index(filePath, "stages/")
+// this reproduces that without needing the pipeline name. The stage name is
+// part of the match because a pipeline name may itself end in "stages".
+// Returns "" for a path that is not under that stage.
+func DestinationKey(filePath, stageName string) string {
+	index := strings.Index(filePath, "stages/"+stageName+"/")
 	if index < 0 {
 		return ""
 	}
 	return filePath[index:]
 }
 
-// PageImageDestinationKey locates one page's render in the destination,
-// given the converted file it belongs to.
-func PageImageDestinationKey(convertedFilePath string, pageNo int) string {
+// PageImageDestinationKey locates one page's render in the destination, given
+// the converted file it belongs to and the stage that wrote it.
+func PageImageDestinationKey(convertedFilePath, stageName string, pageNo int) string {
 	rawFilePath := strings.TrimSuffix(convertedFilePath, convertedFileSuffix)
-	return DestinationKey(PageImagePath(rawFilePath, pageNo))
+	return DestinationKey(PageImagePath(rawFilePath, pageNo), stageName)
 }
 
 func FilterRawFilePaths(filePaths []string) []string {

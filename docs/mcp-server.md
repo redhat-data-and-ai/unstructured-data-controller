@@ -281,6 +281,26 @@ Retrieves the processed document output (full Markdown from the pipeline's Docum
 
 Use this when chunks from `get_chunks_for_embeddings` don't provide enough context (for example, to follow up with the `file_id` of the top matching chunk).
 
+### `get_citation_image`
+
+Returns the region of the source page a chunk was taken from, cropped, as an image. One image per page the chunk covers, capped at 10.
+
+**Parameters:**
+
+| Parameter       | Required | Description                                                                                     |
+| --------------- | -------- | ------------------------------------------------------------------------------------------------ |
+| `pipeline_name` | Yes      | Name of the UnstructuredDataPipeline the chunk came from. The same value passed to `get_chunks_for_embeddings`. |
+| `chunk_id`      | Yes      | The `chunk_id` of a chunk returned by `get_chunks_for_embeddings`.                              |
+
+Not every chunk has an image. Only `pdf` and `image` inputs render pages, so a chunk from a spreadsheet or a web page returns text saying so rather than an error.
+
+Two pipeline settings have to be in place for a citation image to exist:
+
+- The DocumentProcessor stage must have `include_page_images` on, which is the default for every `image_export_mode` other than `placeholder`.
+- The DestinationSyncer stage must list the DocumentProcessor stage in its `dependsOn`. The image is read from the destination bucket with the pipeline's own credentials, so a syncer that only syncs `embed` leaves nothing to read.
+
+The Snowflake lookup of the chunk is the authorization check and the only one: it runs as the caller, so a chunk hidden by a row access policy is reported the same way as one that does not exist.
+
 ## Package Structure
 
 ```
@@ -291,6 +311,7 @@ internal/mcp/tools/
   list_pipelines.go         ← list_unstructured_data_pipelines_for_user tool
   get_chunks.go             ← get_chunks_for_embeddings tool
   get_processed_document.go ← get_processed_document tool
+  get_citation_image.go     ← get_citation_image tool
 
 pkg/auth/
   provider.go               ← Provider interface (extensible)

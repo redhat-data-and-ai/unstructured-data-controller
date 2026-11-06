@@ -146,6 +146,19 @@ func TestStripImageLinks(t *testing.T) {
 			want:     "text <!-- image --> more",
 		},
 		{
+			// Referenced mode writes the artifact under a per-document
+			// directory, and a miss here is silent: the name reaches the
+			// embedding model instead.
+			name:     "an artifact under its document's directory",
+			markdown: "![Image](report_artifacts/image_000000_9980e8ff.png)",
+			want:     "<!-- image -->",
+		},
+		{
+			name:     "uppercase hex and extension",
+			markdown: "![Image](image_000000_9980E8FF.PNG)",
+			want:     "<!-- image -->",
+		},
+		{
 			name:     "several in one document",
 			markdown: "![Image](image_000000_a.png) and ![Image](image_000001_b.png)",
 			want:     "<!-- image --> and <!-- image -->",

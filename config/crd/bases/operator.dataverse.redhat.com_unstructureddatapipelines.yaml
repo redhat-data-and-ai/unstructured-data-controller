@@ -248,7 +248,9 @@ spec:
                             include_page_images:
                               description: |-
                                 IncludePageImages returns a rendered image of each page, which is what a
-                                citation draws its highlight on. Only pdf and image inputs produce them.
+                                citation draws its highlight on. Only pdf and image inputs produce them,
+                                and a citation can only read one if the destination syncer depends on
+                                this stage.
 
                                 Defaults off under the "placeholder" export mode, which discards every
                                 image. Setting both explicitly is rejected at admission.
