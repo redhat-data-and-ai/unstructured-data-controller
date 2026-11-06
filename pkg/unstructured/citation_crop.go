@@ -21,6 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"image"
+
+	// Registered so a page image is decoded by what it contains rather than
+	// by what this assumed. The service renders png today and the stored
+	// format is a cost decision that may change.
+	_ "image/jpeg"
 	"image/png"
 	"math"
 
@@ -40,14 +45,15 @@ var ErrNoRegionsOnPage = errors.New("no regions on that page")
 //
 // The crop is the extent of every region on that page plus a margin, so one
 // chunk gives one image rather than one per block. Regions on other pages
-// are ignored; the caller crops those from their own page images.
+// are ignored; the caller crops those from their own page images. Takes png
+// or jpeg and always returns png.
 func CropCitation(pageImage []byte, regions []docling.Region, pageNo int) ([]byte, error) {
 	bounds, ok := regionExtent(regions, pageNo)
 	if !ok {
 		return nil, fmt.Errorf("%w: page %d", ErrNoRegionsOnPage, pageNo)
 	}
 
-	decoded, err := png.Decode(bytes.NewReader(pageImage))
+	decoded, _, err := image.Decode(bytes.NewReader(pageImage))
 	if err != nil {
 		return nil, fmt.Errorf("decoding page %d image: %w", pageNo, err)
 	}
