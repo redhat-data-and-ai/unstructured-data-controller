@@ -382,11 +382,14 @@ func (c *VLMPipelineCustomConfig) SetDefaults() {
 	}
 }
 
-// Written as one negated conjunction rather than a chain of disjunctions: the
-// chain is costed per term against every list this config sits in, which puts
-// it over the CEL budget and makes the CRD unservable.
 // +kubebuilder:validation:XValidation:rule="!(has(self.include_page_images) && self.include_page_images && has(self.image_export_mode) && self.image_export_mode == 'placeholder')",message="include_page_images requires image_export_mode other than placeholder, which discards every image"
 type DoclingConfig struct {
+	// The rule above is one negated conjunction rather than a chain of
+	// disjunctions: the chain is costed per term against every list this
+	// config sits in, which puts it over the CEL budget and makes the CRD
+	// unservable. Kept out of the doc comment, which controller-gen publishes
+	// as this field's description.
+
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
 	ImageExportMode string   `json:"image_export_mode,omitempty"`

@@ -212,10 +212,6 @@ spec:
                     documentProcessorConfig:
                       properties:
                         doclingConfig:
-                          description: |-
-                            Written as one negated conjunction rather than a chain of disjunctions: the
-                            chain is costed per term against every list this config sits in, which puts
-                            it over the CEL budget and makes the CRD unservable.
                           properties:
                             abort_on_error:
                               description: 'Deprecated: this field is ignored; abort_on_error
