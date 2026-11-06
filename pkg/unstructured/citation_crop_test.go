@@ -144,16 +144,28 @@ func TestCropCitation_NotAnImage(t *testing.T) {
 	assert.Contains(t, err.Error(), "decoding page 1 image")
 }
 
-func TestCropCitation_RejectsAnEmptyCrop(t *testing.T) {
+func TestCropCitation_ZeroSizedRegion(t *testing.T) {
 	page := pagePNG(t, 4, 4)
 	regions := []docling.Region{{PageNo: 1, BBox: [4]float64{0.5, 0.5, 0.5, 0.5}}}
 
-	_, err := CropCitation(page, regions, 1)
+	cropped, err := CropCitation(page, regions, 1)
 
 	// The margin saves this one, so assert it produced something real
 	// rather than that it failed.
 	require.NoError(t, err)
-	width, height := decodeSize(t, page)
+	width, height := decodeSize(t, cropped)
 	assert.Positive(t, width)
 	assert.Positive(t, height)
+}
+
+// A box outside the page clamps to its far edge, which is the one way the
+// extent survives the margin and still covers no pixels.
+func TestCropCitation_RejectsAnEmptyCrop(t *testing.T) {
+	page := pagePNG(t, 1000, 1000)
+	regions := []docling.Region{{PageNo: 1, BBox: [4]float64{1.5, 1.5, 2, 2}}}
+
+	_, err := CropCitation(page, regions, 1)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is empty against a 1000x1000 page")
 }
