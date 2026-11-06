@@ -50,16 +50,24 @@ func boolPtr(b bool) *bool { return &b }
 func TestUnstructuredDataLoad(t *testing.T) {
 	feature := features.New("Unstructured Data Load")
 
-	unstructuredBucketName := "unstructured-bucket"
-	unstructuredDataStorageBucketName := "data-storage-bucket"
-	outputBucketName := "output-bucket"
+	unstructuredBucketName := envOrDefault("E2E_SOURCE_BUCKET", "unstructured-bucket")
+	unstructuredDataStorageBucketName := envOrDefault("E2E_DATA_STORAGE_BUCKET", "data-storage-bucket")
+	outputBucketName := envOrDefault("E2E_OUTPUT_BUCKET", "output-bucket")
+	pipelineSecretRef := envOrDefault("E2E_PIPELINE_SECRET_REF", "pipeline-secret")
+
+	skipBucketSetup := os.Getenv("SKIP_BUCKET_SETUP") == "true"
+
 	unstructuredQueueName := "unstructured-queue"
+	queueURL := os.Getenv("E2E_SQS_QUEUE_URL")
+	if queueURL == "" && !skipBucketSetup {
+		queueURL = "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/" + unstructuredQueueName
+	}
 
-	dataPipelineCRName := "unstructured"
+	dataPipelineCRName := "e2e-" + operatorUtils.RandomStringGenerator(8)
+	sourcePrefix := dataPipelineCRName + "/source"
+	destinationPrefix := dataPipelineCRName + "/destination"
 
-	queueURL := "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/" + unstructuredQueueName
 	unstructuredFilesDirectory := "test/resources/unstructured/unstructured-files"
-	destinationPrefix := dataPipelineCRName + "/processed-data"
 
 	var kubeClient klient.Client
 	var sourceS3Client *s3.Client
@@ -75,12 +83,11 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatalf("Failed to add scheme: %s", err)
 			}
 
-			// create AWS clients
 			e2eAWS := &awsclienthandler.AWSConfig{
-				Region:          "us-east-1",
-				AccessKeyID:     "test",
-				SecretAccessKey: "test",
-				Endpoint:        localstackURL,
+				Region:          envOrDefault("E2E_S3_REGION", "us-east-1"),
+				AccessKeyID:     envOrDefault("E2E_S3_ACCESS_KEY_ID", "test"),
+				SecretAccessKey: envOrDefault("E2E_S3_SECRET_ACCESS_KEY", "test"),
+				Endpoint:        envOrDefault("E2E_S3_ENDPOINT", localstackURL),
 			}
 
 			err = awsclienthandler.NewSourceS3ClientFromConfig(ctx, e2eAWS)
@@ -108,59 +115,68 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// create source bucket
-			_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
-				Bucket: aws.String(unstructuredBucketName),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			if !skipBucketSetup {
+				_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+					Bucket: aws.String(unstructuredBucketName),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			// create data storage bucket
-			_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
-				Bucket: aws.String(unstructuredDataStorageBucketName),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+				_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+					Bucket: aws.String(unstructuredDataStorageBucketName),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			// create output bucket
-			_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
-				Bucket: aws.String(outputBucketName),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+				_, err = sourceS3Client.CreateBucket(ctx, &s3.CreateBucketInput{
+					Bucket: aws.String(outputBucketName),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			// create SQS queue
-			_, err = sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{
-				QueueName: aws.String(unstructuredQueueName),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+				_, err = sqsClient.CreateQueue(ctx, &sqs.CreateQueueInput{
+					QueueName: aws.String(unstructuredQueueName),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 
-			// create S3 --> SQS notification integration
-			_, err = sourceS3Client.PutBucketNotificationConfiguration(ctx, &s3.PutBucketNotificationConfigurationInput{
-				Bucket: aws.String(unstructuredBucketName),
-				NotificationConfiguration: &types.NotificationConfiguration{
-					QueueConfigurations: []types.QueueConfiguration{
-						{
-							QueueArn: aws.String("arn:aws:sqs:us-east-1:000000000000:" + unstructuredQueueName),
-							Events:   []types.Event{types.EventS3ObjectCreated, types.EventS3ObjectRemoved},
+				_, err = sourceS3Client.PutBucketNotificationConfiguration(ctx, &s3.PutBucketNotificationConfigurationInput{
+					Bucket: aws.String(unstructuredBucketName),
+					NotificationConfiguration: &types.NotificationConfiguration{
+						QueueConfigurations: []types.QueueConfiguration{
+							{
+								QueueArn: aws.String("arn:aws:sqs:us-east-1:000000000000:" + unstructuredQueueName),
+								Events:   []types.Event{types.EventS3ObjectCreated, types.EventS3ObjectRemoved},
+							},
 						},
 					},
-				},
-			})
-			if err != nil {
-				t.Fatal(err)
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			// create pipeline CR with SQS queue URL
 			unstructuredDataPipeline := operatorUtils.GetUnstructuredDataPipelineResourceWithStage(dataPipelineCRName, testNamespace)
-			unstructuredDataPipeline.Spec.SecretRef = "pipeline-secret"
-			unstructuredDataPipeline.Spec.Stages[0].SourceCrawlerConfig.S3Config.SQSQueueURL = queueURL
-			t.Log("create unstructured datapipeline CR ...")
+			unstructuredDataPipeline.Spec.SecretRef = pipelineSecretRef
+			for i, stage := range unstructuredDataPipeline.Spec.Stages {
+				if stage.Type == v1alpha1.StageTypeSourceCrawler && stage.SourceCrawlerConfig != nil {
+					unstructuredDataPipeline.Spec.Stages[i].SourceCrawlerConfig.S3Config.Bucket = unstructuredBucketName
+					unstructuredDataPipeline.Spec.Stages[i].SourceCrawlerConfig.S3Config.Prefix = sourcePrefix
+					if queueURL != "" {
+						unstructuredDataPipeline.Spec.Stages[i].SourceCrawlerConfig.S3Config.SQSQueueURL = queueURL
+					}
+				}
+				if stage.Type == v1alpha1.StageTypeDestinationSyncer && stage.DestinationSyncerConfig != nil {
+					unstructuredDataPipeline.Spec.Stages[i].DestinationSyncerConfig.S3DestinationConfig.Bucket = outputBucketName
+					unstructuredDataPipeline.Spec.Stages[i].DestinationSyncerConfig.S3DestinationConfig.Prefix = destinationPrefix
+				}
+			}
+			t.Logf("create unstructured datapipeline CR %s ...", dataPipelineCRName)
 			if err := kubeClient.Resources(testNamespace).Create(ctx, &unstructuredDataPipeline); err != nil {
 				if !apierrors.IsAlreadyExists(err) {
 					t.Fatal(err)
@@ -200,7 +216,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Error(err)
 			}
 
-			key := fmt.Sprintf("%s/%s", dataPipelineCRName, file.Name())
+			key := fmt.Sprintf("%s/%s", sourcePrefix, file.Name())
 			_, err = sourceS3Client.PutObject(ctx, &s3.PutObjectInput{
 				Bucket: aws.String(unstructuredBucketName),
 				Key:    aws.String(key),
@@ -233,6 +249,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 
 				output, listErr := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 					Bucket: aws.String(outputBucketName),
+					Prefix: aws.String(destinationPrefix + "/"),
 				})
 				if listErr != nil {
 					t.Logf("failed to list objects in output bucket: %v", listErr)
@@ -279,7 +296,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		t.Log("Listing objects from unstructured bucket ...")
 		output, err := sourceS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket: aws.String(unstructuredBucketName),
-			Prefix: aws.String(dataPipelineCRName + "/"),
+			Prefix: aws.String(sourcePrefix + "/"),
 		})
 		if err != nil {
 			t.Errorf("Unable to list objects from the unstructured bucket: %s", err)
@@ -476,7 +493,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				unstructuredDataPipelineCR.Spec.Stages[i].DestinationSyncerConfig = &v1alpha1.DestinationSyncerConfig{
 					Type: v1alpha1.TypeS3,
 					S3DestinationConfig: v1alpha1.S3Config{
-						Bucket: unstructuredBucketName,
+						Bucket: outputBucketName,
 						Prefix: destinationPrefix,
 					},
 				}
@@ -507,7 +524,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 			false,
 			func(ctx context.Context) (done bool, err error) {
 				destOutput, listErr := destS3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-					Bucket: aws.String(unstructuredBucketName),
+					Bucket: aws.String(outputBucketName),
 					Prefix: aws.String(destinationPrefix),
 				})
 				if listErr != nil {
@@ -542,15 +559,15 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 
 		file1 := "pdflatex-4-pages.pdf"
-		hashTestFile2Key := fmt.Sprintf("%s/pdflatex-outline.pdf", dataPipelineCRName)
+		hashTestFile2Key := fmt.Sprintf("%s/%s", sourcePrefix, "pdflatex-outline.pdf")
 
 		t.Log("find existing file1 in destination and record hash/timestamp")
-		file1DestKey, err := operatorUtils.FindDestinationKey(ctx, destS3Client, unstructuredBucketName, destinationPrefix, file1)
+		file1DestKey, err := operatorUtils.FindDestinationKey(ctx, destS3Client, outputBucketName, destinationPrefix, file1)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		headBefore, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, unstructuredBucketName, file1DestKey)
+		headBefore, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, outputBucketName, file1DestKey)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -576,7 +593,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 
 		t.Log("verify file1 was not re-uploaded")
-		headAfter, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, unstructuredBucketName, file1DestKey)
+		headAfter, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, outputBucketName, file1DestKey)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -599,15 +616,15 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		}
 
 		file1 := "pdflatex-4-pages.pdf"
-		sourceKey := fmt.Sprintf("%s/%s", dataPipelineCRName, file1)
+		sourceKey := fmt.Sprintf("%s/%s", sourcePrefix, file1)
 
 		t.Log("find existing file1 in destination and record hash/timestamp")
-		destKey, err := operatorUtils.FindDestinationKey(ctx, destS3Client, unstructuredBucketName, destinationPrefix, file1)
+		destKey, err := operatorUtils.FindDestinationKey(ctx, destS3Client, outputBucketName, destinationPrefix, file1)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		headBefore, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, unstructuredBucketName, destKey)
+		headBefore, err := operatorUtils.GetS3ObjectMetadata(ctx, destS3Client, outputBucketName, destKey)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -635,7 +652,7 @@ func TestUnstructuredDataLoad(t *testing.T) {
 		t.Log("UnstructuredDataPipeline successfully reconciled after modify")
 
 		t.Log("verify file1 was re-uploaded")
-		headAfter, err := operatorUtils.WaitForS3ObjectHashChange(ctx, destS3Client, unstructuredBucketName, destKey, headBefore.ChecksumSHA256)
+		headAfter, err := operatorUtils.WaitForS3ObjectHashChange(ctx, destS3Client, outputBucketName, destKey, headBefore.ChecksumSHA256)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -662,11 +679,40 @@ func TestUnstructuredDataLoad(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// clean up S3 test objects
+			cleanupS3Prefix(ctx, t, sourceS3Client, unstructuredBucketName, dataPipelineCRName+"/")
+			if outputBucketName != unstructuredBucketName {
+				cleanupS3Prefix(ctx, t, destS3Client, outputBucketName, dataPipelineCRName+"/")
+			}
+
 			return ctx
 		},
 	)
 
 	testenv.Test(t, feature.Feature())
+}
+
+func cleanupS3Prefix(ctx context.Context, t *testing.T, client *s3.Client, bucket, prefix string) {
+	t.Helper()
+	listOut, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+		Prefix: aws.String(prefix),
+	})
+	if err != nil {
+		t.Logf("failed to list objects for cleanup in %s/%s: %v", bucket, prefix, err)
+		return
+	}
+	for _, obj := range listOut.Contents {
+		if _, delErr := client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    obj.Key,
+		}); delErr != nil {
+			t.Logf("failed to delete %s: %v", *obj.Key, delErr)
+		}
+	}
+	if len(listOut.Contents) > 0 {
+		t.Logf("cleaned up %d objects from s3://%s/%s", len(listOut.Contents), bucket, prefix)
+	}
 }
 
 func dumpPodLogs(t *testing.T, namespace, labelSelector, container string) {
