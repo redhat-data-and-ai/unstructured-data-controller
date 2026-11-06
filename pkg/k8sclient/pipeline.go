@@ -22,6 +22,8 @@ import (
 	"os"
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -108,4 +110,65 @@ func (c *Client) GetPipelineQueryConfig(
 		return nil, fmt.Errorf("pipeline %q has no Snowflake query config for stage type %q", name, stageType)
 	}
 	return qc, nil
+}
+
+// DestinationConfig is where a pipeline's output lands and how to read it.
+type DestinationConfig struct {
+	Bucket string
+	Prefix string
+	AWS    *awsclienthandler.AWSConfig
+}
+
+// GetPipelineDestination resolves where a pipeline writes its output and the
+// credentials to read it back. Errors if the pipeline has no S3 destination
+// syncer stage or names no secret.
+//
+// The location comes from the destination syncer stage and the credentials
+// from the pipeline's own secret, so a path handling mistake cannot reach
+// another product's bucket.
+func (c *Client) GetPipelineDestination(ctx context.Context, name string) (*DestinationConfig, error) {
+	namespace := pipelineNamespace()
+	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pipeline); err != nil {
+		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
+	}
+
+	s3Config := s3Destination(pipeline)
+	if s3Config == nil {
+		return nil, fmt.Errorf("pipeline %q has no S3 destination", name)
+	}
+
+	// Refused rather than defaulted: the SDK is handed these as static
+	// credentials, so an empty set fails every request instead of falling
+	// back to the pod's own role.
+	if pipeline.Spec.SecretRef == "" {
+		return nil, fmt.Errorf("pipeline %q names no secret to read its destination with", name)
+	}
+	secret := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: namespace, Name: pipeline.Spec.SecretRef}
+	if err := c.client.Get(ctx, key, secret); err != nil {
+		return nil, fmt.Errorf("failed to get secret for pipeline %q: %w", name, err)
+	}
+
+	return &DestinationConfig{
+		Bucket: s3Config.Bucket,
+		Prefix: s3Config.Prefix,
+		AWS: awsclienthandler.ConfigFromSecretData(
+			secret.Data, awsclienthandler.DestinationSecretPrefix),
+	}, nil
+}
+
+// s3Destination returns the bucket a pipeline's first usable S3 destination
+// syncer writes to, or nil when it has none.
+func s3Destination(pipeline *operatorv1alpha1.UnstructuredDataPipeline) *operatorv1alpha1.S3Config {
+	for _, stage := range pipeline.Spec.Stages {
+		if stage.Type != operatorv1alpha1.StageTypeDestinationSyncer ||
+			stage.DestinationSyncerConfig == nil ||
+			stage.DestinationSyncerConfig.Type != operatorv1alpha1.TypeS3 ||
+			stage.DestinationSyncerConfig.S3DestinationConfig.Bucket == "" {
+			continue
+		}
+		return &stage.DestinationSyncerConfig.S3DestinationConfig
+	}
+	return nil
 }

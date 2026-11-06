@@ -85,6 +85,16 @@ spec:
                         type: string
                       include_images:
                         type: boolean
+                      include_page_images:
+                        description: |-
+                          IncludePageImages returns a rendered image of each page, which is what a
+                          citation draws its highlight on. Only pdf and image inputs produce them,
+                          and a citation can only read one if the destination syncer depends on
+                          this stage.
+
+                          Defaults off under the "placeholder" export mode, which discards every
+                          image. Setting both explicitly is rejected at admission.
+                        type: boolean
                       md_page_break_placeholder:
                         type: string
                       ocr_engine:
@@ -179,6 +189,12 @@ spec:
                             type: string
                         type: object
                     type: object
+                    x-kubernetes-validations:
+                    - message: include_page_images requires image_export_mode other
+                        than placeholder, which discards every image
+                      rule: '!(has(self.include_page_images) && self.include_page_images
+                        && has(self.image_export_mode) && self.image_export_mode ==
+                        ''placeholder'')'
                   type:
                     type: string
                 type: object
@@ -301,6 +317,16 @@ spec:
                           type: string
                         include_images:
                           type: boolean
+                        include_page_images:
+                          description: |-
+                            IncludePageImages returns a rendered image of each page, which is what a
+                            citation draws its highlight on. Only pdf and image inputs produce them,
+                            and a citation can only read one if the destination syncer depends on
+                            this stage.
+
+                            Defaults off under the "placeholder" export mode, which discards every
+                            image. Setting both explicitly is rejected at admission.
+                          type: boolean
                         md_page_break_placeholder:
                           type: string
                         ocr_engine:
@@ -396,6 +422,12 @@ spec:
                               type: string
                           type: object
                       type: object
+                      x-kubernetes-validations:
+                      - message: include_page_images requires image_export_mode other
+                          than placeholder, which discards every image
+                        rule: '!(has(self.include_page_images) && self.include_page_images
+                          && has(self.image_export_mode) && self.image_export_mode
+                          == ''placeholder'')'
                     documentConverter:
                       type: string
                     fileIdentifier:

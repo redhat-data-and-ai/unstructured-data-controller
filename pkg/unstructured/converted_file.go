@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
@@ -52,6 +53,16 @@ type Content struct {
 	// It is stored as written, not byte for byte: the JSON encoder strips
 	// insignificant whitespace and escapes <, > and & inside strings.
 	DoclingDocument json.RawMessage `json:"doclingDocument,omitempty"`
+
+	// RenderedPages lists the pages whose image was stored, ascending. Only
+	// pdf and image inputs render any, so this is the only way to tell a page
+	// with no image from one whose image was lifted out of the document.
+	RenderedPages []int `json:"renderedPages,omitempty"`
+}
+
+// HasRenderedPage reports whether a page's image was stored for this document.
+func (c *Content) HasRenderedPage(pageNo int) bool {
+	return c != nil && slices.Contains(c.RenderedPages, pageNo)
 }
 
 type ConvertedFileMetadata struct {

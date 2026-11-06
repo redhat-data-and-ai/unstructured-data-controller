@@ -265,3 +265,28 @@ func TestContentOmitsAnAbsentDoclingDocument(t *testing.T) {
 
 	assert.NotContains(t, string(raw), "doclingDocument")
 }
+
+// The point of recording the pages: most input formats render none, and a
+// citation has to tell that apart from an image it simply cannot fetch.
+func TestContentHasRenderedPage(t *testing.T) {
+	content := &Content{RenderedPages: []int{1, 3}}
+
+	assert.True(t, content.HasRenderedPage(1))
+	assert.True(t, content.HasRenderedPage(3))
+	assert.False(t, content.HasRenderedPage(2))
+	assert.False(t, content.HasRenderedPage(4))
+}
+
+func TestContentHasRenderedPage_NothingRendered(t *testing.T) {
+	assert.False(t, (&Content{}).HasRenderedPage(1))
+	assert.False(t, (*Content)(nil).HasRenderedPage(1))
+}
+
+// Omitted when empty, so an artifact written before page images existed
+// reads as no image rather than gaining an empty field.
+func TestContentOmitsRenderedPagesWhenThereAreNone(t *testing.T) {
+	raw, err := json.Marshal(Content{Markdown: "# heading"})
+	require.NoError(t, err)
+
+	assert.NotContains(t, string(raw), "renderedPages")
+}

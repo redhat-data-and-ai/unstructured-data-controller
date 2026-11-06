@@ -94,9 +94,10 @@ const (
 	DefaultVLMPipelineModel = VLMModelNemotronParse
 
 	DefaultTableMode = "accurate"
-	// "placeholder" prevents raw base64 image data from leaking into markdown content
-	// that flows into chunking and embedding stages.
-	DefaultImageExportMode        = "placeholder"
+	// "referenced" keeps base64 out of the markdown that flows into chunking and
+	// embedding, and still returns page images inline. "embedded" writes a data
+	// URI into that markdown even with include_images off.
+	DefaultImageExportMode        = "referenced"
 	DefaultImagesScale            = "2.0"
 	DefaultPictureDescMaxTokens   = 4096
 	DefaultPictureDescTimeout     = "60"
@@ -381,7 +382,12 @@ func (c *VLMPipelineCustomConfig) SetDefaults() {
 	}
 }
 
+// +kubebuilder:validation:XValidation:rule="!(has(self.include_page_images) && self.include_page_images && has(self.image_export_mode) && self.image_export_mode == 'placeholder')",message="include_page_images requires image_export_mode other than placeholder, which discards every image"
 type DoclingConfig struct {
+	// One negated conjunction, not a chain of disjunctions: the chain is
+	// costed per term against every list this config sits in and goes over
+	// the CEL budget. Outside the doc comment, which controller-gen publishes.
+
 	FromFormats     []string `json:"from_formats,omitempty"`
 	ToFormats       []string `json:"to_formats,omitempty"`
 	ImageExportMode string   `json:"image_export_mode,omitempty"`
@@ -408,6 +414,15 @@ type DoclingConfig struct {
 	DoTableStructure *bool `json:"do_table_structure,omitempty"`
 	// +optional
 	IncludeImages *bool `json:"include_images,omitempty"`
+	// IncludePageImages returns a rendered image of each page, which is what a
+	// citation draws its highlight on. Only pdf and image inputs produce them,
+	// and a citation can only read one if the destination syncer depends on
+	// this stage.
+	//
+	// Defaults off under the "placeholder" export mode, which discards every
+	// image. Setting both explicitly is rejected at admission.
+	// +optional
+	IncludePageImages *bool `json:"include_page_images,omitempty"`
 	// +optional
 	ImagesScale string `json:"images_scale,omitempty"`
 	// +optional
@@ -481,8 +496,15 @@ func (c *DoclingConfig) SetDefaults() {
 	if c.DoTableStructure == nil {
 		c.DoTableStructure = boolPtr(true)
 	}
+	// Off: these are per-picture crops, and the page image a citation needs is a
+	// separate field. Nothing downstream reads them.
 	if c.IncludeImages == nil {
-		c.IncludeImages = boolPtr(true)
+		c.IncludeImages = boolPtr(false)
+	}
+	// Left off under "placeholder": there is no defaulting webhook, so the
+	// admission rule never sees this field and cannot catch the combination.
+	if c.IncludePageImages == nil {
+		c.IncludePageImages = boolPtr(c.ImageExportMode != "placeholder")
 	}
 	if c.ImagesScale == "" {
 		c.ImagesScale = DefaultImagesScale

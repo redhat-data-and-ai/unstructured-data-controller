@@ -51,13 +51,7 @@ func AWSConfigFromSecret(ctx context.Context, c client.Client, secretName, names
 	if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
 		return nil, fmt.Errorf("failed to fetch secret %s: %w", secretName, err)
 	}
-	return &awsclienthandler.AWSConfig{
-		Region:          string(secret.Data[prefix+"REGION"]),
-		AccessKeyID:     string(secret.Data[prefix+"ACCESS_KEY_ID"]),
-		SecretAccessKey: string(secret.Data[prefix+"SECRET_ACCESS_KEY"]),
-		SessionToken:    string(secret.Data[prefix+"SESSION_TOKEN"]),
-		Endpoint:        string(secret.Data[prefix+"ENDPOINT"]),
-	}, nil
+	return awsclienthandler.ConfigFromSecretData(secret.Data, prefix), nil
 }
 
 const (

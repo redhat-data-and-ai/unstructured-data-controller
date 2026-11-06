@@ -145,6 +145,10 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 
+	// The convert stage writes page images beside its documents, and only the
+	// documents are chunkable.
+	filePaths = unstructured.ConvertedFilePaths(filePaths)
+
 	chunkingErrors := []error{}
 	skippedFiles := []string{}
 	var filesProcessed int64
@@ -327,7 +331,8 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 		return false, r.recordChunkJob(ctx, chunksGeneratorCR, convertedFile, convertedFilePath, config, result.TaskID)
 	}
 
-	if err := r.storeChunks(ctx, convertedFile, config, result.Chunks, chunksFilePath); err != nil {
+	if err := r.storeChunks(ctx, convertedFile, config, result.Chunks,
+		chunksGeneratorCR.Spec.DependsOn[0].Name, convertedFilePath, chunksFilePath); err != nil {
 		return false, err
 	}
 
@@ -412,8 +417,23 @@ func (r *ChunksGeneratorReconciler) retrieveConvertedFile(
 // change to the spec and the artifact must describe the chunking that ran.
 func (r *ChunksGeneratorReconciler) storeChunks(
 	ctx context.Context, convertedFile *unstructured.ConvertedFile,
-	config operatorv1alpha1.ChunksGeneratorConfig, chunks []unstructured.Chunk, chunksFilePath string,
+	config operatorv1alpha1.ChunksGeneratorConfig, chunks []unstructured.Chunk,
+	convertStage, convertedFilePath, chunksFilePath string,
 ) error {
+	// Written here rather than by the chunker, which resolves geometry and
+	// has no business knowing where files live. Left empty for a page that
+	// rendered no image, which most input formats do not, so a reader can
+	// tell "no image exists" from a path that would 404.
+	for chunkIndex := range chunks {
+		for regionIndex := range chunks[chunkIndex].Regions {
+			region := &chunks[chunkIndex].Regions[regionIndex]
+			if convertedFile.ConvertedDocument.Content.HasRenderedPage(region.PageNo) {
+				region.Image = unstructured.PageImageDestinationKey(
+					convertedFilePath, convertStage, region.PageNo)
+			}
+		}
+	}
+
 	// A parser that returns a document with no usable text chunks to nothing
 	// while every stage reports success, so this is the only place to catch
 	// it, before the empty artifact is written.
@@ -565,7 +585,8 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 	// Any failure from here on goes through failChunkJob rather than being
 	// returned, even a transient upload error: the task has ended, so leaving
 	// the job with its id would have the next pass collect it again.
-	if err := r.storeChunks(ctx, convertedFile, job.ChunksGeneratorConfig, result.Chunks, chunksFilePath); err != nil {
+	if err := r.storeChunks(ctx, convertedFile, job.ChunksGeneratorConfig, result.Chunks,
+		chunksGeneratorCR.Spec.DependsOn[0].Name, job.FilePath, chunksFilePath); err != nil {
 		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
 	}
 	logger.Info("stored chunks for file", "file", job.FilePath, "taskID", job.TaskID, "chunks", len(result.Chunks))

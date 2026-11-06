@@ -136,6 +136,7 @@ type DoclingConfig struct {
 	TableCellMatching               *bool                    `json:"table_cell_matching,omitempty"`
 	DoTableStructure                *bool                    `json:"do_table_structure,omitempty"`
 	IncludeImages                   *bool                    `json:"include_images,omitempty"`
+	IncludePageImages               *bool                    `json:"include_page_images,omitempty"`
 	ImagesScale                     *float64                 `json:"images_scale,omitempty"`
 	DoCodeEnrichment                bool                     `json:"do_code_enrichment,omitempty"`
 	DoFormulaEnrichment             bool                     `json:"do_formula_enrichment,omitempty"`

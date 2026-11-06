@@ -116,6 +116,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		TableCellMatching:               cfg.TableCellMatching,
 		DoTableStructure:                cfg.DoTableStructure,
 		IncludeImages:                   cfg.IncludeImages,
+		IncludePageImages:               cfg.IncludePageImages,
 		ImagesScale:                     parseFloat64Ptr(cfg.ImagesScale),
 		DoCodeEnrichment:                cfg.DoCodeEnrichment,
 		DoFormulaEnrichment:             cfg.DoFormulaEnrichment,
@@ -211,6 +212,28 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
+// storePageImages writes one file per rendered page beside the converted
+// document, under the name PageImagePath gives it, and returns the pages it
+// wrote. On failure that is the pages written before it, so a caller never
+// records an image it does not have.
+func (r *DocumentProcessorReconciler) storePageImages(ctx context.Context,
+	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string) ([]int, error) {
+	stored := make([]int, 0, len(pageImages))
+	for _, pageImage := range pageImages {
+		imagePath := unstructured.RemapToOutputDir(
+			unstructured.PageImagePath(rawFilePath, pageImage.PageNo), inputPath, outputPath)
+		if err := r.fileStore.Store(ctx, imagePath, pageImage.Data); err != nil {
+			return stored, fmt.Errorf("storing page %d image for %s: %w", pageImage.PageNo, rawFilePath, err)
+		}
+		stored = append(stored, pageImage.PageNo)
+	}
+
+	if len(stored) > 0 {
+		log.FromContext(ctx).Info("stored page images", "filePath", rawFilePath, "pages", len(stored))
+	}
+	return stored, nil
+}
+
 func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (err error) {
 	logger := log.FromContext(ctx)
 	// recover from panic semaphore panic
@@ -265,6 +288,23 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 				"taskID", job.TaskID, "filePath", job.FilePath)
 		}
 
+		// Never fatal: the conversion succeeded, and failing here would
+		// discard it and leave a job that no attempt limit retires.
+		pageImages, strippedDocument, imageErr := docling.TakePageImages(content.DoclingDocument)
+		if imageErr != nil {
+			logger.Error(imageErr, "could not take page images, storing the document with them",
+				"taskID", job.TaskID, "filePath", job.FilePath)
+		} else if stored, storeErr := r.storePageImages(
+			ctx, pageImages, job.FilePath, inputPath, outputPath); storeErr != nil {
+			logger.Error(storeErr, "could not store page images, storing the document with them",
+				"taskID", job.TaskID, "filePath", job.FilePath, "storedBeforeFailing", len(stored))
+		} else {
+			content.DoclingDocument = strippedDocument
+			content.RenderedPages = stored
+		}
+
+		content.Markdown = docling.StripImageLinks(content.Markdown)
+
 		convertedFile := unstructured.ConvertedFile{
 			ConvertedDocument: &unstructured.ConvertedDocument{
 				Metadata: &convertedFileMetadata,
@@ -276,7 +316,8 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		if err != nil {
 			return err
 		}
-		convertedFilePath := unstructured.RemapToOutputDir(job.FilePath+".json", inputPath, outputPath)
+		convertedFilePath := unstructured.RemapToOutputDir(
+			unstructured.ConvertedFilePath(job.FilePath), inputPath, outputPath)
 		if err := r.fileStore.Store(ctx, convertedFilePath, convertedFileBytes); err != nil {
 			return err
 		}
@@ -419,7 +460,8 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 
 	// does the converted file exist in the output directory?
-	convertedFilePath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+	convertedFilePath := unstructured.RemapToOutputDir(
+		unstructured.ConvertedFilePath(rawFilePath), inputPath, outputPath)
 	convertedFileExists, err := r.fileStore.Exists(ctx, convertedFilePath)
 	if err != nil {
 		return false, err
