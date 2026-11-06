@@ -421,8 +421,7 @@ func (r *ChunksGeneratorReconciler) storeChunks(
 	convertedFilePath, chunksFilePath string,
 ) error {
 	// Written here rather than by the chunker, which resolves geometry and
-	// has no business knowing where files live. Carried in the artifact so a
-	// reader never reconstructs the writer's naming.
+	// has no business knowing where files live.
 	for chunkIndex := range chunks {
 		for regionIndex := range chunks[chunkIndex].Regions {
 			region := &chunks[chunkIndex].Regions[regionIndex]

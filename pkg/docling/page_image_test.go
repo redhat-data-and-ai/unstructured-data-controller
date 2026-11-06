@@ -112,9 +112,8 @@ func TestTakePageImages_NothingToTake(t *testing.T) {
 	}
 }
 
-// The service returns the bytes inline only because nothing asked it to write
-// them to a file target. If a future version returns a path instead, page
-// images would silently become dangling references, so this fails loudly.
+// A path instead of inline bytes would silently become a dangling reference,
+// so it has to fail loudly.
 func TestTakePageImages_RejectsAReferenceInsteadOfAnImage(t *testing.T) {
 	document := documentWithPages(`{"1":{"page_no":1,
 	  "image":{"mimetype":"image/png","uri":"artifacts/page_000001_abc.png"}}}`)
@@ -125,9 +124,7 @@ func TestTakePageImages_RejectsAReferenceInsteadOfAnImage(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotAnImageDataURI)
 }
 
-// Every export mode but "placeholder" writes an image link into the
-// markdown, and that markdown is chunked and embedded. Without this, turning
-// page images on changes every chunk's text.
+// Every export mode but "placeholder" writes an image link into the markdown.
 func TestStripImageLinks(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -165,9 +162,8 @@ func TestStripImageLinks(t *testing.T) {
 			want:     "# Heading\n\nsome text",
 		},
 		{
-			// Only docling's own generated names, so a link the author wrote
-			// survives. Losing a real reference would be worse than keeping
-			// an artifact name.
+			// Only docling's own generated names match, so a link the
+			// author wrote survives.
 			name:     "a link the document itself contains",
 			markdown: "see ![Diagram](https://example.invalid/diagram.png)",
 			want:     "see ![Diagram](https://example.invalid/diagram.png)",

@@ -29,10 +29,6 @@ import (
 
 // ErrNotAnImageDataURI reports a page image that is a reference rather than
 // the image itself.
-//
-// The service returns the bytes inline only because nothing asked it to write
-// them to a file target. If that ever changes, page images would silently
-// become dangling paths, so this is checked rather than assumed.
 var ErrNotAnImageDataURI = errors.New("page image is not an inline data URI")
 
 // PageImage is one rendered page lifted out of a document.
@@ -47,12 +43,9 @@ type PageImage struct {
 
 // TakePageImages removes every page image from a document and returns them.
 //
-// Removal is the point, not a side effect: the chunking stage posts this
-// document back to the service, so rasters left inside it are uploaded again
-// with every chunk request. The returned document is equivalent JSON with
-// each pages[].image set to null.
-//
-// A document with no page images returns no images and the input unchanged.
+// The returned document is equivalent JSON with each pages[].image set to
+// null. A document with no page images returns no images and the input
+// unchanged.
 func TakePageImages(document json.RawMessage) ([]PageImage, json.RawMessage, error) {
 	if len(document) == 0 {
 		return nil, document, nil
@@ -131,10 +124,8 @@ var artifactImageLink = regexp.MustCompile(`!\[[^\]]*\]\((?:data:image/[^)]*|(?:
 // StripImageLinks replaces docling's generated image links with the comment
 // its "placeholder" export mode writes.
 //
-// Any export mode that returns images also writes a link to them into the
-// markdown, either a filename or a whole base64 data URI. That markdown is
-// chunked and embedded, so without this, turning page images on changes
-// every chunk's text and embeds artifact names nothing can resolve.
+// The markdown is chunked and embedded, so without this, turning page images
+// on changes every chunk's text.
 func StripImageLinks(markdown string) string {
 	return artifactImageLink.ReplaceAllString(markdown, "<!-- image -->")
 }

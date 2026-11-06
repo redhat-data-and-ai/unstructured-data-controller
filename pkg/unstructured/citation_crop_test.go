@@ -29,8 +29,7 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 )
 
-// A 1000x1000 page, so a fraction is the pixel count with the decimal point
-// moved and the arithmetic can be read at a glance.
+// Tests use a 1000x1000 page, so a fraction reads as a pixel count.
 func pagePNG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	page := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -59,15 +58,12 @@ func TestCropCitation(t *testing.T) {
 
 	require.NoError(t, err)
 	width, height := decodeSize(t, cropped)
-	// 0.4 wide and 0.1 tall, plus the 0.02 margin on each side. Rounded
-	// outward on both edges so nothing is clipped, which costs a pixel or
-	// two to floating point.
+	// 0.4 wide and 0.1 tall, plus the 0.02 margin on each side, rounded
+	// outward so nothing is clipped.
 	assert.InDelta(t, 440, width, 2)
 	assert.InDelta(t, 140, height, 2)
 }
 
-// One chunk gives one image. Its blocks are cropped together, not one per
-// block, because the chunk is the thing being cited.
 func TestCropCitation_CoversEveryRegionOnThePage(t *testing.T) {
 	page := pagePNG(t, 1000, 1000)
 	regions := []docling.Region{
@@ -148,9 +144,6 @@ func TestCropCitation_NotAnImage(t *testing.T) {
 	assert.Contains(t, err.Error(), "decoding page 1 image")
 }
 
-// A region can round to nothing on a small page. An empty crop encodes to a
-// PNG that renders as nothing, which looks like a broken citation rather
-// than a failed one.
 func TestCropCitation_RejectsAnEmptyCrop(t *testing.T) {
 	page := pagePNG(t, 4, 4)
 	regions := []docling.Region{{PageNo: 1, BBox: [4]float64{0.5, 0.5, 0.5, 0.5}}}

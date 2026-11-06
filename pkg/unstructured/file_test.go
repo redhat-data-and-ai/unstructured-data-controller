@@ -27,8 +27,7 @@ func TestPageImagePath(t *testing.T) {
 	assert.Equal(t, "docs/report.pdf.page-143.png", PageImagePath("docs/report.pdf", 143))
 }
 
-// The citation path derives this from the file path and page number it
-// already holds, so the two have to agree.
+// IsPageImagePath has to recognise everything PageImagePath writes.
 func TestPageImagePathRoundTrips(t *testing.T) {
 	for _, rawFilePath := range []string{
 		"docs/report.pdf",
@@ -41,9 +40,8 @@ func TestPageImagePathRoundTrips(t *testing.T) {
 	}
 }
 
-// Two stages list the convert directory: chunking decodes every entry as
-// JSON, and the syncer copies every entry to the customer's bucket. Both
-// have to leave these behind.
+// Both the chunking stage and the syncer list the convert directory, and
+// both have to leave these behind.
 func TestWithoutPageImages(t *testing.T) {
 	kept := WithoutPageImages([]string{
 		"docs/report.pdf",

@@ -95,8 +95,7 @@ const (
 
 	DefaultTableMode = "accurate"
 	// "referenced" keeps base64 out of the markdown that flows into chunking and
-	// embedding, and still returns page images inline. "embedded" leaks a data URI
-	// into the markdown even with include_images off.
+	// embedding, and still returns page images inline.
 	DefaultImageExportMode        = "referenced"
 	DefaultImagesScale            = "2.0"
 	DefaultPictureDescMaxTokens   = 4096
@@ -417,8 +416,7 @@ type DoclingConfig struct {
 	// citation draws its highlight on. Only pdf and image inputs produce them.
 	//
 	// Defaults off under the "placeholder" export mode, which discards every
-	// image: defaulting it on there would reconvert the corpus and produce
-	// nothing. Setting both explicitly is rejected at admission.
+	// image. Setting both explicitly is rejected at admission.
 	// +optional
 	IncludePageImages *bool `json:"include_page_images,omitempty"`
 	// +optional
@@ -499,11 +497,8 @@ func (c *DoclingConfig) SetDefaults() {
 	if c.IncludeImages == nil {
 		c.IncludeImages = boolPtr(false)
 	}
-	// Not defaulted on under "placeholder", which discards every image. There
-	// is no defaulting webhook, so the API server never sees this field and
-	// the admission rule cannot catch the combination. Defaulting it on
-	// anyway would change DoclingConfig, reconvert the whole corpus, and
-	// return no images for it.
+	// Left off under "placeholder": there is no defaulting webhook, so the
+	// admission rule never sees this field and cannot catch the combination.
 	if c.IncludePageImages == nil {
 		c.IncludePageImages = boolPtr(c.ImageExportMode != "placeholder")
 	}

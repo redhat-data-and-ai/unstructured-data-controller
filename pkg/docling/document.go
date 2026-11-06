@@ -57,8 +57,8 @@ type Region struct {
 	BBox [4]float64 `json:"bbox"`
 
 	// Image locates the rendered page in the destination, relative to its
-	// prefix. Carried rather than derived so the reader never reconstructs
-	// the writer's naming. Empty for inputs that render no pages.
+	// prefix, and is empty for inputs that render no pages. Carried rather
+	// than derived so the reader never reconstructs the writer's naming.
 	Image string `json:"image,omitempty"`
 }
 

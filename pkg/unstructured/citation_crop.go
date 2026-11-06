@@ -30,8 +30,7 @@ import (
 // cropMargin pads the crop on every side, as a fraction of the page.
 //
 // Without it the cited text sits flush against the edge and a reader cannot
-// tell whether a sentence continues. Two percent of a letter page is about
-// four millimetres.
+// tell whether a sentence continues.
 const cropMargin = 0.02
 
 // ErrNoRegionsOnPage reports a request to crop a page nothing was cited on.

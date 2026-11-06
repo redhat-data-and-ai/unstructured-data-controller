@@ -213,8 +213,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 // storePageImages writes one file per rendered page beside the converted
-// document, named so a citation can find it from the file path and page
-// number it already has.
+// document, under the name PageImagePath gives it.
 func (r *DocumentProcessorReconciler) storePageImages(ctx context.Context,
 	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string) error {
 	if len(pageImages) == 0 {
@@ -288,14 +287,9 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 				"taskID", job.TaskID, "filePath", job.FilePath)
 		}
 
-		// Lifted out before the document is stored. The chunking stage posts
-		// this document back to the conversion service, so rasters left
-		// inside it are uploaded again with every chunk request.
-		//
-		// Never fatal. The conversion itself succeeded, and failing here
-		// would discard it and leave a job that no attempt limit retires,
-		// so the file would never convert again. A citation with no image
-		// beats a stage that cannot move.
+		// Never fatal: the conversion succeeded, and failing here would
+		// discard it and leave a job that no attempt limit retires, so the
+		// file would never convert again.
 		pageImages, strippedDocument, imageErr := docling.TakePageImages(content.DoclingDocument)
 		if imageErr != nil {
 			logger.Error(imageErr, "could not take page images, storing the document without them",
@@ -308,10 +302,6 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 			}
 		}
 
-		// Docling writes an image link into the markdown under every export
-		// mode but "placeholder", and that markdown is what gets chunked and
-		// embedded. Reduced back to the placeholder form so enabling page
-		// images does not change anyone's chunk text.
 		content.Markdown = docling.StripImageLinks(content.Markdown)
 
 		convertedFile := unstructured.ConvertedFile{

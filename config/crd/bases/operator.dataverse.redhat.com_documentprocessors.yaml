@@ -95,8 +95,7 @@ spec:
                           citation draws its highlight on. Only pdf and image inputs produce them.
 
                           Defaults off under the "placeholder" export mode, which discards every
-                          image: defaulting it on there would reconvert the corpus and produce
-                          nothing. Setting both explicitly is rejected at admission.
+                          image. Setting both explicitly is rejected at admission.
                         type: boolean
                       md_page_break_placeholder:
                         type: string
@@ -330,8 +329,7 @@ spec:
                             citation draws its highlight on. Only pdf and image inputs produce them.
 
                             Defaults off under the "placeholder" export mode, which discards every
-                            image: defaulting it on there would reconvert the corpus and produce
-                            nothing. Setting both explicitly is rejected at admission.
+                            image. Setting both explicitly is rejected at admission.
                           type: boolean
                         md_page_break_placeholder:
                           type: string
