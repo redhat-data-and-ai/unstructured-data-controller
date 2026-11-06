@@ -42,6 +42,8 @@ type PageImage struct {
 }
 
 // TakePageImages removes every page image from a document and returns them.
+// Removal is wanted: the chunking stage posts this document back, so rasters
+// left inside it are uploaded again with every chunk request.
 //
 // The returned document is equivalent JSON with each pages[].image set to
 // null. A document with no page images returns no images and the input

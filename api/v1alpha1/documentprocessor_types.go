@@ -95,7 +95,8 @@ const (
 
 	DefaultTableMode = "accurate"
 	// "referenced" keeps base64 out of the markdown that flows into chunking and
-	// embedding, and still returns page images inline.
+	// embedding, and still returns page images inline. "embedded" writes a data
+	// URI into that markdown even with include_images off.
 	DefaultImageExportMode        = "referenced"
 	DefaultImagesScale            = "2.0"
 	DefaultPictureDescMaxTokens   = 4096

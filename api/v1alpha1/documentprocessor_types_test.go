@@ -91,8 +91,6 @@ func TestDoclingConfig_SetDefaults_EmptyConfig(t *testing.T) {
 	}
 }
 
-// "embedded" would write a data URI into the markdown that gets chunked and
-// embedded, even with include_images off.
 func TestDoclingConfig_SetDefaults_ExportModeKeepsBase64OutOfMarkdown(t *testing.T) {
 	c := DoclingConfig{}
 	c.SetDefaults()

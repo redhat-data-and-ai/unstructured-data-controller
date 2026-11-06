@@ -52,7 +52,6 @@ func TestTakePageImages(t *testing.T) {
 	assert.Equal(t, 2, images[1].PageNo)
 	assert.Equal(t, "page two", string(images[1].Data))
 
-	// Removal is the point: the chunking stage posts this document back.
 	var remaining struct {
 		Pages map[string]struct {
 			Image any `json:"image"`
