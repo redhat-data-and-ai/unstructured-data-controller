@@ -26,6 +26,23 @@ type EmbeddingResult struct {
 	Count      int
 }
 
+// APIError is a non-2xx response from the embedding API.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API returned status %d: %s", e.StatusCode, e.Body)
+}
+
+// Retryable reports whether sending the identical request again could succeed.
+// Every 4xx but 429 is a verdict on the request itself, so a retry returns the
+// same status forever; the caller has to change the input or drop it.
+func (e *APIError) Retryable() bool {
+	return e.StatusCode == http.StatusTooManyRequests || e.StatusCode >= 500
+}
+
 // EmbeddingRequest is the JSON body for the embedding API (OpenAI-compatible).
 type EmbeddingRequest struct {
 	Model          string   `json:"model"`
@@ -126,7 +143,7 @@ func (c *HTTPClient) GenerateEmbeddings(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var embResp EmbeddingResponse
