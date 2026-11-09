@@ -26,6 +26,33 @@ type EmbeddingResult struct {
 	Count      int
 }
 
+// APIError is a non-2xx response from the embedding API.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API returned status %d: %s", e.StatusCode, e.Body)
+}
+
+// InputRejected reports whether the API refused the request because of what
+// was in it, rather than because of who asked or where it went.
+//
+// Only these statuses justify dropping an input. A 401 or a 404 is equally
+// permanent but says nothing about any one input, and a caller that reads it
+// as one discards every input it has.
+func (e *APIError) InputRejected() bool {
+	switch e.StatusCode {
+	case http.StatusBadRequest,
+		http.StatusRequestEntityTooLarge,
+		http.StatusUnprocessableEntity:
+		return true
+	default:
+		return false
+	}
+}
+
 // EmbeddingRequest is the JSON body for the embedding API (OpenAI-compatible).
 type EmbeddingRequest struct {
 	Model          string   `json:"model"`
@@ -126,7 +153,7 @@ func (c *HTTPClient) GenerateEmbeddings(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
 
 	var embResp EmbeddingResponse
