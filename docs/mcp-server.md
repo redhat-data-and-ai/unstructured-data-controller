@@ -230,34 +230,114 @@ The full authorization flow follows the [MCP Authorization specification (2025-1
 
 ## Tools
 
+All four tools are reached over `POST <MCP_PUBLIC_URL>/mcp` with a Bearer token. Access is row-level: every tool runs its Snowflake queries as the authenticated user, so a caller only ever sees the rows their Snowflake grants and row access policies allow.
+
+### Call order
+
+```
+list_unstructured_data_pipelines_for_user   <- get pipeline name
+         |
+get_chunks_for_embeddings                   <- search by query
+         |  (optional)
+get_processed_document                      <- full markdown document
+         |  (optional)
+get_citation_image                          <- cropped page image for a chunk
+```
+
+### Result shape and errors
+
+Every tool returns a normal MCP `CallToolResult`. The first content block is text: a one-line human summary followed by the JSON payload described under each tool below. `get_citation_image` appends one or more image blocks after that text.
+
+Failures are returned as a tool result with `isError: true` and a plain-text message, not as a JSON-RPC protocol error. The tool descriptions instruct agents to report the message verbatim and stop, rather than retrying against other pipelines or chunk IDs. Conditions common to every tool:
+
+| Condition                                        | Message                                                      |
+| ------------------------------------------------ | ------------------------------------------------------------ |
+| Required argument missing or empty               | `Error: ... are required. ...`                               |
+| Pipeline not in the connection's `?pipelines=` allow-list | `Error: pipeline "<name>" is not accessible in this session.` |
+| No OAuth token on the request context            | `Error: oauth token not found in context`                    |
+| Pipeline cannot be resolved, or its Snowflake database / schema / table is unset | `Error: ... pipeline "<name>" ...`               |
+
+### Glob patterns
+
+`file_path_filter` takes a glob where `*` matches any sequence of characters, including `/`. It is translated to a SQL `LIKE` pattern against `FILE_ID`, with literal `%` and `_` escaped first. Examples: `*/README.md`, `repo-name/docs/*`, `*/aemv2/*`.
+
 ### `list_unstructured_data_pipelines_for_user`
 
 Lists the UnstructuredDataPipeline custom resources the authenticated user can access (pipelines whose Snowflake database the user can query).
 
-**Parameters:** None (uses OAuth token from context).
+**Request:** no parameters (the OAuth token from the request context identifies the user).
 
-**Returns:** A JSON array of pipelines the user can access, each with:
+**Response:** a JSON array of pipeline objects.
 
-- `name`: pipeline CR name
-- `description`: human-readable summary of what the pipeline does
-- `guidance`: optional usage guidance for agents (omitted when not set)
+| Field         | Type              | Description                                                        |
+| ------------- | ----------------- | ------------------------------------------------------------------ |
+| `name`        | string            | Pipeline CR name. The value to pass as `pipeline_name` everywhere else. |
+| `description` | string            | Human-readable summary of what the pipeline contains.              |
+| `guidance`    | string (optional) | Usage guidance for agents. Omitted when not set; follow it when present. |
 
-Pipelines are filtered server-side by the user's Snowflake database access; a connection can be further restricted with the `?pipelines=` query parameter (see [Client Configuration](#client-configuration)).
+```json
+[
+  {
+    "name": "product-docs",
+    "description": "Public product documentation, PDFs and markdown.",
+    "guidance": "Prefer the latest release notes when versions conflict."
+  }
+]
+```
+
+Pipelines are filtered server-side by the user's Snowflake database access, then by the connection's `?pipelines=` allow-list (see [Client Configuration](#client-configuration)). Two non-array outcomes:
+
+- No pipelines exist in the cluster: `No pipelines are configured in this cluster.` (not an error).
+- Pipelines exist but none are accessible: `Found N pipeline(s) but you do not have access to any of them. ...` with `isError: true`.
 
 ### `get_chunks_for_embeddings`
 
-Searches for relevant text chunks in a data product using vector cosine similarity. Returns the top matching chunks for the given query (default 10, configurable via `limit` parameter), ordered best first.
+Searches for relevant text chunks in a data product using vector cosine similarity. Returns the top matching chunks for the given query (default 10, configurable via `limit`), ordered best first.
 
 Each chunk carries a `score` field holding its cosine similarity. When [reranking](#reranking) is enabled, candidates are re-scored by a cross-encoder and each chunk also carries a `reranker_score`; the cosine `score` is kept rather than overwritten. Consume the returned order directly, since neither score is guaranteed to decrease monotonically down the list.
 
-**Parameters:**
+**Request:**
 
-| Parameter          | Required | Description                                                                                                                                  |
-| ------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pipeline_name`    | Yes      | Name of the UnstructuredDataPipeline. If not known, call `list_unstructured_data_pipelines_for_user` first and pick the matching pipeline.   |
-| `query`            | Yes      | The search query to find relevant chunks (vector similarity; natural-language queries work best).                                           |
-| `file_path_filter` | No       | Glob pattern to scope the search to files matching this path (e.g. `*/README.md`, `repo-name/docs/*`).                                        |
-| `limit`            | No       | Number of chunks to return. Defaults to 10, capped at 100. A larger value returns 100 chunks and a note saying so, rather than an error.      |
+| Parameter          | Type    | Required | Description                                                                                                                                  |
+| ------------------ | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pipeline_name`    | string  | Yes      | Name of the UnstructuredDataPipeline. If not known, call `list_unstructured_data_pipelines_for_user` first and pick the matching pipeline.   |
+| `query`            | string  | Yes      | The search query to find relevant chunks (vector similarity; natural-language queries work best).                                           |
+| `file_path_filter` | string  | No       | Glob pattern scoping the search to matching files.                                                                                          |
+| `limit`            | integer | No       | Number of chunks to return. Defaults to 10, capped at 100. A larger value returns 100 chunks and a note saying so, rather than an error.      |
+
+**Response:** a JSON array of chunk objects, best first.
+
+| Field            | Type              | Description                                                                                       |
+| ---------------- | ----------------- | --------------------------------------------------------------------------------------------------- |
+| `file_id`        | string            | Source document identifier. Pass to `get_processed_document`.                                      |
+| `chunk_id`       | string            | Chunk identifier, `<file path>#<index>`. Pass to `get_citation_image`. The only identifier that survives the file being embedded again. |
+| `chunk_index`    | string            | The chunk's position in the flattened view. Not an identifier; do not pass it as `chunk_id`.       |
+| `chunk_text`     | string            | Text content of the chunk, including its heading trail.                                            |
+| `raw_text`       | string (optional) | Chunk body without the heading trail, for display.                                                 |
+| `score`          | string            | Cosine similarity, rendered as a string.                                                           |
+| `reranker_score` | number (optional) | Cross-encoder score. Present only when reranking ran and scored that chunk.                        |
+| `block_ids`      | array (optional)  | Document element identifiers the chunk came from, e.g. `["#/texts/59"]`.                           |
+| `regions`        | array (optional)  | Where the chunk sits on the source pages. See below.                                               |
+
+Each entry in `regions` is `{"pageNo": <int>, "bbox": [left, top, right, bottom], "image": "<key>"}`. Coordinates are normalised 0 to 1 from the top-left of the page. `image` locates the rendered page in the destination bucket and is empty for inputs that render no pages.
+
+```json
+[
+  {
+    "file_id": "product-docs/guide.pdf",
+    "chunk_id": "product-docs/guide.pdf#12",
+    "chunk_index": "12",
+    "chunk_text": "## Install\nRun the operator with ...",
+    "raw_text": "Run the operator with ...",
+    "score": "0.8213",
+    "reranker_score": 0.964,
+    "block_ids": ["#/texts/59"],
+    "regions": [{ "pageNo": 4, "bbox": [0.12, 0.31, 0.88, 0.47], "image": "pages/guide.pdf/4.png" }]
+  }
+]
+```
+
+The text block wrapping the array carries two notes when they apply: a `NOTE:` that `limit` was clamped to 100, and a `TIP:` naming `get_processed_document` as the follow-up call.
 
 **Typical agent flow:**
 
@@ -271,35 +351,62 @@ Each chunk carries a `score` field holding its cosine similarity. When [rerankin
 
 Retrieves the processed document output (full Markdown from the pipeline's DocumentProcessor stage). Returns up to 20 documents per call.
 
-**Parameters:**
-
-| Parameter          | Required                              | Description                                                                                                 |
-| ------------------ | ------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `pipeline_name`    | Yes                                   | Name of the UnstructuredDataPipeline. If not known, call `list_unstructured_data_pipelines_for_user` first. |
-| `file_id`          | One of `file_id` / `file_path_filter` | The exact file identifier to look up. Takes priority over `file_path_filter` when both are provided.        |
-| `file_path_filter` | One of `file_id` / `file_path_filter` | Glob pattern to retrieve processed documents from matching files (e.g. `*/README.md`).                      |
-
 Use this when chunks from `get_chunks_for_embeddings` don't provide enough context (for example, to follow up with the `file_id` of the top matching chunk).
+
+**Request:** `file_id` or `file_path_filter` is required; `file_id` wins when both are given.
+
+| Parameter          | Type   | Required                              | Description                                                                                                 |
+| ------------------ | ------ | ------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `pipeline_name`    | string | Yes                                   | Name of the UnstructuredDataPipeline. If not known, call `list_unstructured_data_pipelines_for_user` first. |
+| `file_id`          | string | One of `file_id` / `file_path_filter` | The exact file identifier, taken from the `file_id` of a chunk. Takes priority over `file_path_filter`.     |
+| `file_path_filter` | string | One of `file_id` / `file_path_filter` | Glob pattern matching the files to retrieve.                                                                |
+
+**Response:** one document object for a `file_id` lookup, an array of them for a pattern.
+
+| Field              | Type   | Description                      |
+| ------------------ | ------ | ---------------------------------- |
+| `file_id`          | string | Document identifier.             |
+| `markdown_content` | string | Full markdown text of the document. |
+
+```json
+{ "file_id": "product-docs/guide.pdf", "markdown_content": "# Guide\n..." }
+```
+
+Pattern outcomes:
+
+- No match: `No processed documents found matching "<pattern>" in pipeline "<name>".` (not an error).
+- More than 20 matches: a JSON array of `file_id` strings only, with no content, and a message to narrow the pattern or switch to `file_id`.
+- 1 to 20 matches: an array of full document objects.
 
 ### `get_citation_image`
 
 Returns the region of the source page a chunk was taken from, cropped, as an image. One image per page the chunk covers, capped at 10.
 
-**Parameters:**
+**Request:**
 
-| Parameter       | Required | Description                                                                                     |
-| --------------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `pipeline_name` | Yes      | Name of the UnstructuredDataPipeline the chunk came from. The same value passed to `get_chunks_for_embeddings`. |
-| `chunk_id`      | Yes      | The `chunk_id` of a chunk returned by `get_chunks_for_embeddings`.                              |
+| Parameter       | Type   | Required | Description                                                                                     |
+| --------------- | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `pipeline_name` | string | Yes      | Name of the UnstructuredDataPipeline the chunk came from. The same value passed to `get_chunks_for_embeddings`. |
+| `chunk_id`      | string | Yes      | The `chunk_id` of a chunk returned by `get_chunks_for_embeddings`. Must be `<file path>#<index>`; anything else is rejected as malformed. |
 
-Not every chunk has an image. Only `pdf` and `image` inputs render pages, so a chunk from a spreadsheet or a web page returns text saying so rather than an error.
+**Response:** a text block followed by the images.
+
+| Content block | Type           | Description                                                                 |
+| ------------- | -------------- | ----------------------------------------------------------------------------- |
+| `summary`     | text           | Chunk ID, source `file_id`, and the page numbers covered. Notes any pages dropped by the 10-page cap or missing from the destination. |
+| images        | `image/png`    | One per cited page, cropped to the cited region, in page order.             |
+
+Not every chunk has an image, and these cases return the summary text alone rather than an error:
+
+- The source format renders no pages (spreadsheets, web pages), or the chunk predates page image storage.
+- The page images are not in the pipeline's destination bucket.
 
 Two pipeline settings have to be in place for a citation image to exist:
 
 - The DocumentProcessor stage must have `include_page_images` on, which is the default for every `image_export_mode` other than `placeholder`.
 - The DestinationSyncer stage must list the DocumentProcessor stage in its `dependsOn`. The image is read from the destination bucket with the pipeline's own credentials, so a syncer that only syncs `embed` leaves nothing to read.
 
-The Snowflake lookup of the chunk is the authorization check and the only one: it runs as the caller, so a chunk hidden by a row access policy is reported the same way as one that does not exist.
+A chunk that is absent and a chunk hidden from the caller by a row access policy both return `Error: no chunk with that chunk_id is available in this pipeline.` The Snowflake lookup is the authorization check and the only one, so the two are deliberately indistinguishable. A failed lookup (the warehouse being briefly unreachable) is reported differently and says it is worth retrying.
 
 ## Package Structure
 
