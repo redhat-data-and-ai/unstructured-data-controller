@@ -243,6 +243,17 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 		skippedChunks = append(skippedChunks, skipped...)
 	}
 
+	// Every chunk refused is a fault in the request rather than in any chunk.
+	// A 400 also answers a bad encoding format, an unknown model, or a
+	// gateway that meets a missing credential that way, and none of those say
+	// anything about an input. Skipping them all would store an empty file,
+	// report success, and never try again, because needsEmbedding compares
+	// only the metadata.
+	if len(texts) > 0 && len(skippedChunks) == len(texts) {
+		return false, fmt.Errorf("embedding API refused all %d chunks of %s, so the request is at fault rather than the chunks",
+			len(texts), chunksFilePath)
+	}
+
 	if len(skippedChunks) > 0 {
 		logger.Info("chunks the model refused, absent from the embeddings file",
 			"file", chunksFilePath, "skipped", len(skippedChunks), "chunks", skippedChunks)
