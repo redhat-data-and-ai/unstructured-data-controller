@@ -81,6 +81,7 @@ type contextKey int
 const (
 	tokenInfoKey contextKey = iota
 	accessTokenKey
+	invalidateTokenKey
 )
 
 // TokenInfoFromContext retrieves the IntrospectionResponse stored by the auth middleware.
@@ -103,6 +104,15 @@ func AccessTokenFromContext(ctx context.Context) (string, bool) {
 // WithAccessToken stores the raw OAuth access token in the given context.
 func WithAccessToken(ctx context.Context, token string) context.Context {
 	return context.WithValue(ctx, accessTokenKey, token)
+}
+
+// InvalidateTokenFromContext retrieves the cache-invalidation function stored by the
+// auth middleware. Calling it removes the token from the introspection cache so the
+// next request is re-validated and, if the token has since expired, the middleware
+// returns 401 and triggers a fresh OAuth login.
+func InvalidateTokenFromContext(ctx context.Context) (func(), bool) {
+	fn, ok := ctx.Value(invalidateTokenKey).(func())
+	return fn, ok
 }
 
 type tokenCacheEntry struct {
@@ -188,8 +198,32 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := WithTokenInfo(r.Context(), resp)
+		// Wrap in a cancellable context. The cancel function is stored alongside the
+		// cache-invalidation so that tools can close the SSE session on the spot when
+		// the downstream OAuth token (e.g. Snowflake) expires. Closing the session
+		// forces the client to open a new connection, which re-enters this middleware,
+		// receives a 401 (token now inactive), and triggers a fresh OAuth login.
+		// defer cancel() is the cleanup path for a session that closes normally.
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		ctx = WithTokenInfo(ctx, resp)
 		ctx = WithAccessToken(ctx, token)
+		ctx = context.WithValue(ctx, invalidateTokenKey, func() {
+			// Mark the token as inactive in the cache rather than deleting it.
+			// Deleting causes re-introspection, but the SSO access token may still
+			// be valid even after the downstream Snowflake session expires (the two
+			// have independent TTLs). Re-introspection would return Active:true,
+			// middleware would let the request through, and Snowflake would reject
+			// it again. Storing Active:false forces a 401 on the next request,
+			// signalling Cursor to use the refresh_token to obtain a new access_token
+			// that starts a fresh Snowflake session.
+			m.cache.Store(token, &tokenCacheEntry{
+				response:  &IntrospectionResponse{Active: false},
+				expiresAt: time.Now().Add(m.cacheTTL),
+			})
+			cancel()
+		})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

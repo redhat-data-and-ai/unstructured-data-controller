@@ -29,6 +29,19 @@ import (
 	"github.com/snowflakedb/gosnowflake"
 )
 
+// snowflakeOAuthExpiredCode is Snowflake's error number for "OAuth access token expired"
+// (gosnowflake internal: expiredOAuthAccessTokenCode). Not exported by the driver,
+// so we mirror it here with a reference to the upstream constant for auditability.
+const snowflakeOAuthExpiredCode = 390318
+
+// IsOAuthTokenExpiredError reports whether err (or any error in its chain) is a
+// Snowflake OAuth access token expiry. The token was issued by the SSO provider
+// and has expired; the caller must re-authenticate.
+func IsOAuthTokenExpiredError(err error) bool {
+	var se *gosnowflake.SnowflakeError
+	return errors.As(err, &se) && se.Number == snowflakeOAuthExpiredCode
+}
+
 const maxQueryRetries = 3
 
 func openConnection(oauthToken string) (*sql.DB, error) {
