@@ -19,6 +19,7 @@ package gdrive
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -35,9 +36,13 @@ const MaxQueryBytes = 15000
 var ErrQueryTooLong = errors.New("search query is too long for one Drive request")
 
 // CheckQueryLength returns ErrQueryTooLong if query would be rejected for size.
+//
+// Measures the percent-encoded form, which is what actually travels. Every
+// apostrophe becomes %27 and a non-ASCII byte becomes %XX, so a term of 4000
+// CJK characters is 4073 bytes here and 36087 on the wire.
 func CheckQueryLength(query string) error {
-	if len(query) > MaxQueryBytes {
-		return fmt.Errorf("%w: %d bytes, limit %d", ErrQueryTooLong, len(query), MaxQueryBytes)
+	if encoded := len(url.QueryEscape(query)); encoded > MaxQueryBytes {
+		return fmt.Errorf("%w: %d bytes encoded, limit %d", ErrQueryTooLong, encoded, MaxQueryBytes)
 	}
 	return nil
 }
@@ -58,7 +63,10 @@ func EscapeQueryTerm(term string) string {
 // Folders are excluded because they are not documents and so are never crawl
 // rows. Shortcuts because the row that would authorise one belongs to the file
 // it points at, which is a different file from the one Drive matched.
-func BuildSearchQuery(term string, folderIDs []string) string {
+func BuildSearchQuery(term string, folderIDs []string) (string, error) {
+	if len(folderIDs) == 0 {
+		return "", ErrNoFolders
+	}
 	return fmt.Sprintf(
 		"fullText contains '%s' and trashed = false"+
 			" and mimeType != 'application/vnd.google-apps.folder'"+
@@ -66,16 +74,19 @@ func BuildSearchQuery(term string, folderIDs []string) string {
 			" and (%s)",
 		EscapeQueryTerm(term),
 		parentsClause(folderIDs),
-	)
+	), nil
 }
 
-// parentsClause builds the folder filter. An empty set yields a clause that
-// matches nothing, so a caller that fails to resolve its folders returns no
-// results rather than silently searching everything the account can see.
+// ErrNoFolders means the search was asked to cover no folders at all.
+//
+// Separate from an empty result: Drive rejects a query with no parent clause
+// as a 400, and one scoped to everything the service account can see would be
+// far worse, so the caller must stop rather than ask.
+var ErrNoFolders = errors.New("no folders to search")
+
+// parentsClause builds the folder filter. Never called with an empty set,
+// which BuildSearchQuery refuses before reaching here.
 func parentsClause(folderIDs []string) string {
-	if len(folderIDs) == 0 {
-		return "false"
-	}
 	clauses := make([]string, 0, len(folderIDs))
 	for _, folderID := range folderIDs {
 		clauses = append(clauses, fmt.Sprintf("'%s' in parents", EscapeQueryTerm(folderID)))

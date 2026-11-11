@@ -18,6 +18,7 @@ package k8sclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -25,8 +26,16 @@ import (
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// ErrPipelineNotFound means no pipeline of that name exists.
+//
+// Its own sentinel because apierrors.IsNotFound unwraps, so it also matches a
+// missing Secret, and reporting that as a bad pipeline name sends the caller
+// looking for a typo that is not there.
+var ErrPipelineNotFound = errors.New("pipeline not found")
 
 const defaultPipelineNamespace = "unstructured-controller-namespace"
 
@@ -196,6 +205,9 @@ func (c *Client) GetPipelineDriveSearchConfig(ctx context.Context, name string) 
 	namespace := pipelineNamespace()
 	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
 	if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pipeline); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: %q", ErrPipelineNotFound, name)
+		}
 		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
 	}
 

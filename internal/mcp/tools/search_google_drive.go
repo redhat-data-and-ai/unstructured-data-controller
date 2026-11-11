@@ -22,13 +22,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	drive "google.golang.org/api/drive/v3"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
@@ -70,23 +70,17 @@ type searchGoogleDriveArgs struct {
 	Limit        int    `json:"limit,omitempty" jsonschema:"Number of files to return. Defaults to 10 and is capped at 100: a larger value returns 100 files, not an error."`
 }
 
-// DriveSearchResult is one file the caller is allowed to read. FileID is what
-// get_processed_document and get_citation_image take, but only for files already
-// crawled: Drive also matches newer ones, which those tools cannot open.
+// DriveSearchResult is one file the caller is allowed to read.
+//
+// Only files the crawler has already indexed appear: access is decided from
+// the crawl table, so a file Drive matches but the crawler has not reached yet
+// has no row and is left out.
 type DriveSearchResult struct {
 	FileID       string `json:"file_id"`
 	Name         string `json:"name"`
 	MIMEType     string `json:"mime_type"`
 	ModifiedTime string `json:"modified_time"`
 	WebViewLink  string `json:"web_view_link"`
-	// DownloadURL is a short-lived link to the crawler's stored copy, which the
-	// caller can fetch with no Google credential. Empty when the file has not
-	// been stored yet, or when the link could not be signed.
-	DownloadURL string `json:"download_url,omitempty"`
-
-	// storedPath is where the crawler put the file, used to sign DownloadURL
-	// and not reported to the caller.
-	storedPath string
 }
 
 // DriveSearchOptions configures the search_google_drive tool.
@@ -175,13 +169,12 @@ type driveSearcher interface {
 // why the server refuses to register the tool without token introspection.
 func RegisterSearchGoogleDrive(s *mcp.Server, k8sClient *k8sclient.Client, opts DriveSearchOptions) {
 	folderTrees := newFolderTreeCache()
-	destinations := newDestinationClients(k8sClient)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_google_drive",
 		Description: `Find files by name or exact wording in a pipeline's Google Drive folders, using Google Drive's own search. Returns file metadata and a link, not file contents.
 Use this to locate a document the user named or described ("the Q3 revenue forecast"), or to find files containing an exact term such as an error code or a ticket ID.
-To answer a question from the content of the documents, prefer get_chunks_for_embeddings, which searches by meaning where this one matches words. Each result here carries a short-lived download_url for the file itself.
+To answer a question from the content of the documents, prefer get_chunks_for_embeddings, which searches by meaning where this one matches words.
 Matching is literal, so a word spelled differently in the document will not be found. If a search returns nothing, try a synonym or a different spelling before concluding the corpus lacks it.
 Only pipelines whose source is Google Drive support this tool. Results are limited to files the authenticated user is allowed to read, so an empty result can mean the user has no access rather than that nothing matched.
 On error: report the exact error to the user and STOP. Do NOT retry with other pipelines.`,
@@ -222,10 +215,13 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 
 		driveConfig, err := k8sClient.GetPipelineDriveSearchConfig(ctx, args.PipelineName)
 		if err != nil {
-			// "Does not expose Google Drive search" and "no such pipeline" lead
-			// somewhere different, so do not report both as a bad name.
-			message := fmt.Sprintf("Error: %s.", err)
-			if apierrors.IsNotFound(err) {
+			// A missing pipeline and a misconfigured one lead somewhere
+			// different. The sentinel is checked rather than IsNotFound, which
+			// unwraps and so also matches a missing Secret, reporting a real
+			// pipeline as nonexistent.
+			message := fmt.Sprintf("Error: pipeline %q cannot be searched. Ask an administrator to check its configuration.",
+				args.PipelineName)
+			if errors.Is(err, k8sclient.ErrPipelineNotFound) {
 				message = fmt.Sprintf("Error: there is no pipeline named %q. Please verify the pipeline name is correct.",
 					args.PipelineName)
 			}
@@ -261,29 +257,48 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		}
 		log.Info("folder tree resolved", "roots", len(driveConfig.FolderIDs), "folders", len(folderIDs))
 
-		allowed := func(ctx context.Context, fileIDs []string) ([]snowflake.ReadableFile, error) {
-			return snowflake.FilterReadableFiles(ctx, oauthToken,
-				driveConfig.Access.Database, driveConfig.Access.Schema, driveConfig.Access.Table, fileIDs)
+		// Normalised the same way every other tool does it: a hyphen is
+		// subtraction to Snowflake, and gosnowflake sends the session database
+		// verbatim, so an unnormalised name fails the login rather than the
+		// query.
+		database := strings.ToUpper(strings.ReplaceAll(driveConfig.Access.Database, "-", "_"))
+		schema := strings.ToUpper(strings.ReplaceAll(driveConfig.Access.Schema, "-", "_"))
+		table := strings.ToUpper(strings.ReplaceAll(driveConfig.Access.Table, "-", "_"))
+
+		allowed := func(ctx context.Context, fileIDs []string) ([]string, error) {
+			readable, err := snowflake.FilterReadableFiles(ctx, oauthToken,
+				database, schema, table, fileIDs)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", errAccessCheckFailed, err)
+			}
+			return readable, nil
 		}
 
 		results, outcome, err := searchDriveForUser(ctx, driveClient, args, folderIDs, allowed)
 		if err != nil {
 			// Not temporary, unlike the generic failure below, and the caller
 			// can act on it by shortening the search term.
+			if errors.Is(err, gdrive.ErrNoFolders) {
+				return toolError(log, "no folders left to search", err,
+					fmt.Sprintf("Error: pipeline %q has no Google Drive folders left to search, which usually means skipFolders excludes all of them.",
+						args.PipelineName)), nil, nil
+			}
 			if errors.Is(err, gdrive.ErrQueryTooLong) {
 				return toolError(log, "built query exceeds what Drive accepts", err,
 					fmt.Sprintf("Error: this search is too long to run against pipeline %q, because its folder list and your search term together exceed what Google Drive accepts. Try a shorter search term.",
 						args.PipelineName)), nil, nil
 			}
+			// Not Drive's fault and not transient: a bad table name or a
+			// revoked warehouse grant fails this way every time, and sending
+			// the operator to look at Drive wastes the trail.
+			if errors.Is(err, errAccessCheckFailed) {
+				return toolError(log, "could not check which files the caller may read", err,
+					fmt.Sprintf("Error: could not confirm which files in pipeline %q you are allowed to see, so no results are shown. Ask an administrator to check the pipeline's Snowflake configuration.",
+						args.PipelineName)), nil, nil
+			}
 			return toolError(log, "drive search failed", err,
 				"Error: the Google Drive search could not be completed. This is usually temporary, so it is worth retrying."), nil, nil
 		}
-
-		// Signed after filtering, so a link is only ever minted for a file the
-		// caller is already allowed to have. A failure here leaves the result
-		// without a URL rather than dropping it: the file is still a real
-		// answer, it just cannot be downloaded this way.
-		signDownloadURLs(ctx, destinations, args.PipelineName, driveConfig.StageName, results)
 
 		jsonBytes, err := json.Marshal(results)
 		if err != nil {
@@ -309,6 +324,11 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 	})
 }
 
+// errAccessCheckFailed means the warehouse could not say which files the
+// caller may read, so no verdict was reached. Distinct from a Drive failure,
+// which is usually transient, and from an empty result.
+var errAccessCheckFailed = errors.New("access check failed")
+
 // searchOutcome is what one search produced, beyond the files themselves.
 type searchOutcome struct {
 	// Incomplete is Drive's own admission that it did not search everything.
@@ -318,12 +338,11 @@ type searchOutcome struct {
 	Partial bool
 }
 
-// accessFilter reports which of the given Drive file IDs the caller may read,
-// and where each one was stored.
+// accessFilter reports which of the given Drive file IDs the caller may read.
 //
 // Implemented against Snowflake's row access policy, which is the same gate
 // every other tool in this server answers to.
-type accessFilter func(ctx context.Context, fileIDs []string) ([]snowflake.ReadableFile, error)
+type accessFilter func(ctx context.Context, fileIDs []string) ([]string, error)
 
 // searchDriveForUser runs the search and returns only the files the caller may
 // read, as decided by allowed.
@@ -340,7 +359,10 @@ func searchDriveForUser(
 ) ([]DriveSearchResult, searchOutcome, error) {
 	limit := resolveDriveLimit(args.Limit)
 
-	query := gdrive.BuildSearchQuery(args.Query, folderIDs)
+	query, err := gdrive.BuildSearchQuery(args.Query, folderIDs)
+	if err != nil {
+		return nil, searchOutcome{}, err
+	}
 	// The folder count is capped already, but the search term shares the same
 	// byte budget, so a long term can overflow a legal tree.
 	if err := gdrive.CheckQueryLength(query); err != nil {
@@ -372,9 +394,9 @@ func searchDriveForUser(
 	if err != nil {
 		return nil, searchOutcome{}, err
 	}
-	permitted := make(map[string]snowflake.ReadableFile, len(readable))
-	for _, file := range readable {
-		permitted[file.FileID] = file
+	permitted := make(map[string]bool, len(readable))
+	for _, fileID := range readable {
+		permitted[fileID] = true
 	}
 
 	// Ranked order comes from Drive, so walk candidates rather than readable.
@@ -383,13 +405,10 @@ func searchDriveForUser(
 		if len(results) >= limit {
 			break
 		}
-		stored, ok := permitted[fileID]
-		if !ok {
+		if !permitted[fileID] {
 			continue
 		}
-		result := toDriveSearchResult(byID[fileID])
-		result.storedPath = stored.FilePath
-		results = append(results, result)
+		results = append(results, toDriveSearchResult(byID[fileID]))
 	}
 
 	return results, searchOutcome{
@@ -457,13 +476,16 @@ func collectPages(
 		}
 
 		out.files = append(out.files, result.Files...)
-		if len(out.files) >= budget {
-			return out, nil
-		}
 
+		// Set before the budget check: a page with no successor means every
+		// match was read, and returning early without recording that reports
+		// partial coverage for a search that was in fact complete.
 		pageToken = result.NextPageToken
 		if pageToken == "" {
 			out.exhausted = true
+			return out, nil
+		}
+		if len(out.files) >= budget {
 			return out, nil
 		}
 	}

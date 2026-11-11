@@ -19,6 +19,7 @@ package google
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	drive "google.golang.org/api/drive/v3"
@@ -95,6 +96,16 @@ func (c *Client) ListFolderContents(
 
 // ListSubfolders returns the folders directly inside folderID, following
 // pagination. Names come back so the caller can apply a skip list.
+// escapeQueryValue makes a folder ID safe inside a single-quoted query term.
+//
+// Duplicated from gdrive.EscapeQueryTerm rather than imported, because this
+// package is below that one. An apostrophe here would close the term and
+// detach the folder scope.
+func escapeQueryValue(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	return strings.ReplaceAll(value, `'`, `\'`)
+}
+
 func (c *Client) ListSubfolders(
 	ctx context.Context,
 	folderID string,
@@ -102,7 +113,7 @@ func (c *Client) ListSubfolders(
 ) ([]*drive.File, error) {
 	query := fmt.Sprintf(
 		"'%s' in parents and trashed=false and mimeType = 'application/vnd.google-apps.folder'",
-		folderID)
+		escapeQueryValue(folderID))
 
 	var all []*drive.File
 	pageToken := ""

@@ -268,7 +268,7 @@ The full authorization flow follows the [MCP Authorization specification (2025-1
 
 ## Tools
 
-All four tools are reached over `POST <MCP_PUBLIC_URL>/mcp` with a Bearer token. Access is row-level: every tool runs its Snowflake queries as the authenticated user, so a caller only ever sees the rows their Snowflake grants and row access policies allow.
+All five tools are reached over `POST <MCP_PUBLIC_URL>/mcp` with a Bearer token. Access is row-level: every tool runs its Snowflake queries as the authenticated user, so a caller only ever sees the rows their Snowflake grants and row access policies allow.
 
 ### Call order
 
@@ -475,7 +475,7 @@ The `snowflake` block is what makes the stage searchable rather than any marker.
 
 Calling the tool on a pipeline with no Google Drive crawler returns an error naming that, rather than an empty result.
 
-Because Drive indexes faster than a crawl cycle, this tool can return a file that was uploaded since the last crawl. Such a file has no chunks and no processed document yet, so `get_chunks_for_embeddings` and `get_processed_document` will not find it by `file_id`.
+Only files the crawler has already indexed can be returned. Access is decided from the crawl table, so a file uploaded since the last crawl is matched by Drive, has no row yet, and is filtered out. It becomes searchable once the crawl picks it up.
 
 **Request:**
 

@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
 	drive "google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // FolderIDFromURL parses a Google Drive folder URL and returns the folder ID.
@@ -113,7 +115,14 @@ func ExpandFolderTree(
 		// silently return nothing, while this 404s.
 		name, err := lister.FolderName(ctx, rootID, maxRetries)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s: %w", ErrFolderUnreachable, rootID, err)
+			// Only a refusal means unshared. Telling an admin to fix sharing
+			// after a 503 sends them to the wrong place entirely.
+			var apiErr *googleapi.Error
+			if errors.As(err, &apiErr) && (apiErr.Code == http.StatusNotFound ||
+				apiErr.Code == http.StatusForbidden) {
+				return nil, fmt.Errorf("%w: %s: %w", ErrFolderUnreachable, rootID, err)
+			}
+			return nil, fmt.Errorf("reading folder %s: %w", rootID, err)
 		}
 		if skip[name] {
 			continue

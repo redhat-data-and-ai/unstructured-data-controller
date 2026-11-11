@@ -20,11 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 
 	drive "google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 )
 
 // stubLister serves a fixed folder tree, parent ID to children.
@@ -32,8 +34,11 @@ type stubLister struct {
 	tree     map[string][]*drive.File
 	names    map[string]string
 	nameErrs map[string]error
-	err      error
-	calls    int
+	// err fails every call. listErr fails only ListSubfolders, so a test can
+	// reach the walk before anything goes wrong.
+	err     error
+	listErr error
+	calls   int
 }
 
 func (s *stubLister) FolderName(_ context.Context, folderID string, _ int) (string, error) {
@@ -53,6 +58,9 @@ func (s *stubLister) ListSubfolders(_ context.Context, folderID string, _ int) (
 	s.calls++
 	if s.err != nil {
 		return nil, s.err
+	}
+	if s.listErr != nil {
+		return nil, s.listErr
 	}
 	return s.tree[folderID], nil
 }
@@ -192,7 +200,7 @@ func TestExpandFolderTreeReportsAnUnreachableRoot(t *testing.T) {
 	lister := &stubLister{
 		tree: map[string][]*drive.File{},
 		nameErrs: map[string]error{
-			"unshared-root": errors.New("googleapi: Error 404: File not found"),
+			"unshared-root": &googleapi.Error{Code: http.StatusNotFound, Message: "File not found"},
 		},
 	}
 
@@ -294,13 +302,29 @@ func TestExpandFolderTreeCountsRootsTowardTheCap(t *testing.T) {
 	}
 }
 
+// A listing failure mid-walk must stop the expansion. Continuing would
+// silently shrink the searched corpus, which looks exactly like a caller with
+// no access to those files.
+//
+// listErr rather than stubLister.err, because that one fails FolderName too
+// and the walk would end before any folder was listed.
 func TestExpandFolderTreeSurfacesAListingFailure(t *testing.T) {
-	lister := &stubLister{err: errors.New("drive 503")}
+	lister := &stubLister{
+		tree:    map[string][]*drive.File{"root": {folder("sub", "sub")}},
+		listErr: errors.New("drive 503"),
+	}
 
 	_, err := ExpandFolderTree(context.Background(), lister, []string{"root"}, nil, 1)
 
 	if err == nil {
 		t.Fatal("expected the listing failure to be reported, not swallowed")
+	}
+	if !strings.Contains(err.Error(), "drive 503") {
+		t.Errorf("error %q does not carry the listing failure", err)
+	}
+	// Not a sharing problem, so it must not be dressed as one.
+	if errors.Is(err, ErrFolderUnreachable) {
+		t.Error("a transient listing failure was reported as an unshared folder")
 	}
 }
 
@@ -341,7 +365,7 @@ func TestFolderIDFromURL(t *testing.T) {
 }
 
 func TestBuildSearchQueryScopesToFolders(t *testing.T) {
-	query := BuildSearchQuery("report", []string{"root", "sub"})
+	query, _ := BuildSearchQuery("report", []string{"root", "sub"})
 
 	for _, want := range []string{"'root' in parents", "'sub' in parents", " or "} {
 		if !strings.Contains(query, want) {
@@ -350,22 +374,8 @@ func TestBuildSearchQueryScopesToFolders(t *testing.T) {
 	}
 }
 
-// An empty folder set must match nothing. Omitting the clause instead would
-// quietly search everything the service account can see, which is wider than
-// the pipeline.
-func TestBuildSearchQueryWithNoFoldersMatchesNothing(t *testing.T) {
-	query := BuildSearchQuery("report", nil)
-
-	if !strings.Contains(query, "(false)") {
-		t.Errorf("query %q should be unsatisfiable when no folders are given", query)
-	}
-	if strings.Contains(query, "in parents") {
-		t.Errorf("query %q should name no parents", query)
-	}
-}
-
 func TestBuildSearchQueryEscapesFolderIDs(t *testing.T) {
-	query := BuildSearchQuery("report", []string{"a'b"})
+	query, _ := BuildSearchQuery("report", []string{"a'b"})
 
 	if strings.Contains(query, "'a'b' in parents") {
 		t.Errorf("folder id was not escaped in %q", query)

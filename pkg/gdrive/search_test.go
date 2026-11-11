@@ -23,6 +23,24 @@ import (
 	"testing"
 )
 
+// mustQuery builds a query for a test that is not about the empty-folder case.
+func mustQuery(t *testing.T, term string, folderIDs []string) string {
+	t.Helper()
+	query, err := BuildSearchQuery(term, folderIDs)
+	if err != nil {
+		t.Fatalf("building query: %v", err)
+	}
+	return query
+}
+
+// An empty folder set used to emit "(false)", which Drive rejects with a 400
+// rather than returning nothing. Verified against the live API.
+func TestBuildSearchQueryRefusesAnEmptyFolderSet(t *testing.T) {
+	if _, err := BuildSearchQuery("anything", nil); !errors.Is(err, ErrNoFolders) {
+		t.Fatalf("error = %v, want one wrapping ErrNoFolders", err)
+	}
+}
+
 func TestEscapeQueryTerm(t *testing.T) {
 	tests := []struct {
 		name string
@@ -57,7 +75,7 @@ func TestEscapeQueryTerm(t *testing.T) {
 }
 
 func TestBuildSearchQueryExcludesFoldersAndTrash(t *testing.T) {
-	query := BuildSearchQuery("report", []string{"folder1"})
+	query, _ := BuildSearchQuery("report", []string{"folder1"})
 
 	for _, want := range []string{
 		"fullText contains 'report'",
@@ -100,12 +118,12 @@ func TestCheckQueryLengthCatchesALongTermUnderTheFolderCap(t *testing.T) {
 		folderIDs = append(folderIDs, fmt.Sprintf("1zzzTESTFOLDERIDPADDINGPAD%07d", i))
 	}
 
-	if err := CheckQueryLength(BuildSearchQuery("budget", folderIDs)); err != nil {
+	if err := CheckQueryLength(mustQuery(t, "budget", folderIDs)); err != nil {
 		t.Fatalf("a full tree with a short term should pass: %v", err)
 	}
 
 	longTerm := strings.Repeat("x", 4000)
-	err := CheckQueryLength(BuildSearchQuery(longTerm, folderIDs))
+	err := CheckQueryLength(mustQuery(t, longTerm, folderIDs))
 	if !errors.Is(err, ErrQueryTooLong) {
 		t.Fatalf("error = %v, want one wrapping ErrQueryTooLong", err)
 	}
