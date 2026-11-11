@@ -38,14 +38,7 @@ func CropRegion(pageImage []byte, bbox [4]float64) ([]byte, error) {
 		return nil, fmt.Errorf("decoding page image: %w", err)
 	}
 
-	bounds := [4]float64{
-		math.Max(0, math.Min(bbox[0], bbox[2])),
-		math.Max(0, math.Min(bbox[1], bbox[3])),
-		math.Min(1, math.Max(bbox[0], bbox[2])),
-		math.Min(1, math.Max(bbox[1], bbox[3])),
-	}
-
-	cropped, err := cropFraction(decoded, bounds)
+	cropped, err := cropFraction(decoded, bbox)
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +48,25 @@ func CropRegion(pageImage []byte, bbox [4]float64) ([]byte, error) {
 		return nil, fmt.Errorf("encoding region crop: %w", err)
 	}
 	return out.Bytes(), nil
+}
+
+// pixelRect turns a 0 to 1 box into pixels inside bounds. Edges that arrive
+// the wrong way round are put back in order and clamped before conversion,
+// and the result is rounded outward so no cited pixel is left out. Both the
+// crop and the highlight go through here, so the two agree on which pixels a
+// region covers.
+func pixelRect(bounds image.Rectangle, box [4]float64) image.Rectangle {
+	left := math.Max(0, math.Min(box[0], box[2]))
+	top := math.Max(0, math.Min(box[1], box[3]))
+	right := math.Min(1, math.Max(box[0], box[2]))
+	bottom := math.Min(1, math.Max(box[1], box[3]))
+
+	return image.Rect(
+		bounds.Min.X+int(left*float64(bounds.Dx())),
+		bounds.Min.Y+int(top*float64(bounds.Dy())),
+		bounds.Min.X+int(math.Ceil(right*float64(bounds.Dx()))),
+		bounds.Min.Y+int(math.Ceil(bottom*float64(bounds.Dy()))),
+	).Intersect(bounds)
 }
 
 // cropFraction turns a 0 to 1 box into pixels and cuts it out.
@@ -69,12 +81,7 @@ func cropFraction(source image.Image, box [4]float64) (image.Image, error) {
 	}
 
 	size := source.Bounds()
-	rect := image.Rect(
-		size.Min.X+int(box[0]*float64(size.Dx())),
-		size.Min.Y+int(box[1]*float64(size.Dy())),
-		size.Min.X+int(math.Ceil(box[2]*float64(size.Dx()))),
-		size.Min.Y+int(math.Ceil(box[3]*float64(size.Dy()))),
-	).Intersect(size)
+	rect := pixelRect(size, box)
 
 	// A region can round to nothing on a small page, and an empty crop
 	// encodes to a zero-sized PNG that renders as nothing at all.

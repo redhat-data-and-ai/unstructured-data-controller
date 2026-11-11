@@ -27,13 +27,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Tests use a 1000x1000 page, so a fraction reads as a pixel count.
-func pagePNG(t *testing.T, width, height int) []byte {
+// The four quadrant colours. A uniform page would let a crop taken at the
+// wrong offset pass every size assertion, so each quarter is distinct and
+// crops are checked by what they contain.
+var (
+	topLeft     = color.RGBA{R: 255, A: 255}
+	topRight    = color.RGBA{G: 255, A: 255}
+	bottomLeft  = color.RGBA{B: 255, A: 255}
+	bottomRight = color.RGBA{R: 255, G: 255, A: 255}
+)
+
+// quadrantPNG returns a page split into four solid colours.
+func quadrantPNG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	page := image.NewRGBA(image.Rect(0, 0, width, height))
 	for x := range width {
 		for y := range height {
-			page.Set(x, y, color.White)
+			switch {
+			case x < width/2 && y < height/2:
+				page.Set(x, y, topLeft)
+			case y < height/2:
+				page.Set(x, y, topRight)
+			case x < width/2:
+				page.Set(x, y, bottomLeft)
+			default:
+				page.Set(x, y, bottomRight)
+			}
 		}
 	}
 	var out bytes.Buffer
@@ -48,8 +67,60 @@ func decodeSize(t *testing.T, raw []byte) (int, int) {
 	return decoded.Bounds().Dx(), decoded.Bounds().Dy()
 }
 
-func TestCropRegion(t *testing.T) {
-	cropped, err := CropRegion(pagePNG(t, 1000, 1000), [4]float64{0.2, 0.3, 0.6, 0.4})
+// soleColor asserts the crop is one flat colour and returns it, which is what
+// proves the crop came from the quadrant it was asked for.
+func soleColor(t *testing.T, raw []byte) color.RGBA {
+	t.Helper()
+	decoded, err := png.Decode(bytes.NewReader(raw))
+	require.NoError(t, err)
+
+	at := func(x, y int) color.RGBA {
+		r, g, b, a := decoded.At(x, y).RGBA()
+		return color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: uint8(a >> 8)}
+	}
+	bounds := decoded.Bounds()
+	first := at(bounds.Min.X, bounds.Min.Y)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			require.Equal(t, first, at(x, y), "crop is not one flat colour, at (%d,%d)", x, y)
+		}
+	}
+	return first
+}
+
+func TestCropRegion_CutsTheRegionAsked(t *testing.T) {
+	page := quadrantPNG(t, 1000, 1000)
+
+	tests := []struct {
+		name string
+		bbox [4]float64
+		want color.RGBA
+	}{
+		{name: "top left quadrant", bbox: [4]float64{0, 0, 0.5, 0.5}, want: topLeft},
+		{name: "top right quadrant", bbox: [4]float64{0.5, 0, 1, 0.5}, want: topRight},
+		{name: "bottom left quadrant", bbox: [4]float64{0, 0.5, 0.5, 1}, want: bottomLeft},
+		{name: "bottom right quadrant", bbox: [4]float64{0.5, 0.5, 1, 1}, want: bottomRight},
+		// Edges the wrong way round must still name the same quadrant, not
+		// its complement.
+		{name: "inverted top right", bbox: [4]float64{1, 0.5, 0.5, 0}, want: topRight},
+		{name: "inverted bottom left", bbox: [4]float64{0.5, 1, 0, 0.5}, want: bottomLeft},
+		// Clamped back onto the page, so still wholly inside one quadrant.
+		{name: "overhanging bottom right", bbox: [4]float64{0.6, 0.6, 1.8, 1.8}, want: bottomRight},
+		{name: "underhanging top left", bbox: [4]float64{-0.8, -0.8, 0.4, 0.4}, want: topLeft},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cropped, err := CropRegion(page, test.bbox)
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, soleColor(t, cropped))
+		})
+	}
+}
+
+func TestCropRegion_Size(t *testing.T) {
+	cropped, err := CropRegion(quadrantPNG(t, 1000, 1000), [4]float64{0.2, 0.3, 0.6, 0.4})
 
 	require.NoError(t, err)
 	width, height := decodeSize(t, cropped)
@@ -61,7 +132,7 @@ func TestCropRegion(t *testing.T) {
 // A box covering the whole page must crop to the whole page rather than
 // overrun it, which would either panic or silently return a smaller image.
 func TestCropRegion_ClampsAtTheEdges(t *testing.T) {
-	cropped, err := CropRegion(pagePNG(t, 1000, 1000), [4]float64{0, 0, 1, 1})
+	cropped, err := CropRegion(quadrantPNG(t, 1000, 1000), [4]float64{0, 0, 1, 1})
 
 	require.NoError(t, err)
 	width, height := decodeSize(t, cropped)
@@ -69,28 +140,14 @@ func TestCropRegion_ClampsAtTheEdges(t *testing.T) {
 	assert.Equal(t, 1000, height)
 }
 
-// A box running off the page keeps the part that is on it.
-func TestCropRegion_ClampsAnOverhangingBox(t *testing.T) {
-	cropped, err := CropRegion(pagePNG(t, 1000, 1000), [4]float64{0.8, 0.8, 1.4, 1.4})
+// Rounding outward keeps a sliver of a region rather than losing it, which is
+// what lets the crop and the highlight agree on sub-pixel boxes.
+func TestCropRegion_KeepsASubPixelRegion(t *testing.T) {
+	cropped, err := CropRegion(quadrantPNG(t, 1000, 1000), [4]float64{0.5001, 0.2, 0.5004, 0.3})
 
 	require.NoError(t, err)
-	width, height := decodeSize(t, cropped)
-	assert.InDelta(t, 200, width, 2)
-	assert.InDelta(t, 200, height, 2)
-}
-
-// image.Rect swaps an inverted rectangle rather than refusing it, so a box
-// that arrives the wrong way round would crop the complement of the citation
-// and look entirely plausible doing it.
-func TestCropRegion_BoxTheWrongWayRound(t *testing.T) {
-	page := pagePNG(t, 1000, 1000)
-
-	fromUpright, err := CropRegion(page, [4]float64{0.2, 0.3, 0.6, 0.4})
-	require.NoError(t, err)
-	fromInverted, err := CropRegion(page, [4]float64{0.6, 0.4, 0.2, 0.3})
-	require.NoError(t, err)
-
-	assert.Equal(t, fromUpright, fromInverted, "the same region, however its edges arrive")
+	width, _ := decodeSize(t, cropped)
+	assert.Equal(t, 1, width)
 }
 
 func TestCropRegion_Errors(t *testing.T) {
@@ -107,16 +164,16 @@ func TestCropRegion_Errors(t *testing.T) {
 			wantErr: "decoding page image",
 		},
 		{
-			// Nothing pads this out, so the box covers no pixels and is rejected
-			// rather than encoded as a zero-sized PNG that renders as nothing.
+			// Nothing pads this out, so the box covers no pixels and is
+			// rejected rather than encoded as a zero-sized PNG.
 			name:    "region rounds to no pixels",
-			page:    pagePNG(t, 4, 4),
+			page:    quadrantPNG(t, 4, 4),
 			bbox:    [4]float64{0.5, 0.5, 0.5, 0.5},
 			wantErr: "is empty against a 4x4 page",
 		},
 		{
 			name:    "region lies entirely off the page",
-			page:    pagePNG(t, 1000, 1000),
+			page:    quadrantPNG(t, 1000, 1000),
 			bbox:    [4]float64{1.5, 1.5, 2, 2},
 			wantErr: "is empty against a 1000x1000 page",
 		},
@@ -129,6 +186,46 @@ func TestCropRegion_Errors(t *testing.T) {
 			require.Error(t, err)
 			assert.Nil(t, cropped)
 			assert.Contains(t, err.Error(), test.wantErr)
+		})
+	}
+}
+
+// pixelRect is the one place the crop and the highlight agree on which pixels
+// a region covers, so its rounding and clamping are pinned here.
+func TestPixelRect(t *testing.T) {
+	page := image.Rect(0, 0, 1000, 1000)
+
+	tests := []struct {
+		name string
+		box  [4]float64
+		want image.Rectangle
+	}{
+		{name: "whole page", box: [4]float64{0, 0, 1, 1}, want: image.Rect(0, 0, 1000, 1000)},
+		{name: "upright box", box: [4]float64{0.2, 0.3, 0.6, 0.4}, want: image.Rect(200, 300, 600, 400)},
+		{name: "edges the wrong way round", box: [4]float64{0.6, 0.4, 0.2, 0.3}, want: image.Rect(200, 300, 600, 400)},
+		{name: "clamped to the page", box: [4]float64{-0.5, -0.5, 0.4, 0.4}, want: image.Rect(0, 0, 400, 400)},
+		{
+			name: "rounds outward, never clipping",
+			box:  [4]float64{0.2001, 0.3001, 0.5999, 0.4999},
+			want: image.Rect(200, 300, 600, 500),
+		},
+		{
+			name: "sub-pixel box keeps one pixel",
+			box:  [4]float64{0.5001, 0.2, 0.5004, 0.3},
+			want: image.Rect(500, 200, 501, 300),
+		},
+		// Intersect normalises anything empty to the zero rectangle, so these
+		// two are reported as empty rather than as a degenerate box in place.
+		{name: "zero extent is empty", box: [4]float64{0.5, 0.5, 0.5, 0.5}, want: image.Rectangle{}},
+		{name: "wholly off the page is empty", box: [4]float64{1.5, 1.5, 2, 2}, want: image.Rectangle{}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := pixelRect(page, test.box)
+
+			assert.Equal(t, test.want, got)
+			assert.Equal(t, test.want.Empty(), got.Empty())
 		})
 	}
 }

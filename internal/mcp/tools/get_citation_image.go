@@ -46,16 +46,30 @@ import (
 type getCitationImageArgs struct {
 	PipelineName string `json:"pipeline_name" jsonschema:"Name of the UnstructuredDataPipeline the chunk came from. Use the same value passed to get_chunks_for_embeddings."`
 	ChunkID      string `json:"chunk_id" jsonschema:"The chunk_id of a chunk returned by get_chunks_for_embeddings."`
-	// Annotate controls the image mode. When true (default), one full page per
-	// cited page is returned with every cited region on it highlighted, so the
-	// reader sees the chunk in context. When false, one crop per cited region
-	// is returned instead.
-	Annotate *bool `json:"annotate,omitempty" jsonschema:"When true (default), returns one full page image per cited page, with every cited region on it highlighted in yellow inside a blue outline. When false, returns one cropped image per cited region of the chunk."`
+	// Mode selects the shape of the response. Defaults to modeHighlight when
+	// omitted, so a caller that does not care gets the chunk in context.
+	Mode string `json:"mode,omitempty" jsonschema:"One of \"highlight\" or \"crop\". \"highlight\" (the default) returns one full page image per cited page, with every cited region on it marked in yellow inside a dotted black outline, so the reader sees the chunk in context. \"crop\" returns one cropped image per cited region of the chunk, with no surrounding page."`
 }
 
-// isAnnotate returns true when the caller wants the annotated full-page mode,
-// which is the default when the field is omitted.
-func isAnnotate(v *bool) bool { return v == nil || *v }
+// The two shapes get_citation_image can return.
+const (
+	modeHighlight = "highlight"
+	modeCrop      = "crop"
+)
+
+// citationMode normalises the mode argument. Omitted means modeHighlight;
+// anything unrecognised is refused rather than guessed at, so a caller that
+// misspells "crop" is told instead of being handed full pages.
+func citationMode(mode string) (string, error) {
+	switch normalised := strings.ToLower(strings.TrimSpace(mode)); normalised {
+	case "":
+		return modeHighlight, nil
+	case modeHighlight, modeCrop:
+		return normalised, nil
+	default:
+		return "", fmt.Errorf("mode %q is not %q or %q", mode, modeHighlight, modeCrop)
+	}
+}
 
 // maxCitationPages bounds how many images one call returns. A chunk spans a
 // handful of pages at most, so a larger number means the regions are wrong.
@@ -187,7 +201,9 @@ func RegisterGetCitationImage(s *mcp.Server, k8sClient *k8sclient.Client) {
 		Name: "get_citation_image",
 		Description: `Return an image showing where in the source page a chunk was taken from.
 
-By default (annotate omitted or true), returns the full page with each cited region highlighted in yellow inside a blue outline, so the reader can see the chunk in context, and one image is returned per page the chunk covers: a chunk spanning a page break returns two. Pass annotate=false to get the cited regions cropped out on their own instead, one image per region.
+Always set mode explicitly, to either "highlight" or "crop". These are two views of the same citation, not two different pieces of evidence, so pick the one that answers the question and call this tool ONCE per chunk. Do NOT call it again for the same chunk with the other mode: it returns the same region a second time and tells you nothing new.
+  - "highlight" (the default if you omit mode) returns the full page with each cited region marked in yellow inside a dotted black outline. Use it to show the reader where on the page an answer came from. One image per page the chunk covers, so a chunk spanning a page break returns two.
+  - "crop" returns only the cited regions, cut out with no surrounding page. Use it when the reader only needs the cited text itself. One image per region, so a chunk covering several blocks on one page returns several.
 
 Use this after get_chunks_for_embeddings has given you a chunk_id.
 Not every chunk has one. Only PDFs and images have pages to render, so a chunk from a spreadsheet or a web page has text and no picture, and the tool says so rather than failing.
@@ -200,11 +216,17 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		ctx = logger.NewContext(ctx, uuid.NewString(), "get_citation_image", username)
 		log := logger.FromContext(ctx)
 
-		log.Info("tool invoked", "pipeline_name", args.PipelineName, "chunk_id", args.ChunkID, "annotate", isAnnotate(args.Annotate))
+		log.Info("tool invoked", "pipeline_name", args.PipelineName, "chunk_id", args.ChunkID, "mode", args.Mode)
 
 		if args.PipelineName == "" || args.ChunkID == "" {
 			return toolError(log, "missing required parameters", nil,
 				"Error: pipeline_name and chunk_id are required. Call get_chunks_for_embeddings first."), nil, nil
+		}
+
+		mode, modeErr := citationMode(args.Mode)
+		if modeErr != nil {
+			return toolError(log, "unrecognised mode", modeErr,
+				fmt.Sprintf("Error: mode must be %q or %q.", modeHighlight, modeCrop)), nil, nil
 		}
 
 		// Validated rather than split: it is caller supplied, and it is bound
@@ -295,10 +317,10 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		var missing []int
 
 		var failure *mcp.CallToolResult
-		if isAnnotate(args.Annotate) {
-			images, missing, failure = annotatedPages(ctx, log, destination, regions, pages)
+		if mode == modeHighlight {
+			images, missing, failure = highlightedPages(ctx, log, destination, regions, pages)
 		} else {
-			images, missing, failure = croppedRegions(ctx, log, destination, regions)
+			images, missing, failure = croppedRegions(ctx, log, destination, regions, pages)
 		}
 		if failure != nil {
 			return failure, nil, nil
@@ -316,24 +338,28 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 
 		log.Info("completed successfully", "pipeline", args.PipelineName,
 			"chunk_id", args.ChunkID, "images", len(images), "missing", len(missing),
-			"annotate", isAnnotate(args.Annotate))
+			"mode", mode)
 		return &mcp.CallToolResult{Content: content}, nil, nil
 	})
 }
 
-// annotatedPages renders one full page per cited page, each with its regions
+// highlightedPages renders one full page per cited page, each with its regions
 // highlighted. It returns the images, the pages absent from the destination,
 // and a non-nil result the tool should return as-is when a page fails for any
 // other reason.
-func annotatedPages(ctx context.Context, log *slog.Logger, destination *destinationClient,
+func highlightedPages(ctx context.Context, log *slog.Logger, destination *destinationClient,
 	regions []docling.Region, pages []citedPage) ([]mcp.Content, []int, *mcp.CallToolResult) {
 	var images []mcp.Content
 	var missing []int
 
 	for _, page := range pages {
-		pageBytes, pageErr := annotatePage(ctx, destination, regions, page)
-		if errors.Is(pageErr, errPageImageMissing) {
-			log.Info("page image is not in the destination", "page", page.pageNo, "error", pageErr)
+		pageBytes, pageErr := highlightPage(ctx, destination, regions, page)
+		// A page whose regions all collapse to no pixels is skipped for the
+		// same reason a missing one is: the chunk's other pages still are
+		// worth showing.
+		if errors.Is(pageErr, errPageImageMissing) ||
+			errors.Is(pageErr, unstructured.ErrNoRegionsOnPage) {
+			log.Info("no citation image for page", "page", page.pageNo, "error", pageErr)
 			missing = append(missing, page.pageNo)
 			continue
 		}
@@ -346,29 +372,35 @@ func annotatedPages(ctx context.Context, log *slog.Logger, destination *destinat
 	return images, missing, nil
 }
 
-// croppedRegions cuts one image per cited region. Page images are cached so
-// the same page is not fetched again for every region on it. Returns are as
-// for annotatedPages.
+// croppedRegions cuts one image per cited region. Regions are matched to
+// pages by number, so the maxCitationPages cap that built pages bounds this
+// path too and the cache key identifies the bytes it holds. Page images are
+// cached so the same page is not fetched again for every region on it.
+// Returns are as for highlightedPages.
 func croppedRegions(ctx context.Context, log *slog.Logger, destination *destinationClient,
-	regions []docling.Region) ([]mcp.Content, []int, *mcp.CallToolResult) {
+	regions []docling.Region, pages []citedPage) ([]mcp.Content, []int, *mcp.CallToolResult) {
 	var images []mcp.Content
 	var missing []int
+	pageKeys := make(map[int]string, len(pages))
+	for _, page := range pages {
+		pageKeys[page.pageNo] = page.image
+	}
 	pageCache := map[int][]byte{}
 	missingPages := map[int]bool{}
 
 	for _, region := range regions {
-		if region.Image == "" {
+		key, cited := pageKeys[region.PageNo]
+		if !cited || missingPages[region.PageNo] {
 			continue
 		}
 		pageImage, cached := pageCache[region.PageNo]
 		if !cached {
 			var fetchErr error
-			pageImage, fetchErr = destination.fetch(ctx, region.Image)
+			pageImage, fetchErr = destination.fetch(ctx, key)
 			if errors.Is(fetchErr, errPageImageMissing) {
-				if !missingPages[region.PageNo] {
-					missingPages[region.PageNo] = true
-					missing = append(missing, region.PageNo)
-				}
+				log.Info("page image is not in the destination", "page", region.PageNo, "error", fetchErr)
+				missingPages[region.PageNo] = true
+				missing = append(missing, region.PageNo)
 				continue
 			}
 			if fetchErr != nil {
@@ -379,23 +411,26 @@ func croppedRegions(ctx context.Context, log *slog.Logger, destination *destinat
 		}
 		cropped, cropErr := unstructured.CropRegion(pageImage, region.BBox)
 		if cropErr != nil {
-			return nil, nil, toolError(log, "failed to crop region", cropErr,
-				fmt.Sprintf("Error: unable to crop a region on page %d.", region.PageNo))
+			// Skipped rather than fatal, because the other regions of this
+			// chunk are still worth showing. A box that rounds to no pixels
+			// is the ordinary cause.
+			log.Info("region could not be cropped", "page", region.PageNo, "error", cropErr)
+			continue
 		}
 		images = append(images, &mcp.ImageContent{Data: cropped, MIMEType: "image/png"})
 	}
 	return images, missing, nil
 }
 
-// annotatePage fetches one page's full image and highlights the cited regions
+// highlightPage fetches one page's full image and highlights the cited regions
 // on it.
-func annotatePage(ctx context.Context, destination *destinationClient,
+func highlightPage(ctx context.Context, destination *destinationClient,
 	regions []docling.Region, page citedPage) ([]byte, error) {
 	pageImage, err := destination.fetch(ctx, page.image)
 	if err != nil {
 		return nil, err
 	}
-	return unstructured.AnnotateCitation(pageImage, regions, page.pageNo)
+	return unstructured.HighlightCitation(ctx, pageImage, regions, page.pageNo)
 }
 
 // citedPage is one page of a chunk and where its image lives.

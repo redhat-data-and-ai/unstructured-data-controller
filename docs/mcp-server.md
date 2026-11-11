@@ -418,12 +418,14 @@ Pattern outcomes:
 
 ### `get_citation_image`
 
-Returns the source page imagery a chunk was taken from. `annotate` picks between two shapes, and a response is one shape or the other, never both:
+Returns the source page imagery a chunk was taken from. `mode` picks between two shapes, and a response is one shape or the other, never both:
 
-- `annotate: true` (the default) returns the **full page with the cited regions highlighted**, so the chunk is readable in its surrounding context. One image per cited page, capped at 10 pages.
-- `annotate: false` returns **only the cited regions, cropped** flush to each bounding box. One image per region, so a chunk covering several blocks on one page yields several images.
+- `mode: "highlight"` (the default) returns the **full page with the cited regions highlighted**, so the chunk is readable in its surrounding context. One image per cited page, capped at 10 pages.
+- `mode: "crop"` returns **only the cited regions, cropped** flush to each bounding box. One image per region, so a chunk covering several blocks on one page yields several images.
 
-The highlight is a translucent yellow wash over each cited region inside a blue outline, with a thin white rule outside the outline so the box stays visible on a dark or coloured page. Everything is composited, not painted over, so the text under the wash stays legible.
+An unrecognised `mode` is rejected rather than treated as the default.
+
+The highlight is a translucent yellow wash over each cited region inside a dotted black outline, with a thin white rule outside the outline so the box stays visible on a dark or coloured page. Everything is composited, not painted over, so the text under the wash stays legible.
 
 **Request:**
 
@@ -431,14 +433,14 @@ The highlight is a translucent yellow wash over each cited region inside a blue 
 | --------------- | ------ | -------- | ------------------------------------------------------------------------------------------------ |
 | `pipeline_name` | string | Yes      | Name of the UnstructuredDataPipeline the chunk came from. The same value passed to `get_chunks_for_embeddings`. |
 | `chunk_id`      | string | Yes      | The `chunk_id` of a chunk returned by `get_chunks_for_embeddings`. Must be `<file path>#<index>`; anything else is rejected as malformed. |
-| `annotate`      | bool   | No       | Defaults to `true`, the highlighted full page. Set `false` for cropped regions only. |
+| `mode`          | string | No       | `"highlight"` or `"crop"`. Defaults to `"highlight"`, the full page with the regions marked. Use `"crop"` for the cited regions on their own. |
 
 **Response:** a text block followed by the images.
 
 | Content block | Type           | Description                                                                 |
 | ------------- | -------------- | ----------------------------------------------------------------------------- |
 | `summary`     | text           | Chunk ID, source `file_id`, and the page numbers covered. Notes any pages dropped by the 10-page cap or missing from the destination. |
-| images        | `image/png`    | With `annotate: true`, one full page per cited page with its regions highlighted, in page order. With `annotate: false`, one crop per cited region. |
+| images        | `image/png`    | With `mode: "highlight"`, one full page per cited page with its regions marked, in page order. With `mode: "crop"`, one crop per cited region. |
 
 Not every chunk has an image, and these cases return the summary text alone rather than an error:
 

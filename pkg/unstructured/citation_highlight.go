@@ -18,18 +18,18 @@ package unstructured
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
-	"math"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
 )
 
-// ErrNoRegionsOnPage reports a request to annotate a page nothing was cited on.
+// ErrNoRegionsOnPage reports a request to highlight a page nothing was cited on.
 var ErrNoRegionsOnPage = errors.New("no regions on that page")
 
 const (
@@ -44,6 +44,11 @@ const (
 	// highlightDash is the length in pixels of each dash, and of the gap after
 	// it.
 	highlightDash = 3
+
+	// maxRegionsPerPage bounds the compositing one page can be asked to do.
+	// The regions are caller data read back out of the warehouse, and a chunk
+	// cites a handful of blocks, so a larger number means they are wrong.
+	maxRegionsPerPage = 50
 )
 
 // A highlighter-yellow wash inside a dotted black outline. Both stay
@@ -63,10 +68,15 @@ var (
 	highlightHalo   = color.NRGBA{R: 255, G: 255, B: 255, A: 200}
 )
 
-// AnnotateCitation tints every cited region on the given page, outlines it in
-// blue, and returns the annotated full-page PNG. The image is not cropped: the
+// HighlightCitation tints every cited region on the given page, outlines it,
+// and returns the highlighted full-page PNG. The image is not cropped: the
 // caller receives the entire page so the region is visible in context.
-func AnnotateCitation(pageImage []byte, regions []docling.Region, pageNo int) ([]byte, error) {
+//
+// Returns ErrNoRegionsOnPage if nothing was painted, so a page whose regions
+// all collapse to no pixels is refused rather than returned unmarked. At most
+// maxRegionsPerPage regions are drawn, and ctx is honoured between them.
+func HighlightCitation(ctx context.Context, pageImage []byte,
+	regions []docling.Region, pageNo int) ([]byte, error) {
 	decoded, _, err := image.Decode(bytes.NewReader(pageImage))
 	if err != nil {
 		return nil, fmt.Errorf("decoding page %d image: %w", pageNo, err)
@@ -76,13 +86,20 @@ func AnnotateCitation(pageImage []byte, regions []docling.Region, pageNo int) ([
 	dst := image.NewRGBA(decoded.Bounds())
 	draw.Draw(dst, decoded.Bounds(), decoded, image.Point{}, draw.Src)
 
-	drew := false
+	drew, drawn := false, 0
 	for _, r := range regions {
-		if r.PageNo != pageNo {
+		if r.PageNo != pageNo || drawn == maxRegionsPerPage {
 			continue
 		}
-		drawHighlight(dst, r.BBox)
-		drew = true
+		// Compositing a region is unbounded work on caller data, so a
+		// cancelled request stops here rather than running to completion.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("annotating page %d: %w", pageNo, ctxErr)
+		}
+		if drawHighlight(dst, r.BBox) {
+			drew = true
+		}
+		drawn++
 	}
 	if !drew {
 		return nil, fmt.Errorf("%w: page %d", ErrNoRegionsOnPage, pageNo)
@@ -90,25 +107,19 @@ func AnnotateCitation(pageImage []byte, regions []docling.Region, pageNo int) ([
 
 	var out bytes.Buffer
 	if err := png.Encode(&out, dst); err != nil {
-		return nil, fmt.Errorf("encoding annotated page %d: %w", pageNo, err)
+		return nil, fmt.Errorf("encoding highlighted page %d: %w", pageNo, err)
 	}
 	return out.Bytes(), nil
 }
 
-// drawHighlight washes the region in blue and outlines it, flush to the cited
-// box. The wash is composited with draw.Over at a low alpha, so the document
-// text underneath shifts by too little to see: black lands on rgb(0,19,40)
-// rather than being replaced.
-func drawHighlight(dst *image.RGBA, box [4]float64) {
-	size := dst.Bounds()
-	x0 := size.Min.X + int(math.Round(math.Max(0, math.Min(box[0], box[2]))*float64(size.Dx())))
-	y0 := size.Min.Y + int(math.Round(math.Max(0, math.Min(box[1], box[3]))*float64(size.Dy())))
-	x1 := size.Min.X + int(math.Round(math.Min(1, math.Max(box[0], box[2]))*float64(size.Dx())))
-	y1 := size.Min.Y + int(math.Round(math.Min(1, math.Max(box[1], box[3]))*float64(size.Dy())))
-
-	r := image.Rect(x0, y0, x1, y1).Intersect(size)
+// drawHighlight washes the region in yellow and outlines it, flush to the
+// cited box, reporting whether it painted anything. The wash is composited
+// with draw.Over at a low alpha, so the document text underneath shifts but
+// stays legible: black lands on rgb(64,60,0) rather than being replaced.
+func drawHighlight(dst *image.RGBA, box [4]float64) bool {
+	r := pixelRect(dst.Bounds(), box)
 	if r.Empty() {
-		return
+		return false
 	}
 
 	draw.Draw(dst, r, image.NewUniform(highlightFill), image.Point{}, draw.Over)
@@ -117,6 +128,7 @@ func drawHighlight(dst *image.RGBA, box [4]float64) {
 	// outside the border rather than overlapping it.
 	drawFrame(dst, r.Inset(-highlightHaloThickness), highlightHaloThickness, highlightHalo)
 	drawFrame(dst, r, highlightThickness, highlightBorder)
+	return true
 }
 
 // drawFrame outlines r with a dotted border of the given thickness, drawn
