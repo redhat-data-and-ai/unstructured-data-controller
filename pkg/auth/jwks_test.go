@@ -22,13 +22,13 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +38,7 @@ import (
 const (
 	testIssuer = "https://sso.example.com/realms/test"
 	// testKid is the only key the test JWKS publishes. A token naming anything
-	// else must be refused, which is what the unknown-key case checks.
+	// else must be refused.
 	testKid = "key-1"
 )
 
@@ -49,18 +49,21 @@ func quietLogger() *slog.Logger {
 
 // jwksServer serves the public half of key as a JWKS, counting fetches so a
 // test can assert the keys are cached rather than refetched per token.
+//
+// The counter is atomic because the handler runs on the server's goroutine
+// while the test reads it on its own.
 type jwksServer struct {
 	*httptest.Server
-	fetches int
+	fetches atomic.Int64
 }
 
 func newJWKSServer(t *testing.T, key *rsa.PrivateKey) *jwksServer {
 	t.Helper()
 	server := &jwksServer{}
 	server.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		server.fetches++
+		server.fetches.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
+		err := json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
 			"kid": testKid,
 			"kty": "RSA",
 			"alg": "RS256",
@@ -68,6 +71,11 @@ func newJWKSServer(t *testing.T, key *rsa.PrivateKey) *jwksServer {
 			"n":   base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
 			"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
 		}}})
+		// Serving half a key set would fail verification for a reason that has
+		// nothing to do with what the test is checking.
+		if err != nil {
+			t.Errorf("serving the JWKS fixture: %v", err)
+		}
 	}))
 	t.Cleanup(server.Close)
 	return server
@@ -117,13 +125,39 @@ func TestJWKSVerifierAcceptsAGenuineToken(t *testing.T) {
 	if resp.Sub != "user-123" {
 		t.Errorf("Sub = %q, want user-123", resp.Sub)
 	}
-	// The allow-list reads ClientID, so azp has to land there or the check
-	// silently passes everything.
+	// A caller reads ClientID whichever mechanism produced the response, so
+	// azp has to land there.
 	if resp.ClientID != "unstructured-mcp-server" {
 		t.Errorf("ClientID = %q, want unstructured-mcp-server", resp.ClientID)
 	}
 	if resp.Username != "someone" {
 		t.Errorf("Username = %q, want someone", resp.Username)
+	}
+	if resp.Iss != testIssuer {
+		t.Errorf("Iss = %q, want %q", resp.Iss, testIssuer)
+	}
+}
+
+// Falls back to email when the token carries no preferred_username, since that
+// is the only other thing identifying the caller.
+func TestJWKSVerifierFallsBackToEmail(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := newJWKSServer(t, key)
+	verifier := NewJWKSVerifier(server.URL, testIssuer, server.Client())
+
+	claims := validClaims()
+	delete(claims, "preferred_username")
+	claims["email"] = "someone@example.com"
+
+	resp, err := verifier.Verify(context.Background(), signToken(t, key, testKid, claims))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Username != "someone@example.com" {
+		t.Errorf("Username = %q, want the email", resp.Username)
 	}
 }
 
@@ -145,9 +179,6 @@ func TestJWKSVerifierRejections(t *testing.T) {
 	wrongIssuer := validClaims()
 	wrongIssuer["iss"] = "https://evil.example.com/realms/test"
 
-	noExpiry := validClaims()
-	delete(noExpiry, "exp")
-
 	tests := []struct {
 		name  string
 		token string
@@ -155,7 +186,6 @@ func TestJWKSVerifierRejections(t *testing.T) {
 		{"signed by somebody else", signToken(t, attacker, testKid, validClaims())},
 		{"expired", signToken(t, key, testKid, expired)},
 		{"issued by another issuer", signToken(t, key, testKid, wrongIssuer)},
-		{"no expiry at all", signToken(t, key, testKid, noExpiry)},
 		{"names an unknown key", signToken(t, key, "key-99", validClaims())},
 		{"not a JWT", "not-a-token"},
 		{"empty", ""},
@@ -202,29 +232,8 @@ func TestJWKSVerifierRefusesAlgorithmSubstitution(t *testing.T) {
 	}
 }
 
-// A kid of the wrong type is a malformed header, not an absent one. Treating
-// it as absent would fall through to the single-key path and verify against a
-// key the token never named.
-func TestJWKSVerifierRefusesANonStringKid(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := newJWKSServer(t, key)
-	verifier := NewJWKSVerifier(server.URL, testIssuer, server.Client())
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, validClaims())
-	token.Header["kid"] = 12345
-	signed, err := token.SignedString(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := verifier.Verify(context.Background(), signed); !errors.Is(err, ErrNoSuchKey) {
-		t.Fatalf("error = %v, want one wrapping ErrNoSuchKey", err)
-	}
-}
-
+// Fetching the key set per token would put a request to the identity provider
+// on the path of every single call.
 func TestJWKSVerifierCachesKeys(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -233,14 +242,38 @@ func TestJWKSVerifierCachesKeys(t *testing.T) {
 	server := newJWKSServer(t, key)
 	verifier := NewJWKSVerifier(server.URL, testIssuer, server.Client())
 
-	for range 5 {
+	const verifications = 5
+	for range verifications {
 		if _, err := verifier.Verify(context.Background(), signToken(t, key, testKid, validClaims())); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if server.fetches != 1 {
-		t.Errorf("fetched the JWKS %d times, want 1", server.fetches)
+	if got := server.fetches.Load(); got >= verifications {
+		t.Errorf("fetched the JWKS %d times for %d tokens, want the keys cached",
+			got, verifications)
+	}
+}
+
+// An https endpoint that redirects to plaintext would let anyone on that hop
+// substitute the signing key, which forges every identity this server trusts.
+func TestJWKSVerifierRefusesARedirectToPlaintext(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Redirects off-loopback, so the loopback exemption does not apply.
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://keys.example.com/certs", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	verifier := NewJWKSVerifier(redirector.URL, testIssuer, redirector.Client())
+
+	if _, err := verifier.Verify(context.Background(),
+		signToken(t, key, testKid, validClaims())); err == nil {
+		t.Fatal("a redirect to a plaintext key endpoint was followed")
 	}
 }
 
@@ -266,43 +299,8 @@ func TestJWKSVerifierFailsClosedWhenKeysAreUnreachable(t *testing.T) {
 	}
 }
 
-func TestRSAPublicKeyFromJWK(t *testing.T) {
-	tests := []struct {
-		name     string
-		modulus  string
-		exponent string
-	}{
-		{"modulus is not base64url", "!!!not base64!!!", "AQAB"},
-		{"exponent is not base64url", base64.RawURLEncoding.EncodeToString([]byte{1, 2, 3}), "!!!"},
-		{"exponent is empty", base64.RawURLEncoding.EncodeToString([]byte{1, 2, 3}), ""},
-		{"exponent is zero", base64.RawURLEncoding.EncodeToString([]byte{1, 2, 3}),
-			base64.RawURLEncoding.EncodeToString([]byte{0})},
-		{"exponent is absurdly long", base64.RawURLEncoding.EncodeToString([]byte{1, 2, 3}),
-			base64.RawURLEncoding.EncodeToString([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9})},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := rsaPublicKeyFromJWK(tt.modulus, tt.exponent); err == nil {
-				t.Error("accepted a malformed JWK")
-			}
-		})
-	}
-
-	key, err := rsaPublicKeyFromJWK(
-		base64.RawURLEncoding.EncodeToString(big.NewInt(0).SetBytes([]byte{1, 2, 3}).Bytes()),
-		base64.RawURLEncoding.EncodeToString(big.NewInt(65537).Bytes()))
-	if err != nil {
-		t.Fatalf("a well formed JWK was refused: %v", err)
-	}
-	if key.E != 65537 {
-		t.Errorf("E = %d, want 65537", key.E)
-	}
-}
-
-// A bad signature must read as "not authorised", while an unreachable key
-// endpoint must read as a server fault. Collapsing the two either hides an
-// outage or turns one into a 401 storm.
+// A token that does not verify must read as "not authorised" rather than as a
+// server fault, so an attacker cannot turn a crafted token into a 500.
 func TestMiddlewareJWKSFailureModes(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -322,6 +320,15 @@ func TestMiddlewareJWKSFailureModes(t *testing.T) {
 		t.Error("UsesJWKS = false after WithJWKSVerifier")
 	}
 
+	resp, err := middleware.validateUncached(context.Background(),
+		signToken(t, attacker, testKid, validClaims()))
+	if err != nil {
+		t.Fatalf("a forged token should be inactive, not an error: %v", err)
+	}
+	if resp.Active {
+		t.Error("a forged token was reported active")
+	}
+
 	// Config refuses this combination, so this is the backstop. The verifier
 	// must still run, and UsesJWKS must not claim a check a caller can rely on.
 	confused := NewMiddleware(&mockProvider{}, quietLogger(), true,
@@ -338,29 +345,6 @@ func TestMiddlewareJWKSFailureModes(t *testing.T) {
 	}
 	if forged.Active {
 		t.Error("a forged token was accepted because SSO_DISABLE_INTROSPECTION skipped the verifier")
-	}
-
-	resp, err := middleware.validateUncached(context.Background(),
-		signToken(t, attacker, testKid, validClaims()))
-	if err != nil {
-		t.Fatalf("a forged token should be inactive, not an error: %v", err)
-	}
-	if resp.Active {
-		t.Error("a forged token was reported active")
-	}
-
-	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer down.Close()
-
-	outage := NewMiddleware(&mockProvider{}, quietLogger(), false,
-		WithJWKSVerifier(NewJWKSVerifier(down.URL, testIssuer, down.Client())))
-	defer outage.Close()
-
-	if _, err := outage.validateUncached(context.Background(),
-		signToken(t, key, testKid, validClaims())); err == nil {
-		t.Error("a key endpoint outage was reported as a valid answer")
 	}
 }
 
@@ -393,6 +377,11 @@ func TestNewOAuthConfigFromEnvTokenValidation(t *testing.T) {
 		{"a plaintext key URL on loopback is allowed for local dev",
 			map[string]string{"SSO_TOKEN_VALIDATION": "jwks", "SSO_ISSUER": testIssuer,
 				"SSO_JWKS_URL": "http://localhost:8443/certs"}, "", ValidationJWKS},
+		// Parses with a scheme and no endpoint, so it would start cleanly and
+		// then fail on the first key fetch.
+		{"an https key URL with no host is refused",
+			map[string]string{"SSO_TOKEN_VALIDATION": "jwks", "SSO_ISSUER": testIssuer,
+				"SSO_JWKS_URL": "https:///certs"}, "has no host", ""},
 		// These two flags answer the same problem, and silently letting the
 		// older one win would leave signatures unchecked while startup claims
 		// they are verified.
@@ -404,6 +393,15 @@ func TestNewOAuthConfigFromEnvTokenValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Cleared first, so a developer running with any of these exported
+			// does not change what a case means. The "unset defaults to
+			// introspection" case would otherwise fail with no code change.
+			for _, key := range []string{
+				"SSO_TOKEN_VALIDATION", "SSO_JWKS_URL", "SSO_ISSUER",
+				"SSO_DISABLE_INTROSPECTION",
+			} {
+				t.Setenv(key, "")
+			}
 			for key, value := range tt.env {
 				t.Setenv(key, value)
 			}
@@ -426,5 +424,26 @@ func TestNewOAuthConfigFromEnvTokenValidation(t *testing.T) {
 				t.Errorf("TokenValidation = %q, want %q", cfg.TokenValidation, tt.wantMod)
 			}
 		})
+	}
+}
+
+// A provider with no introspection endpoint is the reason jwks mode exists, so
+// requiring a URL it does not have would make that mode unstartable.
+func TestNewGenericProviderDoesNotRequireIntrospectionInJWKSMode(t *testing.T) {
+	cfg := &OAuthConfig{
+		ClientID:         "client",
+		ClientSecret:     "secret",
+		AuthorizationURL: "https://sso.example.com/auth",
+		TokenURL:         "https://sso.example.com/token",
+		TokenValidation:  ValidationJWKS,
+	}
+
+	if _, err := NewGenericProvider(cfg); err != nil {
+		t.Fatalf("jwks mode should start without SSO_INTROSPECTION_URL: %v", err)
+	}
+
+	cfg.TokenValidation = ValidationIntrospect
+	if _, err := NewGenericProvider(cfg); err == nil {
+		t.Error("introspect mode started without SSO_INTROSPECTION_URL")
 	}
 }

@@ -48,7 +48,10 @@ func NewGenericProvider(cfg *OAuthConfig) (*GenericProvider, error) {
 		{"SSO_AUTHORIZATION_URL", cfg.AuthorizationURL},
 		{"SSO_TOKEN_URL", cfg.TokenURL},
 	}
-	if !cfg.DisableIntrospection {
+	// Only when introspection is the thing that will actually run. A provider
+	// without an introspection endpoint is the reason jwks mode exists, so
+	// demanding a URL it does not have would make that mode unstartable.
+	if !cfg.DisableIntrospection && cfg.TokenValidation != ValidationJWKS {
 		required = append(required, struct{ name, val string }{
 			"SSO_INTROSPECTION_URL", cfg.IntrospectionURL,
 		})

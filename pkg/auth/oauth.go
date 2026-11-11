@@ -132,6 +132,11 @@ func requireSecureURL(name, raw string) error {
 	if err != nil {
 		return fmt.Errorf("%s is not a valid URL: %w", name, err)
 	}
+	// "https:///certs" parses with a scheme and no host, which would start
+	// cleanly and then fail on the first key fetch.
+	if parsed.Host == "" {
+		return fmt.Errorf("%s has no host: %q", name, raw)
+	}
 	if parsed.Scheme == schemeHTTPS {
 		return nil
 	}
@@ -347,9 +352,11 @@ func (m *Middleware) validateToken(ctx context.Context, token string) (*Introspe
 
 // validateUncached checks one token with whichever mechanism is configured.
 //
-// A JWKS verification failure is reported as an inactive token rather than an
-// error, so a bad signature reads to the caller as "not authorised" and not as
-// a server fault. A failure to reach the key endpoint is still an error.
+// Every verification failure is an inactive token, so an attacker-supplied
+// token produces a refusal and never a 500. That deliberately also covers an
+// unreachable key endpoint, which fails closed: the alternative leaks that the
+// server is misconfigured, and the error is logged either way so an outage is
+// still visible.
 func (m *Middleware) validateUncached(ctx context.Context, token string) (*IntrospectionResponse, error) {
 	if m.jwks == nil {
 		return m.provider.IntrospectToken(ctx, token)
@@ -357,14 +364,8 @@ func (m *Middleware) validateUncached(ctx context.Context, token string) (*Intro
 
 	resp, err := m.jwks.Verify(ctx, token)
 	if err != nil {
-		if errors.Is(err, ErrNoSuchKey) || errors.Is(err, jwt.ErrTokenMalformed) ||
-			errors.Is(err, jwt.ErrTokenSignatureInvalid) || errors.Is(err, jwt.ErrTokenExpired) ||
-			errors.Is(err, jwt.ErrTokenInvalidIssuer) || errors.Is(err, jwt.ErrTokenNotValidYet) ||
-			errors.Is(err, jwt.ErrTokenRequiredClaimMissing) {
-			m.logger.Warn("token failed signature verification", "error", err)
-			return &IntrospectionResponse{Active: false}, nil
-		}
-		return nil, err
+		m.logger.Warn("token failed verification", "error", err)
+		return &IntrospectionResponse{Active: false}, nil
 	}
 	return resp, nil
 }
