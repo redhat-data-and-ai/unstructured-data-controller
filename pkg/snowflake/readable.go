@@ -27,8 +27,14 @@ import (
 // through a corpus rather than filtering a page of search results.
 const maxReadableFileIDs = 1000
 
-type readableFile struct {
+// ReadableFile is one file the caller is allowed to read, with where the
+// crawler stored it.
+type ReadableFile struct {
 	FileID string `json:"file_id" db:"file_id"`
+	// FilePath is the crawler's path for the stored copy, which locates the
+	// object in the destination bucket. Empty only for a row written before
+	// the sidecar carried one.
+	FilePath string `json:"file_path" db:"file_path"`
 }
 
 // FilterReadableFiles returns the subset of fileIDs the holder of oauthToken is
@@ -45,7 +51,7 @@ type readableFile struct {
 // Returns nil for an empty input without querying.
 func FilterReadableFiles(
 	ctx context.Context, oauthToken, database, schema, table string, fileIDs []string,
-) ([]string, error) {
+) ([]ReadableFile, error) {
 	if len(fileIDs) == 0 {
 		return nil, nil
 	}
@@ -58,7 +64,7 @@ func FilterReadableFiles(
 	// config, and mixing the two styles is how injection gets in later.
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(fileIDs)), ",")
 	query := fmt.Sprintf(
-		`SELECT DISTINCT FILE_ID FROM %s.%s.%s WHERE FILE_ID IN (%s)`,
+		`SELECT FILE_ID, FILE_PATH FROM %s.%s.%s WHERE FILE_ID IN (%s)`,
 		database, schema, table, placeholders,
 	)
 
@@ -67,14 +73,22 @@ func FilterReadableFiles(
 		args = append(args, fileID)
 	}
 
-	rows, err := queryRowsIn[readableFile](ctx, oauthToken, database, schema, query, args...)
+	rows, err := queryRowsIn[ReadableFile](ctx, oauthToken, database, schema, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("checking which files the caller may read: %w", err)
 	}
 
-	readable := make([]string, 0, len(rows))
+	// A rewritten file has more than one row, and the query has no ORDER BY,
+	// so collapse to one. Which row wins only decides the download path, and
+	// every row for an ID names the same object.
+	seen := make(map[string]bool, len(rows))
+	readable := make([]ReadableFile, 0, len(rows))
 	for _, row := range rows {
-		readable = append(readable, row.FileID)
+		if seen[row.FileID] {
+			continue
+		}
+		seen[row.FileID] = true
+		readable = append(readable, row)
 	}
 	return readable, nil
 }

@@ -29,6 +29,7 @@ import (
 	drive "google.golang.org/api/drive/v3"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/snowflake"
 )
 
 // testFolderIDs stands in for a pipeline's expanded folder tree.
@@ -83,18 +84,25 @@ func (f *fakeDriveSearcher) SearchFiles(
 func (*fakeDriveSearcher) Close() {}
 
 // allowAll stands in for a caller who may read everything Drive returned.
-func allowAll(_ context.Context, fileIDs []string) ([]string, error) {
-	return fileIDs, nil
+func allowAll(_ context.Context, fileIDs []string) ([]snowflake.ReadableFile, error) {
+	out := make([]snowflake.ReadableFile, 0, len(fileIDs))
+	for _, fileID := range fileIDs {
+		out = append(out, snowflake.ReadableFile{
+			FileID:   fileID,
+			FilePath: "pipelines/p/stages/crawl/" + fileID + ".pdf",
+		})
+	}
+	return out, nil
 }
 
 // allowOnly stands in for a row access policy that permits just these files.
 func allowOnly(permitted ...string) accessFilter {
-	return func(_ context.Context, fileIDs []string) ([]string, error) {
-		out := []string{}
+	return func(_ context.Context, fileIDs []string) ([]snowflake.ReadableFile, error) {
+		out := []snowflake.ReadableFile{}
 		for _, fileID := range fileIDs {
 			for _, want := range permitted {
 				if fileID == want {
-					out = append(out, fileID)
+					out = append(out, snowflake.ReadableFile{FileID: fileID})
 				}
 			}
 		}
@@ -152,7 +160,7 @@ func TestSearchDriveForUserKeepsDriveRanking(t *testing.T) {
 // read as "this caller may see nothing", nor as "may see everything".
 func TestSearchDriveForUserFailsClosedWhenAccessCannotBeDecided(t *testing.T) {
 	searcher := &fakeDriveSearcher{pages: [][]*drive.File{{file("a", "alpha.pdf")}}}
-	failing := func(_ context.Context, _ []string) ([]string, error) {
+	failing := func(_ context.Context, _ []string) ([]snowflake.ReadableFile, error) {
 		return nil, errors.New("snowflake is unreachable")
 	}
 
@@ -164,6 +172,29 @@ func TestSearchDriveForUserFailsClosedWhenAccessCannotBeDecided(t *testing.T) {
 	}
 	if results != nil {
 		t.Errorf("results = %v, want none alongside an error", results)
+	}
+}
+
+// The stored path comes from the warehouse, not from Drive, and is the only
+// thing a download link can be signed against.
+func TestSearchDriveForUserCarriesTheStoredPath(t *testing.T) {
+	searcher := &fakeDriveSearcher{pages: [][]*drive.File{{file("a", "alpha.pdf")}}}
+
+	results, _, err := searchDriveForUser(context.Background(), searcher,
+		searchGoogleDriveArgs{Query: "q"}, testFolderIDs, allowAll)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if results[0].storedPath != "pipelines/p/stages/crawl/a.pdf" {
+		t.Errorf("storedPath = %q, want the warehouse value", results[0].storedPath)
+	}
+	// Signing happens in the handler, after filtering, so nothing is set here.
+	if results[0].DownloadURL != "" {
+		t.Errorf("DownloadURL = %q, want empty until signed", results[0].DownloadURL)
 	}
 }
 

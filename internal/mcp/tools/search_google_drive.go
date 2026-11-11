@@ -81,6 +81,14 @@ type DriveSearchResult struct {
 	MIMEType     string `json:"mime_type"`
 	ModifiedTime string `json:"modified_time"`
 	WebViewLink  string `json:"web_view_link"`
+	// DownloadURL is a short-lived link to the crawler's stored copy, which
+	// the caller fetches with no Google credential. Empty when the link could
+	// not be signed.
+	DownloadURL string `json:"download_url,omitempty"`
+
+	// storedPath is where the crawler put the file, used to sign DownloadURL
+	// and not reported to the caller.
+	storedPath string
 }
 
 // DriveSearchOptions configures the search_google_drive tool.
@@ -169,6 +177,7 @@ type driveSearcher interface {
 // why the server refuses to register the tool without token introspection.
 func RegisterSearchGoogleDrive(s *mcp.Server, k8sClient *k8sclient.Client, opts DriveSearchOptions) {
 	folderTrees := newFolderTreeCache()
+	destinations := newDestinationClients(k8sClient)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_google_drive",
@@ -265,7 +274,7 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 		schema := strings.ToUpper(strings.ReplaceAll(driveConfig.Access.Schema, "-", "_"))
 		table := strings.ToUpper(strings.ReplaceAll(driveConfig.Access.Table, "-", "_"))
 
-		allowed := func(ctx context.Context, fileIDs []string) ([]string, error) {
+		allowed := func(ctx context.Context, fileIDs []string) ([]snowflake.ReadableFile, error) {
 			readable, err := snowflake.FilterReadableFiles(ctx, oauthToken,
 				database, schema, table, fileIDs)
 			if err != nil {
@@ -299,6 +308,12 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			return toolError(log, "drive search failed", err,
 				"Error: the Google Drive search could not be completed. This is usually temporary, so it is worth retrying."), nil, nil
 		}
+
+		// Signed after filtering, so a link is only ever minted for a file the
+		// caller is already allowed to have. A signing failure leaves the
+		// result without a URL rather than dropping it: the file is still a
+		// real answer.
+		signDownloadURLs(ctx, destinations, args.PipelineName, driveConfig.StageName, results)
 
 		jsonBytes, err := json.Marshal(results)
 		if err != nil {
@@ -338,11 +353,12 @@ type searchOutcome struct {
 	Partial bool
 }
 
-// accessFilter reports which of the given Drive file IDs the caller may read.
+// accessFilter reports which of the given Drive file IDs the caller may read,
+// and where each one was stored.
 //
 // Implemented against Snowflake's row access policy, which is the same gate
 // every other tool in this server answers to.
-type accessFilter func(ctx context.Context, fileIDs []string) ([]string, error)
+type accessFilter func(ctx context.Context, fileIDs []string) ([]snowflake.ReadableFile, error)
 
 // searchDriveForUser runs the search and returns only the files the caller may
 // read, as decided by allowed.
@@ -394,9 +410,9 @@ func searchDriveForUser(
 	if err != nil {
 		return nil, searchOutcome{}, err
 	}
-	permitted := make(map[string]bool, len(readable))
-	for _, fileID := range readable {
-		permitted[fileID] = true
+	permitted := make(map[string]snowflake.ReadableFile, len(readable))
+	for _, file := range readable {
+		permitted[file.FileID] = file
 	}
 
 	// Ranked order comes from Drive, so walk candidates rather than readable.
@@ -405,10 +421,13 @@ func searchDriveForUser(
 		if len(results) >= limit {
 			break
 		}
-		if !permitted[fileID] {
+		stored, ok := permitted[fileID]
+		if !ok {
 			continue
 		}
-		results = append(results, toDriveSearchResult(byID[fileID]))
+		result := toDriveSearchResult(byID[fileID])
+		result.storedPath = stored.FilePath
+		results = append(results, result)
 	}
 
 	return results, searchOutcome{

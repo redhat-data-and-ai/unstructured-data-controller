@@ -494,7 +494,7 @@ Only files the crawler has already indexed can be returned. Access is decided fr
 | `mime_type`     | string | Drive MIME type.                                                 |
 | `modified_time` | string | RFC 3339 timestamp of the last change.                           |
 | `web_view_link` | string | Link to open the file in Drive.                                  |
-| `download_url`  | string | Presigned link to the stored copy, valid for 5 minutes and usable without a Google credential. Omitted when the crawler has not stored the file yet. |
+| `download_url`  | string | Presigned link to the copy the crawler stored in S3, valid for 5 minutes and usable with no Google credential. Omitted if the link could not be signed. The link is not checked against S3 first, so a file removed from the bucket since the last crawl gives a URL that 404s. |
 
 An empty result can mean the caller has no access rather than that nothing matched. The two are deliberately indistinguishable, since reporting how many files were hidden would confirm that matching files exist.
 
@@ -512,7 +512,7 @@ Results are confined to the folders the pipeline declares. Drive's `'<id>' in pa
 
 A query naming too many folders is refused rather than searched partially. Drive sends the query as a GET parameter and its frontend rejects a URL past roughly 16KB with an HTML 400 carrying no JSON error, which lands around 310 folder clauses. The folder count is capped below that, and the built query is checked against a byte limit as well, because the search term shares the same budget and a long term can overflow a legal tree.
 
-Each result carries a short-lived presigned URL to the copy the crawler stored in the destination bucket, so the caller can fetch the file without any Google credential. The link is signed only after the access check, lasts five minutes, and is omitted rather than guessed at when the file has not been stored yet.
+Each result carries a short-lived presigned URL to the copy the crawler stored in the destination bucket, so the caller can fetch the file without any Google credential. The object key comes from the warehouse row's `FILE_PATH` rather than being reconstructed, and the link is signed only after the access check, so one is never minted for a file the caller may not read. Signing is offline, so the object is not checked for existence first.
 
 Shortcuts are excluded from results entirely. A shortcut's ACL is inherited from the folder it sits in rather than from the file it points at, so approving a shortcut says nothing about whether the caller may read its target. Drive still finds the target directly when the caller can read it, so nothing is lost.
 
