@@ -37,7 +37,7 @@ All configuration is via environment variables.
 | `SSO_CLIENT_SECRET`     | OAuth client secret                                                                                          |
 | `SSO_AUTHORIZATION_URL` | SSO authorization endpoint (e.g. `https://sso.example.com/auth/realms/myrealm/protocol/openid-connect/auth`) |
 | `SSO_TOKEN_URL`         | SSO token endpoint (e.g. `https://sso.example.com/auth/realms/myrealm/protocol/openid-connect/token`)        |
-| `SSO_INTROSPECTION_URL` | SSO token introspection endpoint (RFC 7662). Required unless `SSO_DISABLE_INTROSPECTION=true` (development only) |
+| `SSO_INTROSPECTION_URL` | SSO token introspection endpoint (RFC 7662). Required unless `SSO_TOKEN_VALIDATION=jwks` or `SSO_DISABLE_INTROSPECTION=true` (development only) |
 | `SSO_CALLBACK_URL`      | Callback URL pointing to this server's `/auth/callback/oidc` endpoint                                        |
 | `EMBEDDING_ENDPOINT`   | URL of the embedding service (e.g. `https://host/v1/embeddings`)                                             |
 | `EMBEDDING_API_KEY`    | API key for the embedding service                                                                            |
@@ -52,12 +52,50 @@ All configuration is via environment variables.
 | `UNSTRUCTURED_DATA_CONTROLLER_NAMESPACE` | `unstructured-controller-namespace` | Kubernetes namespace to list pipelines from. Injected from the pod's namespace when deployed in-cluster; set it when running locally. |
 | `KUBECONFIG`                             | `~/.kube/config`                    | Path to kubeconfig file (only used outside a cluster)                                                                                |
 | `MCP_PUBLIC_URL`                         | _(unset)_                           | Public base URL of the server (e.g. `https://mcp.example.com`). Set when running behind a proxy or load balancer so OAuth discovery metadata uses a stable URL instead of request headers. |
-| `SSO_DISABLE_INTROSPECTION`              | `false`                             | **Development only.** When `true`, skips SSO introspection and validates tokens locally without signature verification. Never enable in production. |
+| `SSO_DISABLE_INTROSPECTION`              | `false`                             | **Development only.** When `true`, skips SSO introspection and validates tokens locally without signature verification. Never enable in production. Cannot be combined with `SSO_TOKEN_VALIDATION=jwks`. |
+| `SSO_TOKEN_VALIDATION`                   | `introspect`                        | How a Bearer token is checked. `introspect` asks the provider about every token. `jwks` verifies the token's RS256 signature against the issuer's published keys instead, for a provider whose introspection endpoint is unavailable. See [Token validation](#token-validation). |
+| `SSO_JWKS_URL`                           | _(unset)_                           | The issuer's JSON Web Key Set, e.g. `https://sso.example.com/auth/realms/myrealm/protocol/openid-connect/certs`. Required when `SSO_TOKEN_VALIDATION=jwks`. Must be `https` unless it points at loopback. |
+| `SSO_ISSUER`                             | _(unset)_                           | The exact `iss` every accepted token must carry, e.g. `https://sso.example.com/auth/realms/myrealm`. Required when `SSO_TOKEN_VALIDATION=jwks`. |
 | `ENABLE_RERANKER`                        | `false`                             | Set to `true` to enable cross-encoder reranking. Reranking is governed by this flag alone, never by whether the variables below happen to be set. |
 | `RERANKER_ENDPOINT`                      | _(unset)_                           | Full URL of a cross-encoder rerank endpoint, including the path (e.g. `https://host/v1/rerank`). Must return `{"results":[{"index":N,"relevance_score":F}]}`; TEI endpoints, which return a bare array, are not supported. Required when `ENABLE_RERANKER=true`. |
 | `RERANKER_MODEL_NAME`                    | _(unset)_                           | Reranker model name. Required when `ENABLE_RERANKER=true`.                                                                           |
 | `RERANKER_API_KEY`                       | _(unset)_                           | API key for the reranker service, if it requires one. Sent as a bearer token, so prefer an `https://` endpoint.                      |
 | `RERANKER_CANDIDATE_POOL`                | `50`                                | Candidates sent to the reranker per query. Must be between 1 and 100. An invalid value fails startup rather than falling back.       |
+
+### Token validation
+
+Every request carries a Bearer token, and `SSO_TOKEN_VALIDATION` decides how the server
+satisfies itself that the token is genuine.
+
+`introspect` is the default and the right answer for production. The server asks the
+identity provider about every token, so a token revoked before it expires stops working
+immediately.
+
+`jwks` exists for providers whose introspection endpoint is not usable. Some deployments
+authenticate the client on `/token/introspect` and then answer `{"active":false}` for a
+token they issued seconds earlier, which leaves the server rejecting everything. In this
+mode the server verifies the token's RS256 signature against the issuer's published keys
+instead:
+
+```sh
+SSO_TOKEN_VALIDATION=jwks
+SSO_JWKS_URL=https://sso.example.com/auth/realms/myrealm/protocol/openid-connect/certs
+SSO_ISSUER=https://sso.example.com/auth/realms/myrealm
+```
+
+It checks the signature, that `exp` is present and in the future, and that `iss` matches
+`SSO_ISSUER` exactly. Only RS256 is accepted, so a token presenting `alg: none`, or signed
+with HS256 using the public key as the secret, is refused. Signing keys are cached, and
+refetched both when a token names an unknown `kid` and once they pass a 15 minute TTL, so a
+key the issuer withdraws stops working without a restart.
+
+The trade-off is that this is an offline check. A token revoked before it expires keeps
+working until it does, and the server logs a warning at startup saying so. Prefer
+`introspect` wherever it works.
+
+`SSO_TOKEN_VALIDATION=jwks` cannot be combined with `SSO_DISABLE_INTROSPECTION=true`, and
+the server refuses to start if both are set. The older flag takes precedence internally, so
+the combination would leave signatures unchecked while the startup log claimed otherwise.
 
 ### Reranking
 
