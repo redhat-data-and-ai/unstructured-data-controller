@@ -93,6 +93,70 @@ func (c *Client) ListFolderContents(
 	return allFiles, nil
 }
 
+// ListSubfolders returns the folders directly inside folderID, following
+// pagination. Names come back so the caller can apply a skip list.
+func (c *Client) ListSubfolders(
+	ctx context.Context,
+	folderID string,
+	maxRetries int,
+) ([]*drive.File, error) {
+	query := fmt.Sprintf(
+		"'%s' in parents and trashed=false and mimeType = 'application/vnd.google-apps.folder'",
+		folderID)
+
+	var all []*drive.File
+	pageToken := ""
+
+	for {
+		var page *drive.FileList
+		currentPageToken := pageToken
+
+		err := withRetry(ctx, maxRetries, fmt.Sprintf("ListSubfolders(%s)", folderID), func() error {
+			call := c.driveService.Files.List().
+				Context(ctx).
+				Q(query).
+				Fields("nextPageToken, files(id, name)").
+				SupportsAllDrives(true).
+				IncludeItemsFromAllDrives(true).
+				PageSize(1000)
+			if currentPageToken != "" {
+				call = call.PageToken(currentPageToken)
+			}
+			var callErr error
+			page, callErr = call.Do()
+			return callErr
+		})
+		if err != nil {
+			return nil, fmt.Errorf("listing subfolders of %s: %w", folderID, err)
+		}
+
+		all = append(all, page.Files...)
+		pageToken = page.NextPageToken
+		if pageToken == "" {
+			return all, nil
+		}
+	}
+}
+
+// FolderName returns a folder's name, used to match a declared root against
+// the skip list.
+func (c *Client) FolderName(ctx context.Context, folderID string, maxRetries int) (string, error) {
+	var file *drive.File
+	err := withRetry(ctx, maxRetries, fmt.Sprintf("FolderName(%s)", folderID), func() error {
+		var callErr error
+		file, callErr = c.driveService.Files.Get(folderID).
+			Context(ctx).
+			Fields("name").
+			SupportsAllDrives(true).
+			Do()
+		return callErr
+	})
+	if err != nil {
+		return "", fmt.Errorf("getting name of folder %s: %w", folderID, err)
+	}
+	return file.Name, nil
+}
+
 // IsFolderAccessible checks if a folder can be accessed by the
 // service account.
 func (c *Client) IsFolderAccessible(

@@ -23,6 +23,7 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -156,6 +157,119 @@ func (c *Client) GetPipelineDestination(ctx context.Context, name string) (*Dest
 		AWS: awsclienthandler.ConfigFromSecretData(
 			secret.Data, awsclienthandler.DestinationSecretPrefix),
 	}, nil
+}
+
+// DriveSearchCredentialKey is the secret key holding the Google service
+// account JSON a pipeline crawls and searches Drive with.
+const DriveSearchCredentialKey = "SOURCE_GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON"
+
+// DriveSearchConfig is what the MCP server needs to run a live Drive search for
+// a pipeline.
+type DriveSearchConfig struct {
+	// CredentialsJSON is the pipeline's own Google service account key. The
+	// search runs as that account.
+	CredentialsJSON []byte
+	// FolderIDs are the roots declared by the pipeline. The search is confined
+	// to these and their subfolders, so it covers the pipeline's corpus rather
+	// than everything the service account happens to be able to see.
+	FolderIDs []string
+	// SkipFolderNames are folder names the crawler skips, applied to the search
+	// too so both agree on what the corpus is.
+	SkipFolderNames []string
+	// StageName is the crawler stage that wrote the files. Needed to locate a
+	// file in the destination bucket, whose keys are laid out per stage.
+	StageName string
+	// Access names the Snowflake table whose row access policy decides which
+	// results the caller may see. It comes from the same stage as the folders,
+	// so the search and the check always describe one corpus.
+	Access QueryConfig
+}
+
+// GetPipelineDriveSearchConfig resolves a pipeline to everything one Drive
+// search needs: the folders, the credential, and the table that gates access.
+//
+// Requires a stage that crawls Google Drive and records its files in
+// Snowflake. A pipeline over any other source has no Drive corpus, and one
+// without the table has no way to decide who may see a result, so refusing is
+// the correct answer rather than an empty one.
+func (c *Client) GetPipelineDriveSearchConfig(ctx context.Context, name string) (*DriveSearchConfig, error) {
+	namespace := pipelineNamespace()
+	pipeline := &operatorv1alpha1.UnstructuredDataPipeline{}
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, pipeline); err != nil {
+		return nil, fmt.Errorf("failed to get pipeline %q: %w", name, err)
+	}
+
+	gdriveConfig, stage := driveSearchStage(pipeline)
+	if gdriveConfig == nil {
+		return nil, fmt.Errorf("pipeline %q has no Google Drive source to search", name)
+	}
+	if stage.QueryConfig == nil || stage.QueryConfig.Snowflake == nil {
+		return nil, fmt.Errorf(
+			"pipeline %q does not record which files you may read, so its Drive search "+
+				"cannot be filtered: add queryConfig.snowflake to stage %q", name, stage.Name)
+	}
+
+	if pipeline.Spec.SecretRef == "" {
+		return nil, fmt.Errorf("pipeline %q names no secret to read its Drive credentials from", name)
+	}
+	secret := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: namespace, Name: pipeline.Spec.SecretRef}
+	if err := c.client.Get(ctx, key, secret); err != nil {
+		return nil, fmt.Errorf("failed to get secret for pipeline %q: %w", name, err)
+	}
+	credentialsJSON, ok := secret.Data[DriveSearchCredentialKey]
+	if !ok || len(credentialsJSON) == 0 {
+		return nil, fmt.Errorf("secret for pipeline %q has no %s", name, DriveSearchCredentialKey)
+	}
+
+	// Refused rather than skipped: a folder we cannot resolve would quietly
+	// shrink the searched corpus, and the caller would see fewer results with
+	// no indication why.
+	folderIDs := make([]string, 0, len(gdriveConfig.Folders))
+	for _, folder := range gdriveConfig.Folders {
+		folderID, err := gdrive.FolderIDFromURL(folder.URL)
+		if err != nil {
+			return nil, fmt.Errorf("pipeline %q has an unreadable folder URL: %w", name, err)
+		}
+		folderIDs = append(folderIDs, folderID)
+	}
+
+	skipNames := make([]string, 0, len(gdriveConfig.SkipFolders))
+	for _, skip := range gdriveConfig.SkipFolders {
+		skipNames = append(skipNames, skip.Pattern)
+	}
+
+	return &DriveSearchConfig{
+		CredentialsJSON: credentialsJSON,
+		FolderIDs:       folderIDs,
+		SkipFolderNames: skipNames,
+		StageName:       stage.Name,
+		Access: QueryConfig{
+			Database: stage.QueryConfig.Snowflake.Database,
+			Schema:   stage.QueryConfig.Snowflake.Schema,
+			Table:    stage.QueryConfig.Snowflake.Table,
+		},
+	}, nil
+}
+
+// driveSearchStage returns the Google Drive source config of the first stage
+// that crawls Drive, with the stage it came from, or nil when there is none.
+//
+// No opt-in marker: a stage that crawls Drive is searchable by definition.
+// Returning the stage lets the caller read the rest of it without searching
+// again, which is what keeps the folders and the access table in step.
+func driveSearchStage(
+	pipeline *operatorv1alpha1.UnstructuredDataPipeline,
+) (*operatorv1alpha1.GoogleDriveConfig, operatorv1alpha1.PipelineStage) {
+	for _, stage := range pipeline.Spec.Stages {
+		if stage.SourceCrawlerConfig == nil ||
+			stage.SourceCrawlerConfig.Type != operatorv1alpha1.TypeGoogleDrive ||
+			stage.SourceCrawlerConfig.GoogleDriveConfig == nil {
+			continue
+		}
+		return stage.SourceCrawlerConfig.GoogleDriveConfig, stage
+	}
+	return nil, operatorv1alpha1.PipelineStage{}
 }
 
 // s3Destination returns the bucket a pipeline's first usable S3 destination

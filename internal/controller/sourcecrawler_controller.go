@@ -21,7 +21,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -301,7 +300,7 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 
 	folderIDs := make([]string, 0, len(gdriveConfig.Folders))
 	for _, f := range gdriveConfig.Folders {
-		id, err := extractGDriveFolderID(f.URL)
+		id, err := gdrive.FolderIDFromURL(f.URL)
 		if err != nil {
 			return nil, fmt.Errorf("invalid Google Drive folder URL %q: %w", f.URL, err)
 		}
@@ -321,27 +320,6 @@ func (r *SourceCrawlerReconciler) buildGDriveSource(
 		ConcurrentDownloads: concurrentDownloads,
 		OutputDir:           outputDir,
 	}, nil
-}
-
-// extractGDriveFolderID parses a Google Drive folder URL and returns the folder ID.
-// Accepts URLs like "https://drive.google.com/drive/folders/<id>" or
-// "https://drive.google.com/drive/u/0/folders/<id>" with optional query params.
-// Also accepts a raw folder ID directly.
-func extractGDriveFolderID(rawURL string) (string, error) {
-	if !strings.Contains(rawURL, "/") {
-		return rawURL, nil
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse URL: %w", err)
-	}
-	parts := strings.Split(strings.TrimRight(u.Path, "/"), "/")
-	for i, part := range parts {
-		if part == "folders" && i+1 < len(parts) {
-			return parts[i+1], nil
-		}
-	}
-	return "", fmt.Errorf("could not extract folder ID from URL path: %s", u.Path)
 }
 
 func buildGDriveStatus(gds *unstructured.GDriveSource, gdriveConfig *operatorv1alpha1.GoogleDriveConfig) []operatorv1alpha1.GDriveFolderStatus {

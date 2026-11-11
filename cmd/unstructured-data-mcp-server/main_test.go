@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"strconv"
 	"testing"
 
@@ -24,7 +25,62 @@ import (
 	"github.com/stretchr/testify/require"
 
 	mcptools "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/tools"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 )
+
+// Drive search is the one tool with no second gate behind it: it runs as a
+// service account that can read the whole corpus, so the caller's identity is
+// the only thing narrowing results. Each case below is a reason that identity
+// or the group lookup cannot be trusted, and each must switch the tool off
+// rather than weaken it.
+// stubIdentifier stands in for the middleware, which these cases do not
+// exercise: they only check whether the tool registers at all.
+type stubIdentifier struct{}
+
+func (stubIdentifier) Identify(_ context.Context, _ string) (*auth.IntrospectionResponse, error) {
+	return &auth.IntrospectionResponse{Active: true, Sub: "someone"}, nil
+}
+
+// Drive search runs as a service account that can read the whole corpus and
+// narrows results by querying Snowflake as the caller, so an unverified
+// identity would be an unfiltered search.
+func TestDriveSearchOptions(t *testing.T) {
+	tests := []struct {
+		name                 string
+		disableIntrospection bool
+		wantEnabled          bool
+		wantReasonContains   string
+	}{
+		{
+			name:        "introspection on, so the caller is who they claim",
+			wantEnabled: true,
+		},
+		{
+			name:                 "introspection disabled makes the identity unverified",
+			disableIntrospection: true,
+			wantEnabled:          false,
+			wantReasonContains:   "SSO_DISABLE_INTROSPECTION",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, reason := driveSearchOptions(&auth.OAuthConfig{
+				DisableIntrospection: tt.disableIntrospection,
+			}, stubIdentifier{})
+
+			if !tt.wantEnabled {
+				assert.Nil(t, opts, "tool must stay switched off")
+				assert.Contains(t, reason, tt.wantReasonContains)
+				return
+			}
+
+			require.NotNil(t, opts, "tool should be enabled, got reason: %s", reason)
+			assert.Empty(t, reason)
+			assert.NotNil(t, opts.Identifier, "the session check cannot be optional")
+		})
+	}
+}
 
 func TestResolveRerankerPoolDepth(t *testing.T) {
 	tests := []struct {
