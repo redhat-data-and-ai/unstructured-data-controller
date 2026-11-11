@@ -35,6 +35,7 @@ import (
 	mcptools "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/tools"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/gdrive/google"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/reranker"
@@ -95,10 +96,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Drive search is optional: a deployment crawling only S3 or git has no
+	// service account, and the tools are left unregistered rather than
+	// offered to the model and failing on every call.
+	driveClient, err := buildDriveClient(context.Background())
+	if err != nil {
+		slog.Error("invalid Google Drive configuration", "error", err)
+		os.Exit(1)
+	}
+	if driveClient != nil {
+		defer driveClient.Close()
+	}
+
 	mcptools.RegisterListPipelines(mcpServer, k8sClient)
 	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
 	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
 	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
+	if driveClient != nil {
+		mcptools.RegisterDriveSearch(mcpServer, k8sClient, driveClient)
+		mcptools.RegisterDriveFetch(mcpServer, k8sClient)
+	}
 
 	oauthStore := auth.NewOAuthStore()
 	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection)
@@ -174,6 +191,33 @@ func main() {
 	oauthMiddleware.Close()
 	oauthStore.Close()
 	slog.Info("MCP server stopped")
+}
+
+// buildDriveClient constructs the client drive_search runs its queries as,
+// from a service account named in the environment. Returns a nil client when
+// no service account is configured, which leaves the Drive tools
+// unregistered; returns an error when one is configured but unusable.
+func buildDriveClient(ctx context.Context) (*google.Client, error) {
+	if credentialsFile := strings.TrimSpace(os.Getenv("GOOGLE_SERVICE_ACCOUNT_FILE")); credentialsFile != "" {
+		driveClient, err := google.NewClient(ctx, credentialsFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading GOOGLE_SERVICE_ACCOUNT_FILE: %w", err)
+		}
+		slog.Info("Google Drive tools enabled", "credentials", "GOOGLE_SERVICE_ACCOUNT_FILE")
+		return driveClient, nil
+	}
+
+	credentialsJSON := strings.TrimSpace(os.Getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+	if credentialsJSON == "" {
+		slog.Info("Google Drive tools disabled, no service account is configured")
+		return nil, nil
+	}
+	driveClient, err := google.NewClientFromJSON(ctx, []byte(credentialsJSON))
+	if err != nil {
+		return nil, fmt.Errorf("reading GOOGLE_SERVICE_ACCOUNT_JSON: %w", err)
+	}
+	slog.Info("Google Drive tools enabled", "credentials", "GOOGLE_SERVICE_ACCOUNT_JSON")
+	return driveClient, nil
 }
 
 // buildRerankerClient constructs the reranker from the environment. It returns

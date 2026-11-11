@@ -58,6 +58,10 @@ All configuration is via environment variables.
 | `RERANKER_MODEL_NAME`                    | _(unset)_                           | Reranker model name. Required when `ENABLE_RERANKER=true`.                                                                           |
 | `RERANKER_API_KEY`                       | _(unset)_                           | API key for the reranker service, if it requires one. Sent as a bearer token, so prefer an `https://` endpoint.                      |
 | `RERANKER_CANDIDATE_POOL`                | `50`                                | Candidates sent to the reranker per query. Must be between 1 and 100. An invalid value fails startup rather than falling back.       |
+| `GOOGLE_SERVICE_ACCOUNT_FILE`            | _(unset)_                           | Path to a Google service account JSON key. Enables `drive_search` and `drive_fetch`. Takes precedence over `GOOGLE_SERVICE_ACCOUNT_JSON`. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`            | _(unset)_                           | The same credentials inline, for deployments that inject secrets as environment variables rather than mounted files. |
+
+When neither Google variable is set, `drive_search` and `drive_fetch` are not registered at all, so a model connecting to a deployment that crawls only S3 or git never sees them. When one is set but unusable, startup fails rather than registering tools that error on every call.
 
 ### Reranking
 
@@ -89,9 +93,9 @@ Depth is the setting that matters most: published ablation on table-heavy corpor
 recall@5 at 0.458 for a pool of 20, 0.826 for 50 and 0.888 for 100, with reranking doing
 nothing below about 20. The default of 50 is the conservative point on that curve. Raising
 it to 100 is cheap on the Snowflake side, since the query has no vector index and scans
-regardless, but it increases reranker latency proportionally. Benchmark before raising it:
-some cross-encoders score a query and document pair autoregressively and can exceed a
-second per query at depth.
+regardless, but it increases reranker latency proportionally: cost scales with the number
+of candidate prefills, so doubling the pool roughly doubles the reranker's work. Benchmark
+before raising it. A large reranker can exceed a second per query at depth.
 
 
 The Snowflake connection uses the `PUBLIC` role by default to avoid defaulting to an overprivileged role.
@@ -117,6 +121,9 @@ RERANKER_ENDPOINT=https://your-reranker-service/v1/rerank
 RERANKER_MODEL_NAME=your-reranker-model-name
 RERANKER_API_KEY=your-api-key
 RERANKER_CANDIDATE_POOL=50
+
+# Optional: the Google Drive tools. Off unless one of these is set.
+GOOGLE_SERVICE_ACCOUNT_FILE=/etc/gdrive/credentials.json
 ```
 
 ## Running
@@ -230,7 +237,7 @@ The full authorization flow follows the [MCP Authorization specification (2025-1
 
 ## Tools
 
-All four tools are reached over `POST <MCP_PUBLIC_URL>/mcp` with a Bearer token. Access is row-level: every tool runs its Snowflake queries as the authenticated user, so a caller only ever sees the rows their Snowflake grants and row access policies allow.
+All tools are reached over `POST <MCP_PUBLIC_URL>/mcp` with a Bearer token. Access is row-level: every Snowflake-backed tool runs its queries as the authenticated user, so a caller only ever sees the rows their Snowflake grants and row access policies allow. The two Drive tools are not Snowflake-backed and enforce access differently; see [Drive access control](#drive-access-control).
 
 ### Call order
 
@@ -242,7 +249,13 @@ get_chunks_for_embeddings                   <- search by query
 get_processed_document                      <- full markdown document
          |  (optional)
 get_citation_image                          <- cropped page image for a chunk
+
+drive_search                                <- find a file by name or keyword
+         |
+drive_fetch                                 <- temporary download URL for it
 ```
+
+The two branches are separate. `get_chunks_for_embeddings` answers questions from document text; `drive_search` and `drive_fetch` hand back the original file when the user wants the document itself rather than an answer from it.
 
 ### Result shape and errors
 
@@ -408,6 +421,59 @@ Two pipeline settings have to be in place for a citation image to exist:
 
 A chunk that is absent and a chunk hidden from the caller by a row access policy both return `Error: no chunk with that chunk_id is available in this pipeline.` The Snowflake lookup is the authorization check and the only one, so the two are deliberately indistinguishable. A failed lookup (the warehouse being briefly unreachable) is reported differently and says it is worth retrying.
 
+### `drive_search`
+
+Finds Google Drive files by keyword and returns their IDs. Returns identifiers, not content.
+
+**Request:**
+
+| Parameter       | Type   | Required | Description                                                                                     |
+| --------------- | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `pipeline_name` | string | Yes      | Pipeline whose crawled corpus the results are limited to. Must have a `googleDrive` SourceCrawler stage; anything else is rejected. |
+| `query`         | string | Yes      | Words matched against file names and indexed contents. Matching is whole-word and case-insensitive, so `report` matches `Reports` but `repo` does not match `report`. Wrap the value in double quotes to match an exact phrase. |
+| `max_results`   | int    | No       | Defaults to 10, capped at 25.                                                                   |
+
+**Response:** one text block, a summary line followed by a JSON array of `{file_id, name, mime_type, web_view_link, modified_time, owner, size_bytes}`, in Drive's own relevance order. No ordering is requested from Drive, because asking for one discards the relevance ranking a `fullText` query is scored by.
+
+Folders and shortcuts are excluded from the query. A folder matches on its name and has no content, and a shortcut carries its own ID rather than its target's, so either would hand back an ID that resolves to nothing readable.
+
+The Drive query itself is unscoped: it runs as the server's service account across everything that account can see, not just the pipeline's configured folders. Results are then narrowed to files the pipeline has crawled and the caller may read.
+
+Because that narrowing happens after Drive has ranked, the search follows Drive's `nextPageToken` rather than filtering a single page — otherwise it would report "nothing found" when it meant "nothing on the first page", which for a corpus the caller mostly cannot read is the common case. It gathers four candidates per requested result, stopping at 200 candidates or 5 pages, whichever comes first. Each candidate costs one object read for its stored permissions, and those run 10 at a time.
+
+Two conditions append a `NOTE:` line to the response so the model does not read a short list as a complete one. Neither says how many files were withheld, which would leak their existence.
+
+- Drive set `incompleteSearch`, meaning it did not search everything. Common on shared drives.
+- The page budget stopped the walk before the matches ran out.
+
+### `drive_fetch`
+
+Returns a temporary download URL for a Drive file the pipeline has already crawled. The bytes come from the file store the SourceCrawler downloaded into, not from Drive.
+
+**Request:**
+
+| Parameter       | Type   | Required | Description                                                                                     |
+| --------------- | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `pipeline_name` | string | Yes      | Pipeline that crawled the file. Must have a `googleDrive` SourceCrawler stage.                  |
+| `file_id`       | string | Yes      | Google Drive file ID, as returned by `drive_search`. Must match Drive's ID alphabet; anything else is rejected before any lookup. |
+
+**Response:** one text block, a summary line followed by `{file_id, download_url, expires_in_seconds}`.
+
+The URL is presigned and expires after 15 minutes. It is a bearer capability: until it expires, anyone holding it downloads the file with no further authentication. It is deliberately never written to the server logs, which outlive it.
+
+### Drive access control
+
+Neither Drive tool consults Snowflake, so the row access policies that protect the other tools do not apply. They enforce the caller's Google Drive permissions instead, using the ACL the SourceCrawler already writes beside every file it downloads, at `pipelines/<pipeline>/stages/<stage>/permissions/<fileID>.json`.
+
+The match is on the LDAP uid. The crawler resolves each `user` grant through LDAP and flattens each `group` grant to its members' uids, which is the same value an OAuth token carries as `preferred_username`. A caller identified by email matches on the part before the `@`.
+
+Two consequences worth knowing before deploying:
+
+- **A `domain` grant only matches a caller whose own identity carries that domain.** A caller known by a bare uid has no domain to compare, so a file shared with a whole Google Workspace domain and with nobody by name is not reachable for them. This is deliberate: matching domain grants for bare-uid callers would admit every authenticated caller to every domain-shared file, since the server cannot tell which domain they belong to. If your SSO issues bare uids and your corpus relies on domain sharing, most files will be unreachable until they are shared explicitly or by group.
+- **A crawled file with no stored ACL is treated as readable by nobody.** The crawler refreshes permissions on every sync, so a missing ACL means the sync did not finish, and defaulting the other way would hand out a document precisely when the system is in an unknown state.
+
+A file that does not exist, one the pipeline never crawled, one with no stored ACL, and one the caller may not read all return the same `drive_fetch` message: `Error: no file with that file_id is available to you in this pipeline.` Telling them apart would make the tool an existence oracle over documents the caller cannot see. A failure to reach the file store is reported differently and says it is worth retrying, so an outage is never reported as an absent document.
+
 ## Package Structure
 
 ```
@@ -419,6 +485,9 @@ internal/mcp/tools/
   get_chunks.go             ← get_chunks_for_embeddings tool
   get_processed_document.go ← get_processed_document tool
   get_citation_image.go     ← get_citation_image tool
+  drive_search.go           ← drive_search tool
+  drive_fetch.go            ← drive_fetch tool
+  drive.go                  ← shared file store access and Drive ACL checks
 
 pkg/auth/
   provider.go               ← Provider interface (extensible)

@@ -142,12 +142,24 @@ func GetPresignClient() (*s3.PresignClient, error) {
 }
 
 func GetPresignedURL(ctx context.Context, s3Client *s3.Client, bucketName, objectKey string) (string, error) {
+	return GetPresignedURLWithExpiry(ctx, s3Client, bucketName, objectKey, 60*time.Minute)
+}
+
+// GetPresignedURLWithExpiry returns a GET URL for an object that stops
+// working after expiry.
+//
+// The URL is a bearer capability: until it expires, anyone holding it reads
+// the object with no further authentication. Authorize the caller before
+// minting one, and keep expiry no longer than they need.
+func GetPresignedURLWithExpiry(
+	ctx context.Context, s3Client *s3.Client, bucketName, objectKey string, expiry time.Duration,
+) (string, error) {
 	presignClient := s3.NewPresignClient(s3Client)
 	request, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucketName),
 		Key:    aws.String(objectKey),
 	}, func(options *s3.PresignOptions) {
-		options.Expires = 60 * time.Minute
+		options.Expires = expiry
 	})
 	if err != nil {
 		return "", err
