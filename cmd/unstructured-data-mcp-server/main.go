@@ -101,7 +101,18 @@ func main() {
 	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
 
 	oauthStore := auth.NewOAuthStore()
-	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection)
+
+	var middlewareOpts []auth.MiddlewareOption
+	if oauthCfg.TokenValidation == auth.ValidationJWKS {
+		middlewareOpts = append(middlewareOpts, auth.WithJWKSVerifier(
+			auth.NewJWKSVerifier(oauthCfg.JWKSURL, oauthCfg.Issuer, nil)))
+		slog.Warn("validating tokens by signature, not introspection",
+			"issuer", oauthCfg.Issuer,
+			"note", "a token revoked before it expires stays accepted; use introspection in production")
+	}
+
+	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection,
+		middlewareOpts...)
 	oauthServer := auth.NewOAuthServer(provider, oauthCfg.CallbackURL, oauthStore, slog.Default())
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(
