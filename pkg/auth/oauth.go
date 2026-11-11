@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -41,7 +42,38 @@ type OAuthConfig struct {
 	IntrospectionURL     string
 	CallbackURL          string
 	DisableIntrospection bool
+
+	// TokenValidation selects how a Bearer token is checked. See the
+	// ValidationMode constants.
+	TokenValidation ValidationMode
+	// JWKSURL publishes the issuer's signing keys. Required by ValidationJWKS.
+	JWKSURL string
+	// Issuer is the exact "iss" every accepted token must carry. Required by
+	// ValidationJWKS, since a signature alone does not say who vouched for it.
+	Issuer string
 }
+
+// URL schemes, named because the package compares and builds them in several
+// places and a typo in a scheme comparison fails open.
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+)
+
+// ValidationMode selects how the middleware decides a Bearer token is genuine.
+type ValidationMode string
+
+const (
+	// ValidationIntrospect asks the identity provider about every token. It is
+	// the default, and the only mode that notices a token revoked before it
+	// expires.
+	ValidationIntrospect ValidationMode = "introspect"
+
+	// ValidationJWKS verifies the token's signature against the issuer's
+	// published keys. For providers that do not offer introspection. The check
+	// is offline, so a revoked token stays usable until it expires.
+	ValidationJWKS ValidationMode = "jwks"
+)
 
 // NewOAuthConfigFromEnv creates an OAuthConfig from SSO_* environment variables.
 func NewOAuthConfigFromEnv() (*OAuthConfig, error) {
@@ -53,8 +85,63 @@ func NewOAuthConfigFromEnv() (*OAuthConfig, error) {
 		IntrospectionURL:     os.Getenv("SSO_INTROSPECTION_URL"),
 		CallbackURL:          os.Getenv("SSO_CALLBACK_URL"),
 		DisableIntrospection: boolFromEnv("SSO_DISABLE_INTROSPECTION"),
+		TokenValidation:      ValidationMode(strings.TrimSpace(os.Getenv("SSO_TOKEN_VALIDATION"))),
+		JWKSURL:              strings.TrimSpace(os.Getenv("SSO_JWKS_URL")),
+		Issuer:               strings.TrimSpace(os.Getenv("SSO_ISSUER")),
 	}
+
+	switch cfg.TokenValidation {
+	case "":
+		cfg.TokenValidation = ValidationIntrospect
+	case ValidationIntrospect, ValidationJWKS:
+	default:
+		return nil, fmt.Errorf("SSO_TOKEN_VALIDATION is %q, want %q or %q",
+			cfg.TokenValidation, ValidationIntrospect, ValidationJWKS)
+	}
+
+	// Fail at startup rather than on the first request. Without these two a
+	// JWKS verifier cannot tell a genuine token from one signed by anybody.
+	if cfg.TokenValidation == ValidationJWKS {
+		if cfg.JWKSURL == "" {
+			return nil, errors.New("SSO_TOKEN_VALIDATION=jwks requires SSO_JWKS_URL")
+		}
+		if cfg.Issuer == "" {
+			return nil, errors.New("SSO_TOKEN_VALIDATION=jwks requires SSO_ISSUER")
+		}
+		if err := requireSecureURL("SSO_JWKS_URL", cfg.JWKSURL); err != nil {
+			return nil, err
+		}
+		// Both flags are answers to the same problem, and the older one wins
+		// silently in validateToken, which would leave signatures unchecked
+		// while the startup log claims otherwise.
+		if cfg.DisableIntrospection {
+			return nil, errors.New(
+				"SSO_TOKEN_VALIDATION=jwks cannot be combined with SSO_DISABLE_INTROSPECTION=true: " +
+					"unset SSO_DISABLE_INTROSPECTION so tokens are actually verified")
+		}
+	}
+
 	return cfg, nil
+}
+
+// requireSecureURL rejects a plaintext key or token endpoint, because anyone on
+// the path could then answer with their own signing key and mint tokens for any
+// user. Loopback is allowed so a local provider still works.
+func requireSecureURL(name, raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s is not a valid URL: %w", name, err)
+	}
+	if parsed.Scheme == schemeHTTPS {
+		return nil
+	}
+	if parsed.Scheme == schemeHTTP {
+		switch host := parsed.Hostname(); host {
+		case "localhost", "127.0.0.1", "::1":
+			return nil
+		}
+	}
+	return fmt.Errorf("%s must use https, got %q", name, parsed.Scheme)
 }
 
 // boolFromEnv returns true when the environment variable parses as a boolean true value.
@@ -118,17 +205,44 @@ type Middleware struct {
 	cacheTTL             time.Duration
 	done                 chan struct{}
 	disableIntrospection bool
+	jwks                 *JWKSVerifier
 }
+
+// MiddlewareOption adjusts a Middleware at construction.
+type MiddlewareOption func(*Middleware)
+
+// WithJWKSVerifier validates tokens by signature instead of by introspection,
+// for an identity provider that does not offer an introspection endpoint.
+func WithJWKSVerifier(verifier *JWKSVerifier) MiddlewareOption {
+	return func(m *Middleware) { m.jwks = verifier }
+}
+
+// UsesJWKS reports whether tokens are validated by signature, for callers that
+// must tell a real check from the unvalidated path left by
+// SSO_DISABLE_INTROSPECTION.
+//
+// Deliberately answers no when that flag is also set, even though the verifier
+// would in fact run, so a confused configuration can only ever switch a
+// dependent feature off.
+func (m *Middleware) UsesJWKS() bool { return m.jwks != nil && !m.disableIntrospection }
 
 // NewMiddleware creates a new OAuth middleware that validates tokens
 // by delegating introspection to the given Provider.
-func NewMiddleware(provider Provider, logger *slog.Logger, disableIntrospection bool) *Middleware {
+func NewMiddleware(
+	provider Provider,
+	logger *slog.Logger,
+	disableIntrospection bool,
+	opts ...MiddlewareOption,
+) *Middleware {
 	m := &Middleware{
 		provider:             provider,
 		logger:               logger,
 		cacheTTL:             5 * time.Minute,
 		done:                 make(chan struct{}),
 		disableIntrospection: disableIntrospection,
+	}
+	for _, opt := range opts {
+		opt(m)
 	}
 	if disableIntrospection {
 		logger.Warn("OAuth token introspection is disabled; Bearer tokens are accepted without validation")
@@ -196,7 +310,10 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 
 // validateToken checks the cache first, then delegates to the Provider.
 func (m *Middleware) validateToken(ctx context.Context, token string) (*IntrospectionResponse, error) {
-	if m.disableIntrospection {
+	// A configured verifier outranks the unvalidated path, so the two flags
+	// together can never be weaker than the verifier alone. The config layer
+	// rejects the combination too; this is the backstop.
+	if m.disableIntrospection && m.jwks == nil {
 		return claimsFromJWT(token), nil
 	}
 
@@ -207,7 +324,7 @@ func (m *Middleware) validateToken(ctx context.Context, token string) (*Introspe
 		m.cache.Delete(token)
 	}
 
-	resp, err := m.provider.IntrospectToken(ctx, token)
+	resp, err := m.validateUncached(ctx, token)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +342,30 @@ func (m *Middleware) validateToken(ctx context.Context, token string) (*Introspe
 		})
 	}
 
+	return resp, nil
+}
+
+// validateUncached checks one token with whichever mechanism is configured.
+//
+// A JWKS verification failure is reported as an inactive token rather than an
+// error, so a bad signature reads to the caller as "not authorised" and not as
+// a server fault. A failure to reach the key endpoint is still an error.
+func (m *Middleware) validateUncached(ctx context.Context, token string) (*IntrospectionResponse, error) {
+	if m.jwks == nil {
+		return m.provider.IntrospectToken(ctx, token)
+	}
+
+	resp, err := m.jwks.Verify(ctx, token)
+	if err != nil {
+		if errors.Is(err, ErrNoSuchKey) || errors.Is(err, jwt.ErrTokenMalformed) ||
+			errors.Is(err, jwt.ErrTokenSignatureInvalid) || errors.Is(err, jwt.ErrTokenExpired) ||
+			errors.Is(err, jwt.ErrTokenInvalidIssuer) || errors.Is(err, jwt.ErrTokenNotValidYet) ||
+			errors.Is(err, jwt.ErrTokenRequiredClaimMissing) {
+			m.logger.Warn("token failed signature verification", "error", err)
+			return &IntrospectionResponse{Active: false}, nil
+		}
+		return nil, err
+	}
 	return resp, nil
 }
 
