@@ -106,3 +106,91 @@ func TestS3Destination_SkipsAnUnusableSyncer(t *testing.T) {
 	require.NotNil(t, destination)
 	assert.Equal(t, "output-bucket", destination.Bucket)
 }
+
+// driveStage builds a crawler stage of the given source type.
+func driveStage(
+	sourceType operatorv1alpha1.UnstructuredDataType, folderURL string,
+) operatorv1alpha1.PipelineStage {
+	stage := operatorv1alpha1.PipelineStage{
+		Name: "crawl",
+		Type: operatorv1alpha1.StageTypeSourceCrawler,
+		SourceCrawlerConfig: &operatorv1alpha1.SourceCrawlerConfig{
+			Type: sourceType,
+		},
+	}
+	if folderURL != "" {
+		stage.SourceCrawlerConfig.GoogleDriveConfig = &operatorv1alpha1.GoogleDriveConfig{
+			Folders: []operatorv1alpha1.GoogleDriveFolders{{URL: folderURL}},
+		}
+	}
+	return stage
+}
+
+func TestDriveSearchStage(t *testing.T) {
+	const folder = "https://drive.google.com/drive/folders/abc123"
+
+	tests := []struct {
+		name          string
+		pipeline      *operatorv1alpha1.UnstructuredDataPipeline
+		wantNil       bool
+		wantStageName string
+	}{
+		{
+			// No marker needed: crawling Drive is what makes it searchable.
+			name: "a Drive crawler",
+			pipeline: pipelineWithStages(
+				driveStage(operatorv1alpha1.TypeGoogleDrive, folder),
+			),
+			wantStageName: "crawl",
+		},
+		{
+			// The corpus and the credential both come from the Drive crawler,
+			// so another source offers neither.
+			name: "an S3 crawler",
+			pipeline: pipelineWithStages(
+				driveStage(operatorv1alpha1.TypeS3, ""),
+			),
+			wantNil: true,
+		},
+		{
+			name: "a Drive crawler with no googleDriveConfig",
+			pipeline: pipelineWithStages(
+				driveStage(operatorv1alpha1.TypeGoogleDrive, ""),
+			),
+			wantNil: true,
+		},
+		{
+			name:     "a pipeline with no stages",
+			pipeline: pipelineWithStages(),
+			wantNil:  true,
+		},
+		{
+			// The stage name locates the files in the destination bucket, so
+			// the right one has to come back, not just a non-nil config.
+			name: "the Drive stage is found among others",
+			pipeline: pipelineWithStages(
+				operatorv1alpha1.PipelineStage{Name: "convert", Type: operatorv1alpha1.StageTypeDocumentProcessor},
+				driveStage(operatorv1alpha1.TypeGoogleDrive, folder),
+			),
+			wantStageName: "crawl",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, stage := driveSearchStage(tt.pipeline)
+
+			if tt.wantNil {
+				assert.Nil(t, got)
+				assert.Empty(t, stage.Name)
+				return
+			}
+			require.NotNil(t, got)
+			require.Len(t, got.Folders, 1)
+			assert.Equal(t, folder, got.Folders[0].URL)
+			// The whole stage comes back so the caller reads its query config
+			// from the same place the folders came from.
+			assert.Equal(t, tt.wantStageName, stage.Name)
+		})
+	}
+}

@@ -268,7 +268,7 @@ The full authorization flow follows the [MCP Authorization specification (2025-1
 
 ## Tools
 
-All four tools are reached over `POST <MCP_PUBLIC_URL>/mcp` with a Bearer token. Access is row-level: every tool runs its Snowflake queries as the authenticated user, so a caller only ever sees the rows their Snowflake grants and row access policies allow.
+All five tools are reached over `POST <MCP_PUBLIC_URL>/mcp` with a Bearer token. Access is row-level: every tool runs its Snowflake queries as the authenticated user, so a caller only ever sees the rows their Snowflake grants and row access policies allow.
 
 ### Call order
 
@@ -445,6 +445,86 @@ Two pipeline settings have to be in place for a citation image to exist:
 - The DestinationSyncer stage must list the DocumentProcessor stage in its `dependsOn`. The image is read from the destination bucket with the pipeline's own credentials, so a syncer that only syncs `embed` leaves nothing to read.
 
 A chunk that is absent and a chunk hidden from the caller by a row access policy both return `Error: no chunk with that chunk_id is available in this pipeline.` The Snowflake lookup is the authorization check and the only one, so the two are deliberately indistinguishable. A failed lookup (the warehouse being briefly unreachable) is reported differently and says it is worth retrying.
+
+### `search_google_drive`
+
+Finds files by name or exact wording in a pipeline's Google Drive folders, using Drive's own search. Returns file metadata and a link, never file contents.
+
+Use it to locate a document the user named, or to find an exact term such as an error code. Use `get_chunks_for_embeddings` instead to answer a question from document content: that tool searches by meaning, this one matches words.
+
+There is nothing to switch on. Any pipeline with a Google Drive crawler stage can be searched, provided that stage records its files in Snowflake and the server is configured for the tool (see below):
+
+```yaml
+- name: crawl
+  type: SourceCrawler
+  sourceCrawlerConfig:
+    type: googleDrive
+    googleDriveConfig:
+      folders:
+        - url: https://drive.google.com/drive/folders/<id>
+  queryConfig:
+    type: snowflake
+    snowflake:
+      account: my-account
+      database: my_db
+      schema: marts
+      table: crawl_mv
+```
+
+The `snowflake` block is what makes the stage searchable rather than any marker. Drive says which files match, and the row access policy over that table decides which of them the caller may see, so without it the tool has no way to filter and refuses to answer.
+
+Calling the tool on a pipeline with no Google Drive crawler returns an error naming that, rather than an empty result.
+
+Only files the crawler has already indexed can be returned. Access is decided from the crawl table, so a file uploaded since the last crawl is matched by Drive, has no row yet, and is filtered out. It becomes searchable once the crawl picks it up.
+
+**Request:**
+
+| Parameter       | Type   | Required | Description                                                                                 |
+| --------------- | ------ | -------- | --------------------------------------------------------------------------------------------- |
+| `pipeline_name` | string | Yes      | Name of the UnstructuredDataPipeline. If not known, call `list_unstructured_data_pipelines_for_user` first. |
+| `query`         | string | Yes      | Words to match. Whole word and case insensitive, so `report` also matches `Reports`. Wrap in double quotes for an exact phrase. No partial word matching: `repo` does not match `report`. |
+| `limit`         | int    | No       | Files to return. Defaults to 10, capped at 100.                                             |
+
+**Response:** an array of file objects.
+
+| Field           | Type   | Description                                                      |
+| --------------- | ------ | ------------------------------------------------------------------ |
+| `file_id`       | string | Drive file identifier of the matched file.                       |
+| `name`          | string | File name.                                                       |
+| `mime_type`     | string | Drive MIME type.                                                 |
+| `modified_time` | string | RFC 3339 timestamp of the last change.                           |
+| `web_view_link` | string | Link to open the file in Drive.                                  |
+| `download_url`  | string | Presigned link to the copy the crawler stored in S3, valid for 5 minutes and usable with no Google credential. Omitted if the link could not be signed. The link is not checked against S3 first, so a file removed from the bucket since the last crawl gives a URL that 404s. |
+
+An empty result can mean the caller has no access rather than that nothing matched. The two are deliberately indistinguishable, since reporting how many files were hidden would confirm that matching files exist.
+
+`file_id` is the same identifier `get_processed_document` and `get_citation_image` take, but only for files the pipeline has already crawled. Drive also matches files added since the last crawl, and those tools will not find them.
+
+#### How results are filtered
+
+The search runs as the pipeline's own Google service account, which can read the whole corpus. Drive is asked what matches; Snowflake is asked who may see it. The caller never authenticates to Google.
+
+Access is decided by querying the crawl table as the caller, with their own Red Hat SSO token, so the row access policy over that table drops the files they may not read. That is the same gate every other tool in this server answers to, which is why search cannot be offered for a pipeline whose crawler stage has no `queryConfig.snowflake`. An error from that query is never read as "no results": a caller is shown nothing rather than something unchecked.
+
+Because the decision comes from rows written at crawl time, a permission revoked in Drive keeps working until the next crawl refreshes them. The reverse holds too: a file uploaded since the last crawl is found by Drive, has no row yet, and so does not appear.
+
+Results are confined to the folders the pipeline declares. Drive's `'<id>' in parents` matches direct children only, with no recursive operator, so the server expands each declared folder to its full subtree and names every folder in the query. Without that, a file one level down is invisible to search while still being indexed by the crawler. The expansion honours `skipFolders`, so search and crawl agree on the corpus, and it is cached per pipeline for ten minutes, which means a newly added folder is not searchable until the entry expires. A folder that was never shared with the service account is reported as an error rather than returning nothing, because listing such a folder answers with an empty list and would otherwise look like an empty corpus.
+
+A query naming too many folders is refused rather than searched partially. Drive sends the query as a GET parameter and its frontend rejects a URL past roughly 16KB with an HTML 400 carrying no JSON error, which lands around 310 folder clauses. The folder count is capped below that, and the built query is checked against a byte limit as well, because the search term shares the same budget and a long term can overflow a legal tree.
+
+Each result carries a short-lived presigned URL to the copy the crawler stored in the destination bucket, so the caller can fetch the file without any Google credential. The object key comes from the warehouse row's `FILE_PATH` rather than being reconstructed, and the link is signed only after the access check, so one is never minted for a file the caller may not read. Signing is offline, so the object is not checked for existence first.
+
+Shortcuts are excluded from results entirely. A shortcut's ACL is inherited from the folder it sits in rather than from the file it points at, so approving a shortcut says nothing about whether the caller may read its target. Drive still finds the target directly when the caller can read it, so nothing is lost.
+
+Paging gathers more candidates than the caller asked for, because access is decided afterwards and some will be dropped. Paging stops once enough are held, the pages run out, or a budget of 5 pages is reached. The response carries a note saying coverage was partial when the budget stops a short result or when Drive sets `incompleteSearch`. It never says how many files were withheld, because that count would confirm matching files exist.
+
+#### Configuration
+
+The tool registers only when introspection is on, and logs the reason when it is not:
+
+| Setting                                    | Why it is required                                                                 |
+| ------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `SSO_DISABLE_INTROSPECTION` unset or false | The caller's verified identity is what the Snowflake query runs as, so an unverified one would mean an unfiltered search. |
 
 ## Package Structure
 
