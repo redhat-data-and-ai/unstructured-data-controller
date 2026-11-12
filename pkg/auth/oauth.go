@@ -18,6 +18,7 @@ package auth
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -313,6 +314,95 @@ func (m *Middleware) Authenticate(next http.Handler) http.Handler {
 	})
 }
 
+// ErrSessionUserMismatch means a request arrived on an MCP session that was
+// opened by a different bearer token.
+var ErrSessionUserMismatch = errors.New("request token does not match the session it arrived on")
+
+// TokenIdentifier validates a bearer token and reports who holds it.
+// Middleware implements it.
+type TokenIdentifier interface {
+	Identify(ctx context.Context, token string) (*IntrospectionResponse, error)
+}
+
+// Identify validates a token and returns its introspection result, reusing the
+// middleware's cache so a repeat lookup within one request is free.
+func (m *Middleware) Identify(ctx context.Context, token string) (*IntrospectionResponse, error) {
+	return m.validateToken(ctx, token)
+}
+
+// SubjectOf returns the most stable identifier a provider gave for a token, or
+// "" when it gave none.
+func SubjectOf(resp *IntrospectionResponse) string {
+	if resp == nil {
+		return ""
+	}
+	if resp.Sub != "" {
+		return resp.Sub
+	}
+	return resp.Username
+}
+
+// CheckRequestMatchesSession reports whether this request was sent by the same
+// caller who opened the session, and returns the request's own bearer token.
+//
+// The returned token is the one to act with. An MCP handler's context belongs
+// to the session, so the token stored there is whatever opened it; after a
+// refresh that is stale while the request carries a live one.
+//
+// A different token is accepted only when it resolves to the same subject,
+// which is what makes a refresh work. Returns ErrSessionUserMismatch
+// otherwise, and never returns a token alongside an error.
+func CheckRequestMatchesSession(
+	ctx context.Context, requestHeader http.Header, identifier TokenIdentifier,
+) (string, error) {
+	sessionToken, ok := AccessTokenFromContext(ctx)
+	if !ok || sessionToken == "" {
+		return "", ErrSessionUserMismatch
+	}
+	if requestHeader == nil {
+		return "", ErrSessionUserMismatch
+	}
+
+	requestToken, err := bearerTokenFromHeader(requestHeader.Get("Authorization"))
+	if err != nil {
+		return "", ErrSessionUserMismatch
+	}
+
+	// Same token needs no second opinion. Constant time because it compares a
+	// secret and is reachable by anyone who can reach the endpoint.
+	if subtle.ConstantTimeCompare([]byte(sessionToken), []byte(requestToken)) == 1 {
+		return requestToken, nil
+	}
+
+	// A different token is only acceptable if it belongs to the same person,
+	// which covers a refresh. Without an identifier there is no way to tell,
+	// so refuse.
+	if identifier == nil {
+		return "", ErrSessionUserMismatch
+	}
+
+	sessionInfo, ok := TokenInfoFromContext(ctx)
+	if !ok {
+		return "", ErrSessionUserMismatch
+	}
+	sessionSubject := SubjectOf(sessionInfo)
+	if sessionSubject == "" {
+		return "", fmt.Errorf("%w: the session's token carries no subject", ErrSessionUserMismatch)
+	}
+
+	requestInfo, err := identifier.Identify(ctx, requestToken)
+	if err != nil {
+		return "", fmt.Errorf("%w: validating the request token: %w", ErrSessionUserMismatch, err)
+	}
+	if requestInfo == nil || !requestInfo.Active {
+		return "", fmt.Errorf("%w: the request's token is not active", ErrSessionUserMismatch)
+	}
+	if SubjectOf(requestInfo) != sessionSubject {
+		return "", ErrSessionUserMismatch
+	}
+	return requestToken, nil
+}
+
 // validateToken checks the cache first, then delegates to the Provider.
 func (m *Middleware) validateToken(ctx context.Context, token string) (*IntrospectionResponse, error) {
 	// A configured verifier outranks the unvalidated path, so the two flags
@@ -457,7 +547,11 @@ func requestBaseURL(r *http.Request) string {
 }
 
 func extractBearerToken(r *http.Request) (string, error) {
-	header := r.Header.Get("Authorization")
+	return bearerTokenFromHeader(r.Header.Get("Authorization"))
+}
+
+// bearerTokenFromHeader parses one Authorization header value.
+func bearerTokenFromHeader(header string) (string, error) {
 	if header == "" {
 		return "", errors.New("missing Authorization header")
 	}

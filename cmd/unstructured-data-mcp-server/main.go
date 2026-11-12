@@ -95,11 +95,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	mcptools.RegisterListPipelines(mcpServer, k8sClient)
-	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
-	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
-	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
-
 	oauthStore := auth.NewOAuthStore()
 
 	var middlewareOpts []auth.MiddlewareOption
@@ -111,9 +106,23 @@ func main() {
 			"note", "a token revoked before it expires stays accepted; use introspection in production")
 	}
 
+	// Built before the tools because the Drive search tool needs it to confirm
+	// a request belongs to the session it arrived on.
 	oauthMiddleware := auth.NewMiddleware(provider, slog.Default(), oauthCfg.DisableIntrospection,
 		middlewareOpts...)
 	oauthServer := auth.NewOAuthServer(provider, oauthCfg.CallbackURL, oauthStore, slog.Default())
+
+	mcptools.RegisterListPipelines(mcpServer, k8sClient)
+	mcptools.RegisterGetChunksForEmbeddings(mcpServer, k8sClient, embeddingClient, rerankerClient, rerankerPoolDepth)
+	mcptools.RegisterGetProcessedDocument(mcpServer, k8sClient)
+	mcptools.RegisterGetCitationImage(mcpServer, k8sClient)
+
+	if driveSearchOpts, reason := driveSearchOptions(oauthCfg, oauthMiddleware); driveSearchOpts != nil {
+		mcptools.RegisterSearchGoogleDrive(mcpServer, k8sClient, *driveSearchOpts)
+		slog.Info("Google Drive search enabled")
+	} else {
+		slog.Info("Google Drive search disabled", "reason", reason)
+	}
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(_ *http.Request) *mcp.Server { return mcpServer },
@@ -185,6 +194,24 @@ func main() {
 	oauthMiddleware.Close()
 	oauthStore.Close()
 	slog.Info("MCP server stopped")
+}
+
+// driveSearchOptions returns the settings for the Drive search tool, or nil and
+// the reason it stays switched off.
+//
+// Drive search runs as a service account that can read the whole corpus, and
+// narrows the results by querying Snowflake as the caller. So the caller's
+// identity decides what comes back, and the tool refuses to exist unless that
+// identity can be trusted. A failure to start the feature, never to degrade it.
+func driveSearchOptions(
+	oauthCfg *auth.OAuthConfig,
+	identifier auth.TokenIdentifier,
+) (*mcptools.DriveSearchOptions, string) {
+	if oauthCfg.DisableIntrospection {
+		return nil, "SSO_DISABLE_INTROSPECTION is set, so the caller's identity is an unverified claim"
+	}
+
+	return &mcptools.DriveSearchOptions{Identifier: identifier}, ""
 }
 
 // buildRerankerClient constructs the reranker from the environment. It returns
