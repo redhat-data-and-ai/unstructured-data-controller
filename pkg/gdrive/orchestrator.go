@@ -64,7 +64,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			"credentials file not found: %s", o.config.CredentialsFile)
 	}
 
-	if err := os.MkdirAll(o.config.OutputDir, 0755); err != nil {
+	if err := os.MkdirAll(o.config.OutputDir, 0o750); err != nil {
 		return fmt.Errorf(
 			"failed to create output directory: %w", err)
 	}
@@ -310,7 +310,7 @@ func (o *Orchestrator) processFolderIDs(
 	}
 	crawlFile := fmt.Sprintf(
 		"%s/crawl_metadata.json", o.config.OutputDir)
-	if err := os.WriteFile(crawlFile, crawlJSON, 0644); err != nil {
+	if err := os.WriteFile(crawlFile, crawlJSON, 0o600); err != nil {
 		return fmt.Errorf(
 			"failed to write crawl metadata: %w", err)
 	}
@@ -326,7 +326,7 @@ func (o *Orchestrator) processFolderIDs(
 	inaccessibleFile := fmt.Sprintf(
 		"%s/inaccessible_items.json", o.config.OutputDir)
 	if err := os.WriteFile(
-		inaccessibleFile, inaccessibleJSON, 0644); err != nil {
+		inaccessibleFile, inaccessibleJSON, 0o600); err != nil {
 		return fmt.Errorf(
 			"failed to write inaccessible items: %w", err)
 	}
@@ -430,7 +430,7 @@ func (o *Orchestrator) processFileIDsWithClient(
 				"%s/permissions_%s.json",
 				o.config.OutputDir, fileID)
 			if err := os.WriteFile(
-				outPath, outputJSON, 0644); err != nil {
+				outPath, outputJSON, 0o600); err != nil {
 				mu.Lock()
 				allErrors = append(allErrors, fmt.Errorf(
 					"failed to write permissions file: %w", err))
@@ -487,5 +487,5 @@ func writeJSONFile(path string, data any) error {
 		return fmt.Errorf(
 			"failed to marshal JSON for %s: %w", path, err)
 	}
-	return os.WriteFile(path, jsonBytes, 0644)
+	return os.WriteFile(path, jsonBytes, 0o600)
 }

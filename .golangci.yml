@@ -15,6 +15,7 @@ linters:
     - ginkgolinter
     - goconst
     - gocyclo
+    - gosec
     - govet
     - ineffassign
     - lll
@@ -37,6 +38,18 @@ linters:
     staticcheck:
       dot-import-whitelist:
         - github.com/onsi/ginkgo/v2
+    gosec:
+      excludes:
+        # G101 flags Secret *key names* (e.g. "VLM_PIPELINE_API_KEY"), not values.
+        - G101
+        # G117 flags config struct fields named APIKey/ClientSecret; these hold
+        # values read from Secrets at runtime, never serialized to disk.
+        - G117
+        # G706 flags logging of operator-supplied env vars, not request data.
+        - G706
+        # G704 flags HTTP calls to endpoints that come from CRD/provider config
+        # set by the cluster admin, never from an inbound request.
+        - G704
     revive:
       enable-all-rules: true
       rules:
@@ -94,6 +107,11 @@ linters:
           - revive
         path: ^test/
         text: "unsecure-url-scheme"
+      # Test fixtures read known-good paths and need no crypto-grade randomness.
+      - linters:
+          - gosec
+        path: (_test\.go|^test/)
+        text: "(G115|G304|G404)"
     paths:
       - third_party$
       - builtin$
