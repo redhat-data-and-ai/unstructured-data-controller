@@ -119,6 +119,9 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			log.Info("querying snowflake by file_id", "database", databaseName, "schema", schemaName, "table", tableName, "file_id", args.FileID)
 			doc, queryErr := snowflake.GetProcessedDocument(ctx, oauthToken, databaseName, schemaName, tableName, args.FileID)
 			if queryErr != nil {
+				if snowflake.IsOAuthTokenExpiredError(queryErr) {
+					return handleOAuthExpiry(ctx, log)
+				}
 				log.Error("failed to get processed document", "error", queryErr)
 				return &mcp.CallToolResult{
 					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve the processed document for file_id %q. Please verify the file_id is correct.", args.FileID)}},
@@ -132,6 +135,9 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			log.Info("querying snowflake by file path pattern", "database", databaseName, "schema", schemaName, "table", tableName, "filePattern", filePattern)
 			count, countErr := snowflake.CountProcessedDocumentsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern)
 			if countErr != nil {
+				if snowflake.IsOAuthTokenExpiredError(countErr) {
+					return handleOAuthExpiry(ctx, log)
+				}
 				log.Error("failed to count matching documents", "error", countErr)
 				return &mcp.CallToolResult{
 					Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve processed documents matching %q.", args.FilePathFilter)}},
@@ -149,6 +155,9 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 				log.Info("pattern matched too many documents, returning file IDs only", "count", count, "max", maxDocuments)
 				fileIDs, listErr := snowflake.ListFileIDsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern)
 				if listErr != nil {
+					if snowflake.IsOAuthTokenExpiredError(listErr) {
+						return handleOAuthExpiry(ctx, log)
+					}
 					log.Error("failed to list matching file IDs", "error", listErr)
 					return &mcp.CallToolResult{
 						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve processed documents matching %q.", args.FilePathFilter)}},
@@ -160,6 +169,9 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			} else {
 				docs, queryErr := snowflake.GetProcessedDocumentsByFilePath(ctx, oauthToken, databaseName, schemaName, tableName, filePattern, maxDocuments)
 				if queryErr != nil {
+					if snowflake.IsOAuthTokenExpiredError(queryErr) {
+						return handleOAuthExpiry(ctx, log)
+					}
 					log.Error("failed to get processed documents", "error", queryErr)
 					return &mcp.CallToolResult{
 						Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error: unable to retrieve processed documents matching %q.", args.FilePathFilter)}},
