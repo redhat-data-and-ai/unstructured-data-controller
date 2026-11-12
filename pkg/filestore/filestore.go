@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -51,7 +52,7 @@ type FileStore struct {
 // rootPath: /var/lib/unstructured/
 // s3Bucket: unstructured-data-bucket
 func New(_ context.Context, rootPath string, s3Bucket string) (*FileStore, error) {
-	if err := os.MkdirAll(rootPath, 0o755); err != nil {
+	if err := os.MkdirAll(rootPath, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create cache directory %s: %w", rootPath, err)
 	}
 
@@ -83,14 +84,14 @@ func (fs *FileStore) Store(ctx context.Context, path string, data []byte) error 
 	directoryStructure := filepath.Dir(localPath)
 	// if there are no directories to create, then we can skip this step and move on to writing the file
 	if directoryStructure != "" {
-		if err := os.MkdirAll(directoryStructure, 0755); err != nil {
+		if err := os.MkdirAll(directoryStructure, 0o750); err != nil {
 			return err
 		}
 	}
 
 	// write to local filesystem
 	logger.Info("writing file to local filesystem", "path", localPath)
-	err := os.WriteFile(localPath, data, 0644)
+	err := os.WriteFile(localPath, data, 0o600)
 	if err != nil {
 		return err
 	}
@@ -172,10 +173,24 @@ func (fs *FileStore) Exists(ctx context.Context, path string) (bool, error) {
 	return fs.fileExistsInS3(ctx, path)
 }
 
+// resolveLocalPath joins path onto the store root and rejects any result that
+// escapes it, so a caller-supplied "../" cannot read outside the cache.
+func (fs *FileStore) resolveLocalPath(path string) (string, error) {
+	localPath := filepath.Join(fs.root, path)
+	cleanRoot := filepath.Clean(fs.root)
+	if localPath != cleanRoot && !strings.HasPrefix(localPath, cleanRoot+string(os.PathSeparator)) {
+		return "", fmt.Errorf("path %q escapes the file store root", path)
+	}
+	return localPath, nil
+}
+
 // Try to retrieve from local filesystem first, if not found, try to retrieve from S3
 // if the file is found in S3, it will be stored in the local cache as well
 func (fs *FileStore) Retrieve(ctx context.Context, path string) ([]byte, error) {
-	localPath := filepath.Join(fs.root, path)
+	localPath, err := fs.resolveLocalPath(path)
+	if err != nil {
+		return nil, err
+	}
 	s3Path := path
 
 	// acquire both the locks first
@@ -187,7 +202,7 @@ func (fs *FileStore) Retrieve(ctx context.Context, path string) ([]byte, error) 
 		return nil, err
 	}
 	if existsInCache {
-		return os.ReadFile(localPath)
+		return os.ReadFile(localPath) // #nosec G304 -- resolveLocalPath confines localPath to fs.root
 	}
 
 	// file does not exist locally, try to retrieve from S3
@@ -213,10 +228,10 @@ func (fs *FileStore) Retrieve(ctx context.Context, path string) ([]byte, error) 
 	}
 
 	// write to local filesystem
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o750); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(localPath, data, 0644); err != nil {
+	if err := os.WriteFile(localPath, data, 0o600); err != nil {
 		return nil, err
 	}
 
