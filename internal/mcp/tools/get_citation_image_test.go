@@ -136,3 +136,38 @@ func TestFetchRefusesAKeyThatIsNotAPlainRelativePath(t *testing.T) {
 		assert.Contains(t, err.Error(), "not a plain relative path")
 	}
 }
+
+// citationMode is the switch the whole feature hangs on: an omitted mode has
+// to mean the highlighted full page, and a mode nobody recognises has to be
+// refused rather than quietly treated as the default.
+func TestCitationMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr string
+	}{
+		{name: "omitted defaults to highlight", in: "", want: modeHighlight},
+		{name: "explicitly highlight", in: "highlight", want: modeHighlight},
+		{name: "explicitly crop", in: "crop", want: modeCrop},
+		{name: "case is not the caller's problem", in: "Crop", want: modeCrop},
+		{name: "surrounding space is trimmed", in: "  highlight ", want: modeHighlight},
+		{name: "a misspelling is refused", in: "cropped", wantErr: `mode "cropped" is not`},
+		{name: "the old boolean is refused", in: "true", wantErr: `mode "true" is not`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := citationMode(test.in)
+
+			if test.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), test.wantErr)
+				assert.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
