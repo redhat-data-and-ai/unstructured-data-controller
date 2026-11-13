@@ -17,10 +17,16 @@ limitations under the License.
 package gitclient
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/memfs"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -143,6 +149,32 @@ func TestWalkFS(t *testing.T) {
 		assert.Contains(t, paths, "docs/intro.md")
 		assert.Contains(t, paths, "src/main.go")
 	})
+}
+
+func TestCloneAndWalkCommitSHA(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	require.NoError(t, err)
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	sig := &object.Signature{Name: "test", Email: "test@example.com", When: time.Now()}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "first.md"), []byte("# First"), 0o644))
+	_, err = wt.Add("first.md")
+	require.NoError(t, err)
+	first, err := wt.Commit("first", &git.CommitOptions{Author: sig})
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "second.md"), []byte("# Second"), 0o644))
+	_, err = wt.Add("second.md")
+	require.NoError(t, err)
+	_, err = wt.Commit("second", &git.CommitOptions{Author: sig})
+	require.NoError(t, err)
+
+	c := NewClient(dir, first.String(), "", operatorv1alpha1.GitProviderGitLab)
+	entries, err := c.CloneAndWalk(context.Background(), nil, []string{"md"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first.md"}, extractPaths(entries))
 }
 
 func createFile(t *testing.T, fs billy.Filesystem, path string, content string) {
