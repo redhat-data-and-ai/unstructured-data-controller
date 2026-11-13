@@ -39,7 +39,8 @@ import (
 //	    type: googleDrive
 //	    googleDriveConfig:
 //	      folders:
-//	        - url: "https://drive.google.com/drive/folders/1ABCdef_example_folder_id"
+//	        - name: example-folder
+//	          url: "https://drive.google.com/drive/folders/1ABCdef_example_folder_id"
 //	      skipFolders:
 //	        - pattern: ".archive"
 //	status:
@@ -61,6 +62,7 @@ type SourceCrawlerSpec struct {
 }
 
 type GDriveFolderStatus struct {
+	Name  string `json:"name"`
 	URL   string `json:"url"`
 	Error string `json:"error,omitempty"`
 }
