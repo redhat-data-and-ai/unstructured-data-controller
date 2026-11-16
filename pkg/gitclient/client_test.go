@@ -175,6 +175,10 @@ func TestCloneAndWalkCommitSHA(t *testing.T) {
 	entries, err := c.CloneAndWalk(context.Background(), nil, []string{"md"})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"first.md"}, extractPaths(entries))
+
+	missing := NewClient(dir, "0123456789abcdef0123456789abcdef01234567", "", operatorv1alpha1.GitProviderGitLab)
+	_, err = missing.CloneAndWalk(context.Background(), nil, []string{"md"})
+	require.ErrorContains(t, err, "checking out commit 0123456789abcdef0123456789abcdef01234567")
 }
 
 func createFile(t *testing.T, fs billy.Filesystem, path string, content string) {
