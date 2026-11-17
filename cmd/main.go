@@ -184,8 +184,6 @@ func main() {
 		})
 	}
 
-	// Configure per-controller concurrency from environment variables.
-	// Each controller defaults to 5 and can be overridden (e.g., CONCURRENCY_DOCUMENT_PROCESSOR=10).
 	groupKindConcurrency := controllerutils.BuildGroupKindConcurrency()
 	setupLog.Info("configured per-controller concurrency", "groupKindConcurrency", groupKindConcurrency)
 

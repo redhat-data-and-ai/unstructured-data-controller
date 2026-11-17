@@ -29,12 +29,12 @@ There are no maps of subobjects in any API objects. Use a list of subobjects con
 
 ```yaml
 # Correct: list of typed structs
-observedUpstreamState:
+stages:
   - name: crawl
     filesProcessed: 15
 
 # Wrong: map
-observedUpstreamState:
+stages:
   crawl: 15
 ```
 
@@ -46,7 +46,7 @@ Naming the elements is not enough on its own - a named-subobject list must also 
 // +listType=map
 // +listMapKey=name
 // +optional
-ObservedUpstreamState []ObservedUpstreamState `json:"observedUpstreamState,omitempty"`
+Stages []StageStatus `json:"stages,omitempty"`
 ```
 
 Use `+listType=atomic` instead only when the list really is a single indivisible value, and say why in a comment. Conditions use the same markers keyed on `type` (see below).

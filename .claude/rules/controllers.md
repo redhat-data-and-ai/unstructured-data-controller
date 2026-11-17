@@ -63,7 +63,7 @@ controller-runtime v0.23.3 uses a priority queue by default. Understanding how p
 - This means new CRs (priority 0) always jump ahead of restart backlog (priority -100) without any manual priority setting.
 
 **When to set `result.Priority`:**
-- For top-level orchestrating controllers that don't watch other stages or Secrets, setting a low priority on skip requeues can be useful (e.g., data-platform-operator's `ShouldSkipReconciliation` uses -200). This works because those controllers are only triggered by their own spec changes, so the skip check doesn't defeat any predicates.
+- A controller triggered only by its own spec changes (no watches on other resources or Secrets) can skip already-reconciled work safely, and may give those skip requeues a priority below -100 (for example -200). Nothing else can trigger it, so the skip check defeats no predicate.
 - For stage controllers in this project, do NOT set priority manually. The skip logic itself is wrong for our use case (see "Do NOT skip reconciliation" above), so the priority is irrelevant.
 
 ## Concurrency
