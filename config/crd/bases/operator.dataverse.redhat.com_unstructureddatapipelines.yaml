@@ -65,7 +65,51 @@ spec:
                     DAG.
                   properties:
                     chunksGeneratorConfig:
+                      description: |-
+                        The rule uses size() rather than an empty string literal: two adjacent
+                        apostrophes get autocorrected into a typographic quote, which every Go tool
+                        accepts inside a comment and only the API server rejects at CRD install.
+                        See TestKubebuilderMarkersAreASCII.
                       properties:
+                        hybridChunkerConfig:
+                          description: |-
+                            HybridChunkerConfig configures docling's own chunker, which splits on the
+                            document's structure instead of on character counts. Unlike the in process
+                            strategies it is a call to docling, and each chunk it returns knows which
+                            part of the document it came from.
+                          properties:
+                            includeRawText:
+                              description: |-
+                                IncludeRawText returns the body separately from the contextualised
+                                text. Both are wanted: the contextualised one is embedded, so a chunk
+                                is findable under its section heading, and the raw one is what gets
+                                displayed. Defaults true. False leaves nothing to display.
+                              type: boolean
+                            maxTokens:
+                              description: |-
+                                MaxTokens caps the finished chunk, headings included. Set it to the
+                                context window of the embedding model the chunks are destined for;
+                                unset, docling falls back to the tokenizer's own limit and produces
+                                chunks nothing can embed.
+                              minimum: 1
+                              type: integer
+                            tokenizer:
+                              description: |-
+                                Tokenizer counts the tokens MaxTokens is measured in. Required, because
+                                there is no default that works everywhere and the failure is silent.
+
+                                A HuggingFace model name, which is docling's own default, only resolves
+                                if docling can reach huggingface.co; where it cannot, the request
+                                returns success with zero chunks once the download times out. Prefer a
+                                path to a tokenizer inside docling's own image.
+                              type: string
+                            useMarkdownTables:
+                              description: |-
+                                UseMarkdownTables serialises a table as markdown rather than as
+                                "RowLabel, ColumnName = value" triplets. Defaults true, and settable
+                                because on a table-dense corpus it is a retrieval-quality tradeoff.
+                              type: boolean
+                          type: object
                         markdownSplitterConfig:
                           properties:
                             chunkOverlap:
@@ -95,6 +139,16 @@ spec:
                               type: array
                           type: object
                         strategy:
+                          description: |-
+                            Strategy selects the chunker. The empty string is accepted because the
+                            generated CRD makes this field required, so a resource that wants the
+                            default sets it empty and SetDefaults fills it in.
+                          enum:
+                          - recursiveCharacterTextSplitter
+                          - markdownTextSplitter
+                          - tokenTextSplitter
+                          - doclingHybridChunker
+                          - ""
                           type: string
                         tokenSplitterConfig:
                           properties:
@@ -118,6 +172,12 @@ spec:
                       required:
                       - strategy
                       type: object
+                      x-kubernetes-validations:
+                      - message: hybridChunkerConfig.tokenizer is required when strategy
+                          is doclingHybridChunker
+                        rule: self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig)
+                          && has(self.hybridChunkerConfig.tokenizer) && size(self.hybridChunkerConfig.tokenizer)
+                          > 0)
                     dependsOn:
                       items:
                         description: StageDependency identifies an upstream stage
@@ -185,6 +245,16 @@ spec:
                               type: string
                             include_images:
                               type: boolean
+                            include_page_images:
+                              description: |-
+                                IncludePageImages returns a rendered image of each page, which is what a
+                                citation draws its highlight on. Only pdf and image inputs produce them,
+                                and a citation can only read one if the destination syncer depends on
+                                this stage.
+
+                                Defaults off under the "placeholder" export mode, which discards every
+                                image. Setting both explicitly is rejected at admission.
+                              type: boolean
                             md_page_break_placeholder:
                               type: string
                             ocr_engine:
@@ -243,7 +313,49 @@ spec:
                               items:
                                 type: string
                               type: array
+                            vlm_pipeline_custom_config:
+                              description: |-
+                                VLMPipelineCustomConfig describes the model to use when Pipeline is
+                                "vlm", and has no effect on any other pipeline. Its fields reach
+                                ConvertedFileMetadata, so changing one reconverts.
+                              properties:
+                                max_size:
+                                  description: |-
+                                    MaxSize caps a rasterised page's longest edge in pixels. A page over it
+                                    is scaled down to fit, so the effective scale drops below Scale
+                                    silently and raising Scale alone changes nothing for large pages.
+                                  type: integer
+                                model:
+                                  description: |-
+                                    Model is the model repository identifier, for example
+                                    "nvidia/Nemotron-3.5-Parse". It is the name sent to the API, so it has
+                                    to be one the host serves.
+                                  type: string
+                                prompt:
+                                  description: |-
+                                    Prompt selects which outputs the model produces. A wrong one returns a
+                                    document that parses cleanly and is missing what was not asked for.
+                                  type: string
+                                response_format:
+                                  description: |-
+                                    ResponseFormat names the decoder applied to the model's reply. No enum
+                                    marker, because the set of decoders grows between docling releases and
+                                    docling rejects an unknown value rather than ignoring it.
+                                  type: string
+                                scale:
+                                  description: |-
+                                    Scale is what pages are rasterised at before the model sees them, where
+                                    1.0 is 72 DPI. String for the same reason ImagesScale is, and not to be
+                                    confused with it: that one scales images exported in the output.
+                                  type: string
+                              type: object
                           type: object
+                          x-kubernetes-validations:
+                          - message: include_page_images requires image_export_mode
+                              other than placeholder, which discards every image
+                            rule: '!(has(self.include_page_images) && self.include_page_images
+                              && has(self.image_export_mode) && self.image_export_mode
+                              == ''placeholder'')'
                         type:
                           type: string
                       type: object

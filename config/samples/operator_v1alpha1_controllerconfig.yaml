@@ -12,6 +12,10 @@ spec:
   dataStorageDirectory: "tmp/cache/"
   maxConcurrentDoclingTasks: 5
   maxConcurrentLangchainTasks: 10
+  # Required when any DocumentProcessor sets pipeline: vlm. Credential is
+  # VLM_PIPELINE_API_KEY. Distinct from vlmAPIURL, which is for picture
+  # description.
+  # vlmPipelineAPIURL: "https://models.example.com/v1/chat/completions"
   # Optional: LDAP configuration for user/group identity resolution
   # ldapConfig:
   #   server: "ldap://ldap.example.com:389"

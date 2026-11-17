@@ -87,6 +87,9 @@ const (
 	ChunkingStrategyRecursiveCharacter ChunkingStrategy     = "recursiveCharacterTextSplitter"
 	ChunkingStrategyMarkdown           ChunkingStrategy     = "markdownTextSplitter"
 	ChunkingStrategyToken              ChunkingStrategy     = "tokenTextSplitter"
+	// ChunkingStrategyDoclingHybrid splits on the document's structure rather
+	// than on character counts, and runs in docling rather than in process.
+	ChunkingStrategyDoclingHybrid ChunkingStrategy = "doclingHybridChunker"
 
 	UnstructuredDataPipelineCondition = "UnstructuredDataPipelineReady"
 )

@@ -45,13 +45,11 @@ const (
 	SemaphorePanicError   = "semaphore: released more than held"
 )
 
-// ErrTaskNotFound is returned when docling has no record of a task ID.
-// This happens when docling restarts or evicts old tasks. The controller
-// should clear the stale task ID and re-submit the job.
+// ErrTaskNotFound reports that docling has no record of a task ID, typically
+// after a docling restart or task expiry.
 var ErrTaskNotFound = errors.New("docling task not found")
 
-// DoclingHTTPError is returned when docling returns a non-200 status code.
-// Use errors.As to extract the status code for specific handling (e.g., 404).
+// DoclingHTTPError is returned for a non-200 docling response; match it with errors.As.
 type DoclingHTTPError struct {
 	StatusCode int
 	Endpoint   string
@@ -60,6 +58,11 @@ type DoclingHTTPError struct {
 func (e *DoclingHTTPError) Error() string {
 	return fmt.Sprintf("docling request to %s returned status %d", e.Endpoint, e.StatusCode)
 }
+
+// ErrSemaphoreUnavailable reports that the client is already at its configured
+// concurrency and refused the work rather than queueing for it. Callers should
+// retry later instead of treating it as a failure.
+var ErrSemaphoreUnavailable = errors.New(SemaphoreAcquireError)
 
 type TaskStatus string
 
@@ -77,33 +80,90 @@ type PictureDescriptionAPI struct {
 	Headers     map[string]string           `json:"headers,omitempty"`
 }
 
+// VLMEngineTypeAPI selects docling's OpenAI-compatible HTTP engine. It has to
+// be sent explicitly: omit it and no engine matches, so the request is
+// rejected.
+const VLMEngineTypeAPI = "api"
+
+// VLMModelSpec is the model half of `vlm_pipeline_custom_config`: what to ask
+// for, independent of where it is served. Docling requires every field; Name
+// is free text it only reports back.
+type VLMModelSpec struct {
+	Name string `json:"name"`
+	// DefaultRepoID is the model docling asks the endpoint for, and the only
+	// place it may be set. Docling derives the request's `model` parameter
+	// from it only while `engine_options.params` is absent, even an empty one,
+	// which is why VLMEngineOptions has no field for params.
+	DefaultRepoID string `json:"default_repo_id"`
+	// Prompt selects which outputs the model produces, as a row of control
+	// tokens. A wrong one returns a document that parses cleanly and is missing
+	// whatever was not asked for.
+	Prompt string `json:"prompt"`
+	// ResponseFormat names the decoder docling applies to the reply. An unknown
+	// value fails opaquely: the task ends in failure and the result endpoint
+	// answers 404 without naming the field.
+	ResponseFormat string `json:"response_format"`
+}
+
+// VLMEngineOptions is the transport half of `vlm_pipeline_custom_config`:
+// where the model is reached and how to authenticate. That split is why the
+// credential can live in the controller's Secret while the model settings live
+// on the CR.
+type VLMEngineOptions struct {
+	EngineType string            `json:"engine_type"`
+	URL        string            `json:"url"`
+	Headers    map[string]string `json:"headers,omitempty"`
+}
+
+// VLMPipelineCustomConfig is docling-serve's `vlm_pipeline_custom_config`: the
+// remote vision-language model the "vlm" pipeline calls instead of one of the
+// bundled presets. The server needs DOCLING_SERVE_ENABLE_REMOTE_SERVICES and
+// DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG for it.
+//
+// It replaces the deprecated `vlm_pipeline_model_api`. Docling discards an
+// option name it does not recognise and still returns 200, so a wrong name
+// here quietly runs the standard pipeline instead of failing.
+type VLMPipelineCustomConfig struct {
+	ModelSpec     VLMModelSpec     `json:"model_spec"`
+	EngineOptions VLMEngineOptions `json:"engine_options"`
+	// Scale is the rasterisation factor applied to each page before the model
+	// sees it, where 1.0 is 72 DPI. Omitted rather than zeroed when unset, so
+	// the server applies its own default instead of rendering at nothing.
+	Scale *float64 `json:"scale,omitempty"`
+	// MaxSize caps a rasterised page's longest edge in pixels. A page over it
+	// is scaled down to fit, which silently lowers the effective Scale.
+	MaxSize int `json:"max_size,omitempty"`
+}
+
 type DoclingConfig struct {
-	FromFormats                     []string               `json:"from_formats"`
-	ToFormats                       []string               `json:"to_formats"`
-	ImageExportMode                 string                 `json:"image_export_mode"`
-	DoOCR                           bool                   `json:"do_ocr"`
-	ForceOCR                        bool                   `json:"force_ocr"`
-	OCREngine                       string                 `json:"ocr_engine,omitempty"`
-	OCRLang                         []string               `json:"ocr_lang"`
-	OCRPreset                       string                 `json:"ocr_preset,omitempty"`
-	PDFBackend                      string                 `json:"pdf_backend"`
-	Pipeline                        string                 `json:"pipeline,omitempty"`
-	TableMode                       string                 `json:"table_mode"`
-	TableCellMatching               *bool                  `json:"table_cell_matching,omitempty"`
-	DoTableStructure                *bool                  `json:"do_table_structure,omitempty"`
-	IncludeImages                   *bool                  `json:"include_images,omitempty"`
-	ImagesScale                     *float64               `json:"images_scale,omitempty"`
-	DoCodeEnrichment                bool                   `json:"do_code_enrichment,omitempty"`
-	DoFormulaEnrichment             bool                   `json:"do_formula_enrichment,omitempty"`
-	DoPictureClassification         bool                   `json:"do_picture_classification,omitempty"`
-	DoPictureDescription            bool                   `json:"do_picture_description,omitempty"`
-	DoChartExtraction               bool                   `json:"do_chart_extraction,omitempty"`
-	PictureDescriptionAPI           *PictureDescriptionAPI `json:"picture_description_api,omitempty"`
-	PictureDescriptionAreaThreshold *float64               `json:"picture_description_area_threshold,omitempty"`
-	DocumentTimeout                 *float64               `json:"document_timeout,omitempty"`
-	PageRange                       []int                  `json:"page_range,omitempty"`
-	MdPageBreakPlaceholder          string                 `json:"md_page_break_placeholder,omitempty"`
-	AbortOnError                    bool                   `json:"abort_on_error"`
+	FromFormats                     []string                 `json:"from_formats"`
+	ToFormats                       []string                 `json:"to_formats"`
+	ImageExportMode                 string                   `json:"image_export_mode"`
+	DoOCR                           bool                     `json:"do_ocr"`
+	ForceOCR                        bool                     `json:"force_ocr"`
+	OCREngine                       string                   `json:"ocr_engine,omitempty"`
+	OCRLang                         []string                 `json:"ocr_lang"`
+	OCRPreset                       string                   `json:"ocr_preset,omitempty"`
+	PDFBackend                      string                   `json:"pdf_backend"`
+	Pipeline                        string                   `json:"pipeline,omitempty"`
+	VLMPipelineCustomConfig         *VLMPipelineCustomConfig `json:"vlm_pipeline_custom_config,omitempty"`
+	TableMode                       string                   `json:"table_mode"`
+	TableCellMatching               *bool                    `json:"table_cell_matching,omitempty"`
+	DoTableStructure                *bool                    `json:"do_table_structure,omitempty"`
+	IncludeImages                   *bool                    `json:"include_images,omitempty"`
+	IncludePageImages               *bool                    `json:"include_page_images,omitempty"`
+	ImagesScale                     *float64                 `json:"images_scale,omitempty"`
+	DoCodeEnrichment                bool                     `json:"do_code_enrichment,omitempty"`
+	DoFormulaEnrichment             bool                     `json:"do_formula_enrichment,omitempty"`
+	DoPictureClassification         bool                     `json:"do_picture_classification,omitempty"`
+	DoPictureDescription            bool                     `json:"do_picture_description,omitempty"`
+	DoChartExtraction               bool                     `json:"do_chart_extraction,omitempty"`
+	PictureDescriptionAPI           *PictureDescriptionAPI   `json:"picture_description_api,omitempty"`
+	PictureDescriptionAreaThreshold *float64                 `json:"picture_description_area_threshold,omitempty"`
+	DocumentTimeout                 *float64                 `json:"document_timeout,omitempty"`
+	PageRange                       []int                    `json:"page_range,omitempty"`
+	MdPageBreakPlaceholder          string                   `json:"md_page_break_placeholder,omitempty"`
+	AbortOnError                    bool                     `json:"abort_on_error"`
 }
 
 type ClientConfig struct {
@@ -140,11 +200,31 @@ type DoclingResponse struct {
 }
 
 type DoclingResponseDocument struct {
-	FileName       string `json:"filename"`
-	MDContent      string `json:"md_content"`
-	HTMLContent    string `json:"html_content"`
-	TextContent    string `json:"text_content"`
-	DocTagsContent string `json:"doctags_content"`
+	FileName  string `json:"filename"`
+	MDContent string `json:"md_content"`
+	// JSONContent is the DoclingDocument, returned only when to_formats
+	// includes "json". It is carried as raw bytes because addresses such as
+	// "#/texts/59" index into its arrays, so a round trip through our own
+	// types would move them. Prefer JSONDocument() over reading it directly.
+	JSONContent    json.RawMessage `json:"json_content"`
+	HTMLContent    string          `json:"html_content"`
+	TextContent    string          `json:"text_content"`
+	DocTagsContent string          `json:"doctags_content"`
+}
+
+// JSONDocument returns the DoclingDocument, or nil when docling did
+// not return one.
+//
+// The field is absent when nothing asked for it and is the JSON literal null
+// when docling ran but produced no document. json.RawMessage keeps both as
+// bytes, and "null" is four of them, so len(JSONContent) > 0 is not a valid
+// test for "a document came back".
+func (d *DoclingResponseDocument) JSONDocument() json.RawMessage {
+	trimmed := bytes.TrimSpace(d.JSONContent)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	return d.JSONContent
 }
 
 type AsyncDoclingResponse struct {
@@ -242,14 +322,15 @@ func (c *Client) sendWithAuthFallback(
 	return resp, nil
 }
 
-// doDoclingRequest sends an HTTP request to the docling service with retry
-// and auth format fallback. Uses the stored retry HTTP client for connection
-// reuse across calls.
-func (c *Client) doDoclingRequest(ctx context.Context, method, endpoint string, payload []byte) (
-	io.ReadCloser, error) {
+// doDoclingRequest sends a request with auth fallback and returns the body, or
+// a *DoclingHTTPError for a non-200. Pass c.plainHTTPClient for task-creating
+// POSTs: a retried submit can create a duplicate task and leak a semaphore slot.
+func (c *Client) doDoclingRequest(
+	ctx context.Context, httpClient *http.Client, method, endpoint string, payload []byte,
+) (io.ReadCloser, error) {
 	logger := log.FromContext(ctx)
 
-	resp, err := c.sendWithAuthFallback(ctx, c.retryHTTPClient, method, endpoint, payload)
+	resp, err := c.sendWithAuthFallback(ctx, httpClient, method, endpoint, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +353,7 @@ func (c *Client) ConvertFile(
 	// we are using TryAcquire to avoid blocking the main thread
 	acquired := c.ClientConfig.sem.TryAcquire(1)
 	if !acquired {
-		return nil, errors.New(SemaphoreAcquireError)
+		return nil, ErrSemaphoreUnavailable
 	}
 	// release the semaphore if the request fails before docling accepts the task
 	success := false
@@ -352,7 +433,7 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 
 	logger.Info("sending request to get status of task", "url", getTaskStatusPollEndpoint)
 	var taskStatusResponse TaskStatusResponse
-	bodyResponse, err := c.doDoclingRequest(ctx, http.MethodGet, getTaskStatusPollEndpoint, nil)
+	bodyResponse, err := c.doDoclingRequest(ctx, c.retryHTTPClient, http.MethodGet, getTaskStatusPollEndpoint, nil)
 	if err != nil {
 		// A 404 on the status poll endpoint means docling lost the task
 		// (restart, TTL expiry). Return ErrTaskNotFound so the controller
@@ -414,7 +495,7 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 
 	logger.Info("sending request to get converted file", "url", taskResultURL)
 	var doclingResponse DoclingResponse
-	bodyResponse, err := c.doDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
+	bodyResponse, err := c.doDoclingRequest(ctx, c.retryHTTPClient, http.MethodGet, taskResultURL, nil)
 	if err != nil {
 		c.safeRelease()
 		return "", nil, fmt.Errorf("failed to get response body: %w", err)

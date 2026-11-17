@@ -31,7 +31,10 @@ import (
 
 const maxQueryRetries = 3
 
-func openConnection(oauthToken string) (*sql.DB, error) {
+// openConnectionIn opens a connection with the session's database and schema
+// set, which a row access policy comparing CURRENT_SCHEMA() needs in order to
+// match. Empty values leave the session unqualified, as before.
+func openConnectionIn(oauthToken, database, schema string) (*sql.DB, error) {
 	account := os.Getenv("SNOWFLAKE_ACCOUNT")
 	if account == "" {
 		return nil, errors.New("SNOWFLAKE_ACCOUNT environment variable not set")
@@ -48,6 +51,8 @@ func openConnection(oauthToken string) (*sql.DB, error) {
 		Token:         oauthToken,
 		Role:          "PUBLIC",
 		Warehouse:     warehouse,
+		Database:      database,
+		Schema:        schema,
 		OCSPFailOpen:  gosnowflake.OCSPFailOpenTrue,
 	}
 
@@ -101,10 +106,17 @@ func isRetryableError(err error) bool {
 // connection, which obtains new pre-signed S3 URLs that may route through a
 // different network path.
 func queryRows[T any](ctx context.Context, oauthToken, query string, args ...any) ([]T, error) {
+	return queryRowsIn[T](ctx, oauthToken, "", "", query, args...)
+}
+
+// queryRowsIn is queryRows with the session's database and schema set.
+func queryRowsIn[T any](
+	ctx context.Context, oauthToken, database, schema, query string, args ...any,
+) ([]T, error) {
 	var lastErr error
 	for attempt := range maxQueryRetries {
 		// each attempt opens a fresh connection, which gets new pre-signed S3 URLs
-		results, err := executeQuery[T](ctx, oauthToken, query, args...)
+		results, err := executeQuery[T](ctx, oauthToken, database, schema, query, args...)
 		if err != nil {
 			lastErr = err
 			// non-network errors (e.g. syntax, auth) won't benefit from retry
@@ -127,8 +139,10 @@ func queryRows[T any](ctx context.Context, oauthToken, query string, args ...any
 }
 
 // executeQuery runs a single query attempt: open connection, query, scan, close.
-func executeQuery[T any](ctx context.Context, oauthToken, query string, args ...any) ([]T, error) {
-	db, err := openConnection(oauthToken)
+func executeQuery[T any](
+	ctx context.Context, oauthToken, database, schema, query string, args ...any,
+) ([]T, error) {
+	db, err := openConnectionIn(oauthToken, database, schema)
 	if err != nil {
 		return nil, err
 	}

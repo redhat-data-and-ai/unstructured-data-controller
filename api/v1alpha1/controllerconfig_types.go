@@ -78,6 +78,18 @@ type ControllerConfigSpec struct {
 	// +optional
 	VLMModelID string `json:"vlmModelID,omitempty"`
 
+	// vlmPipelineAPIURL is where the model named in a DocumentProcessor's
+	// doclingConfig.vlm_pipeline_custom_config is served. Not to be confused
+	// with vlmAPIURL above, which is the endpoint for picture description.
+	//
+	// The address lives here rather than on the CR so that moving the service
+	// does not reconvert anything. The matching API key has no field at all,
+	// because DoclingConfig is copied verbatim into ConvertedFileMetadata and
+	// shipped to the destination bucket; it is read from the controller
+	// Secret instead.
+	// +optional
+	VLMPipelineAPIURL *string `json:"vlmPipelineAPIURL,omitempty"`
+
 	// nomic
 	// +optional
 	NomicEndpoint string `json:"nomicEndpoint,omitempty"`

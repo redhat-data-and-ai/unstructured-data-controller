@@ -25,7 +25,7 @@ spec:
         type: docling
         doclingConfig:
           from_formats: [docx, pptx, html, image, pdf, asciidoc, md, csv, xlsx]
-          to_formats: [md]
+          to_formats: [md, json]
           do_ocr: true
           image_export_mode: placeholder
           include_images: true

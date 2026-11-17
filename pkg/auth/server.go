@@ -85,7 +85,7 @@ func (s *OAuthServer) HandleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		isLocalhost := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "[::1]"
-		if u.Scheme == "http" && !isLocalhost {
+		if u.Scheme == schemeHTTP && !isLocalhost {
 			writeJSONError(w, http.StatusBadRequest, "invalid_request",
 				"invalid redirect_uri: http is only allowed for localhost")
 			return

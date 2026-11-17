@@ -49,6 +49,9 @@ spec:
     - name: sync
       type: DestinationSyncer
       dependsOn:
+        # convert carries the page images a citation is cropped from, so
+        # get_citation_image returns nothing without it.
+        - name: convert
         - name: embed
       destinationSyncerConfig:
         type: s3

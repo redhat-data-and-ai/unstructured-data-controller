@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"slices"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -36,12 +38,34 @@ import (
 //	    - type: ChunksGeneratorReady
 //	      status: "True"
 //	      message: successfully reconciled
+//
+// sample config for the docling hybrid chunker, which splits on the
+// document's structure rather than on character counts. Only the tokenizer
+// has to be given, as a path into docling's own image: a model name has to be
+// downloaded, and a failed download returns no chunks and no error.
+//
+//	config:
+//	  strategy: doclingHybridChunker
+//	  hybridChunkerConfig:
+//	    tokenizer: /modelcache/HuggingFaceTB--SmolVLM-256M-Instruct
+//	    maxTokens: 2048                  # the embedding model's window
+//	    includeRawText: true             # or there is nothing to display
+//	    useMarkdownTables: true          # instead of value triplets
 
 const (
 	ChunksGeneratorCondition = "ChunksGeneratorReady"
 	DefaultChunkingStrategy  = ChunkingStrategyRecursiveCharacter
 	DefaultChunkSize         = 1000
 	DefaultChunkOverlap      = 200
+
+	// DefaultHybridMaxTokens is the context window of the embedding model
+	// these chunks are destined for.
+	//
+	// Not reduced for the heading trail, which the chunker subtracts itself,
+	// nor for the mismatch between the counting tokenizer and the embedding
+	// model's vocabulary, which on chunks near this cap over-counts and so
+	// errs safe.
+	DefaultHybridMaxTokens = 2048
 )
 
 // ChunksGeneratorSpec defines the desired state of ChunksGenerator
@@ -59,6 +83,15 @@ type ChunksGeneratorStatus struct {
 	LastAppliedGeneration int64              `json:"lastAppliedGeneration,omitempty"`
 	Conditions            []metav1.Condition `json:"conditions,omitempty"`
 	FilesProcessed        int64              `json:"filesProcessed,omitempty"`
+	// Jobs tracks chunking tasks that have been submitted and not yet
+	// finished. Only the strategies that chunk remotely use it; the in
+	// process splitters finish within one reconcile and leave it empty.
+	Jobs []ChunkJob `json:"jobs,omitempty"`
+	// PermanentlyFailingFiles are files that will not be retried.
+	PermanentlyFailingFiles []string `json:"permanentlyFailingFiles,omitempty"`
+	// PermanentlyFailingGeneration is the spec generation those files were
+	// given up on under, so editing the spec can give them another chance.
+	PermanentlyFailingGeneration int64 `json:"permanentlyFailingGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -106,6 +139,74 @@ func (c *ChunksGenerator) SetWaiting() {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
+// AddOrUpdateJob records a submitted chunking task, replacing any earlier one
+// for the same file. A file has at most one job, because a second task for it
+// would write the same artifact twice and hold a second slot against the
+// chunking service for no gain.
+func (c *ChunksGenerator) AddOrUpdateJob(newJob ChunkJob) {
+	for i, job := range c.Status.Jobs {
+		if job.FilePath == newJob.FilePath {
+			c.Status.Jobs[i] = newJob
+			return
+		}
+	}
+	c.Status.Jobs = append(c.Status.Jobs, newJob)
+}
+
+// GetJobByFilePath returns the job in flight for a file, or nil if there is
+// none. The pointer is into the status slice, so the caller reads it rather
+// than mutating it; status changes go through AddOrUpdateJob under a patch.
+func (c *ChunksGenerator) GetJobByFilePath(filePath string) *ChunkJob {
+	for i := range c.Status.Jobs {
+		if c.Status.Jobs[i].FilePath == filePath {
+			return &c.Status.Jobs[i]
+		}
+	}
+	return nil
+}
+
+// DeleteJobByFilePath forgets a job, which is what finishing with a file
+// looks like: either its chunks were written or it has been given up on.
+func (c *ChunksGenerator) DeleteJobByFilePath(filePath string) {
+	remaining := []ChunkJob{}
+	for _, job := range c.Status.Jobs {
+		if job.FilePath != filePath {
+			remaining = append(remaining, job)
+		}
+	}
+	c.Status.Jobs = remaining
+}
+
+// AddPermanentlyFailingFile records a file that will not be tried again under
+// the current spec. Without it such a file is resubmitted forever, since the
+// only other record of the attempts is the job that giving up removes.
+func (c *ChunksGenerator) AddPermanentlyFailingFile(filePath string) {
+	c.Status.PermanentlyFailingGeneration = c.Generation
+	if slices.Contains(c.Status.PermanentlyFailingFiles, filePath) {
+		return
+	}
+	c.Status.PermanentlyFailingFiles = append(c.Status.PermanentlyFailingFiles, filePath)
+}
+
+// ResetPermanentlyFailingFiles forgets every file given up on under an older
+// spec, and reports whether it changed anything. The usual cause is the
+// configuration rather than the file, so without this, fixing the
+// configuration recovers nothing short of editing status by hand.
+func (c *ChunksGenerator) ResetPermanentlyFailingFiles() bool {
+	if len(c.Status.PermanentlyFailingFiles) == 0 ||
+		c.Status.PermanentlyFailingGeneration == c.Generation {
+		return false
+	}
+
+	c.Status.PermanentlyFailingFiles = nil
+	c.Status.PermanentlyFailingGeneration = 0
+	return true
+}
+
+func (c *ChunksGenerator) IsFilePermanentlyFailing(filePath string) bool {
+	return slices.Contains(c.Status.PermanentlyFailingFiles, filePath)
+}
+
 func (c *ChunksGenerator) UpdateStatus(message string, err error) {
 	condition := metav1.Condition{
 		Type:               ChunksGeneratorCondition,
@@ -131,11 +232,72 @@ func (c *ChunksGenerator) UpdateStatus(message string, err error) {
 	c.Status.Conditions = append(c.Status.Conditions, condition)
 }
 
+// The rule uses size() rather than an empty string literal: two adjacent
+// apostrophes get autocorrected into a typographic quote, which every Go tool
+// accepts inside a comment and only the API server rejects at CRD install.
+// See TestKubebuilderMarkersAreASCII.
+// +kubebuilder:validation:XValidation:rule="self.strategy != 'doclingHybridChunker' || (has(self.hybridChunkerConfig) && has(self.hybridChunkerConfig.tokenizer) && size(self.hybridChunkerConfig.tokenizer) > 0)",message="hybridChunkerConfig.tokenizer is required when strategy is doclingHybridChunker"
 type ChunksGeneratorConfig struct {
+	// Strategy selects the chunker. The empty string is accepted because the
+	// generated CRD makes this field required, so a resource that wants the
+	// default sets it empty and SetDefaults fills it in.
+	// +kubebuilder:validation:Enum=recursiveCharacterTextSplitter;markdownTextSplitter;tokenTextSplitter;doclingHybridChunker;""
 	Strategy                         ChunkingStrategy                 `json:"strategy"`
 	RecursiveCharacterSplitterConfig RecursiveCharacterSplitterConfig `json:"recursiveCharacterSplitterConfig,omitempty"`
 	MarkdownSplitterConfig           MarkdownSplitterConfig           `json:"markdownSplitterConfig,omitempty"`
 	TokenSplitterConfig              TokenSplitterConfig              `json:"tokenSplitterConfig,omitempty"`
+	HybridChunkerConfig              HybridChunkerConfig              `json:"hybridChunkerConfig,omitempty"`
+}
+
+// HybridChunkerConfig configures docling's own chunker, which splits on the
+// document's structure instead of on character counts. Unlike the in process
+// strategies it is a call to docling, and each chunk it returns knows which
+// part of the document it came from.
+type HybridChunkerConfig struct {
+	// Tokenizer counts the tokens MaxTokens is measured in. Required, because
+	// there is no default that works everywhere and the failure is silent.
+	//
+	// A HuggingFace model name, which is docling's own default, only resolves
+	// if docling can reach huggingface.co; where it cannot, the request
+	// returns success with zero chunks once the download times out. Prefer a
+	// path to a tokenizer inside docling's own image.
+	// +optional
+	Tokenizer string `json:"tokenizer,omitempty"`
+
+	// MaxTokens caps the finished chunk, headings included. Set it to the
+	// context window of the embedding model the chunks are destined for;
+	// unset, docling falls back to the tokenizer's own limit and produces
+	// chunks nothing can embed.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxTokens int `json:"maxTokens,omitempty"`
+
+	// IncludeRawText returns the body separately from the contextualised
+	// text. Both are wanted: the contextualised one is embedded, so a chunk
+	// is findable under its section heading, and the raw one is what gets
+	// displayed. Defaults true. False leaves nothing to display.
+	// +optional
+	IncludeRawText *bool `json:"includeRawText,omitempty"`
+
+	// UseMarkdownTables serialises a table as markdown rather than as
+	// "RowLabel, ColumnName = value" triplets. Defaults true, and settable
+	// because on a table-dense corpus it is a retrieval-quality tradeoff.
+	// +optional
+	UseMarkdownTables *bool `json:"useMarkdownTables,omitempty"`
+}
+
+// ChunkJob tracks one chunking task that docling has accepted and not yet
+// finished, so a restart does not lose it. It carries the config that was in
+// effect at submission, because the result can arrive after the spec has
+// changed and the metadata has to describe the chunking that ran.
+type ChunkJob struct {
+	FilePath              string                `json:"filePath,omitempty"`
+	FileIdentifier        string                `json:"fileIdentifier,omitempty"`
+	ChunksGeneratorConfig ChunksGeneratorConfig `json:"chunksGeneratorConfig,omitempty"`
+	TaskID                string                `json:"taskID,omitempty"`
+	Status                string                `json:"status,omitempty"`
+	CreatedOn             string                `json:"createdOn,omitempty"`
+	Attempts              int                   `json:"attempts,omitempty"`
 }
 
 type RecursiveCharacterSplitterConfig struct {
@@ -190,6 +352,21 @@ func (c *ChunksGeneratorConfig) SetDefaults() {
 		}
 		if c.TokenSplitterConfig.ChunkOverlap == 0 {
 			c.TokenSplitterConfig.ChunkOverlap = DefaultChunkOverlap
+		}
+	case ChunkingStrategyDoclingHybrid:
+		// Only this strategy: the config travels into the metadata that
+		// decides whether a file needs chunking again, so defaulting it for
+		// every generator would re-chunk every corpus. Tokenizer is left out
+		// because no value works everywhere and admission already rejects an
+		// empty one here.
+		if c.HybridChunkerConfig.MaxTokens == 0 {
+			c.HybridChunkerConfig.MaxTokens = DefaultHybridMaxTokens
+		}
+		if c.HybridChunkerConfig.IncludeRawText == nil {
+			c.HybridChunkerConfig.IncludeRawText = boolPtr(true)
+		}
+		if c.HybridChunkerConfig.UseMarkdownTables == nil {
+			c.HybridChunkerConfig.UseMarkdownTables = boolPtr(true)
 		}
 	default:
 	}

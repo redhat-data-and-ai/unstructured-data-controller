@@ -17,9 +17,23 @@ limitations under the License.
 package unstructured
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
+
+// ErrNotAConvertedFile reports JSON that unmarshalled without error but is not
+// a converted file. Every field of ConvertedFile is a pointer, so unrelated
+// JSON decodes into a value whose pointers are all nil rather than failing,
+// and dereferencing it panics.
+//
+// Callers should skip such a file rather than treat it as a failure: it will
+// never become chunkable, so retrying cannot help.
+var ErrNotAConvertedFile = errors.New("not a converted file")
 
 type DocumentConverter string
 
@@ -28,7 +42,27 @@ const (
 )
 
 type Content struct {
+	// Markdown is what every current consumer reads. DoclingDocument is
+	// additive and optional.
 	Markdown string `json:"markdown"`
+
+	// DoclingDocument is the conversion service's own output, kept whole and
+	// undecoded: an element's address such as "#/texts/59" indexes into its
+	// arrays, so a round trip through our own types would move them.
+	//
+	// It is stored as written, not byte for byte: the JSON encoder strips
+	// insignificant whitespace and escapes <, > and & inside strings.
+	DoclingDocument json.RawMessage `json:"doclingDocument,omitempty"`
+
+	// RenderedPages lists the pages whose image was stored, ascending. Only
+	// pdf and image inputs render any, so this is the only way to tell a page
+	// with no image from one whose image was lifted out of the document.
+	RenderedPages []int `json:"renderedPages,omitempty"`
+}
+
+// HasRenderedPage reports whether a page's image was stored for this document.
+func (c *Content) HasRenderedPage(pageNo int) bool {
+	return c != nil && slices.Contains(c.RenderedPages, pageNo)
 }
 
 type ConvertedFileMetadata struct {
@@ -45,6 +79,22 @@ type ConvertedDocument struct {
 
 type ConvertedFile struct {
 	ConvertedDocument *ConvertedDocument `json:"convertedDocument"`
+}
+
+// Validate reports whether the file carries the document, metadata and
+// content that consumers dereference. It returns ErrNotAConvertedFile when any
+// of them is missing.
+func (c *ConvertedFile) Validate() error {
+	switch {
+	case c == nil, c.ConvertedDocument == nil:
+		return fmt.Errorf("%w: no convertedDocument", ErrNotAConvertedFile)
+	case c.ConvertedDocument.Metadata == nil:
+		return fmt.Errorf("%w: no convertedDocument.metadata", ErrNotAConvertedFile)
+	case c.ConvertedDocument.Content == nil:
+		return fmt.Errorf("%w: no convertedDocument.content", ErrNotAConvertedFile)
+	}
+
+	return nil
 }
 
 func (c *ConvertedFileMetadata) Equal(other *ConvertedFileMetadata) bool {

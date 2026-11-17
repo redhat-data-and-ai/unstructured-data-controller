@@ -14,3 +14,16 @@ rules:
   - get
   - list
   - watch
+# Read the destination credentials a pipeline names, to fetch the page image
+# a citation points at.
+#
+# "get" without "list": the server can only fetch a secret whose exact name
+# it already holds, which it can only have read from a pipeline it is allowed
+# to see. It cannot enumerate the namespace. Secret names are per pipeline,
+# so resourceNames would need an RBAC change for every new one.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get

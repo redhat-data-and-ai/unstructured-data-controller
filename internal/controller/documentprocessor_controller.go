@@ -116,6 +116,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		TableCellMatching:               cfg.TableCellMatching,
 		DoTableStructure:                cfg.DoTableStructure,
 		IncludeImages:                   cfg.IncludeImages,
+		IncludePageImages:               cfg.IncludePageImages,
 		ImagesScale:                     parseFloat64Ptr(cfg.ImagesScale),
 		DoCodeEnrichment:                cfg.DoCodeEnrichment,
 		DoFormulaEnrichment:             cfg.DoFormulaEnrichment,
@@ -135,6 +136,10 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			doclingCfg.PictureDescriptionAPI.Headers = map[string]string{}
 		}
 		doclingCfg.PictureDescriptionAPI.Headers["Authorization"] = "Bearer " + vlmAPIKey
+	}
+
+	if err := injectVLMEngine(doclingCfg, cfg.VLMPipelineCustomConfig); err != nil {
+		return r.handleError(ctx, documentProcessorCR, err)
 	}
 
 	fs, err := filestore.New(ctx, dataStorageDirectory, dataStorageBucket)
@@ -257,6 +262,28 @@ func (r *DocumentProcessorReconciler) reconcileInFlightJobs(ctx context.Context,
 	return jobProcessingErrors, nil
 }
 
+// storePageImages writes one file per rendered page beside the converted
+// document, under the name PageImagePath gives it, and returns the pages it
+// wrote. On failure that is the pages written before it, so a caller never
+// records an image it does not have.
+func storePageImages(ctx context.Context,
+	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string, fs *filestore.FileStore) ([]int, error) {
+	stored := make([]int, 0, len(pageImages))
+	for _, pageImage := range pageImages {
+		imagePath := unstructured.RemapToOutputDir(
+			unstructured.PageImagePath(rawFilePath, pageImage.PageNo), inputPath, outputPath)
+		if err := fs.Store(ctx, imagePath, pageImage.Data); err != nil {
+			return stored, fmt.Errorf("storing page %d image for %s: %w", pageImage.PageNo, rawFilePath, err)
+		}
+		stored = append(stored, pageImage.PageNo)
+	}
+
+	if len(stored) > 0 {
+		log.FromContext(ctx).Info("stored page images", "filePath", rawFilePath, "pages", len(stored))
+	}
+	return stored, nil
+}
+
 func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string, fs *filestore.FileStore) (err error) {
 	logger := log.FromContext(ctx)
 	// recover from panic semaphore panic
@@ -297,12 +324,41 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 			DocumentConverter: unstructured.DocumentConverterDocling,
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
+		content := &unstructured.Content{
+			Markdown: doclingResponse.Document.MDContent,
+			// Stored as it arrived: the chunking stage posts it back to the
+			// conversion service rather than parsing the file again.
+			DoclingDocument: doclingResponse.Document.JSONDocument(),
+		}
+		if content.DoclingDocument == nil {
+			// Expected whenever to_formats does not ask for "json", so not an
+			// error. Logged because the alternative is a silently markdown
+			// only artifact that looks the same as a correct one.
+			logger.Info("conversion returned no structured document, storing markdown only",
+				"taskID", job.TaskID, "filePath", job.FilePath)
+		}
+
+		// Never fatal: the conversion succeeded, and failing here would
+		// discard it and leave a job that no attempt limit retires.
+		pageImages, strippedDocument, imageErr := docling.TakePageImages(content.DoclingDocument)
+		if imageErr != nil {
+			logger.Error(imageErr, "could not take page images, storing the document with them",
+				"taskID", job.TaskID, "filePath", job.FilePath)
+		} else if stored, storeErr := storePageImages(
+			ctx, pageImages, job.FilePath, inputPath, outputPath, fs); storeErr != nil {
+			logger.Error(storeErr, "could not store page images, storing the document with them",
+				"taskID", job.TaskID, "filePath", job.FilePath, "storedBeforeFailing", len(stored))
+		} else {
+			content.DoclingDocument = strippedDocument
+			content.RenderedPages = stored
+		}
+
+		content.Markdown = docling.StripImageLinks(content.Markdown)
+
 		convertedFile := unstructured.ConvertedFile{
 			ConvertedDocument: &unstructured.ConvertedDocument{
 				Metadata: &convertedFileMetadata,
-				Content: &unstructured.Content{
-					Markdown: doclingResponse.Document.MDContent,
-				},
+				Content:  content,
 			},
 		}
 
@@ -310,7 +366,8 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		if err != nil {
 			return err
 		}
-		convertedFilePath := unstructured.RemapToOutputDir(job.FilePath+".json", inputPath, outputPath)
+		convertedFilePath := unstructured.RemapToOutputDir(
+			unstructured.ConvertedFilePath(job.FilePath), inputPath, outputPath)
 		if err := fs.Store(ctx, convertedFilePath, convertedFileBytes); err != nil {
 			return err
 		}
@@ -453,7 +510,8 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 
 	// does the converted file exist in the output directory?
-	convertedFilePath := unstructured.RemapToOutputDir(rawFilePath+".json", inputPath, outputPath)
+	convertedFilePath := unstructured.RemapToOutputDir(
+		unstructured.ConvertedFilePath(rawFilePath), inputPath, outputPath)
 	convertedFileExists, err := fs.Exists(ctx, convertedFilePath)
 	if err != nil {
 		return false, err
@@ -589,9 +647,9 @@ func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj cl
 	return requests
 }
 
-// SetupWithManager sets up the controller with the Manager.
-// SetupWithManager registers this controller. Spec changes trigger via GenerationChangedPredicate.
-// Watches on other stage types trigger reconcile when an upstream dependency's status changes.
+// SetupWithManager registers this controller. Spec changes trigger via
+// GenerationChangedPredicate, and watches on other stage types trigger a
+// reconcile when an upstream dependency's status changes.
 func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&operatorv1alpha1.DocumentProcessor{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
@@ -653,6 +711,69 @@ func injectAndValidateVLMConfig(cr *operatorv1alpha1.DocumentProcessor) error {
 		if api.Params.Model == "" {
 			return errors.New("VLM model ID is required for picture description but is not set in the DocumentProcessor CR or the ControllerConfig vlmModelID field")
 		}
+	}
+	return nil
+}
+
+// injectVLMEngine builds the engine half of a vlm pipeline request: model
+// settings from the already-defaulted spec, address and credential from the
+// ControllerConfig and its Secret. It mutates only the wire config, never the
+// CR's own DoclingConfig, so that moving the service does not reconvert
+// documents and no credential is persisted into an artifact.
+//
+// A no-op on any pipeline but "vlm", where it fails rather than skipping:
+// docling would run its own bundled model and answer 200 while the artifact
+// is still fingerprinted from the spec, so a later fix reconverts nothing.
+func injectVLMEngine(doclingCfg *docling.DoclingConfig, modelCfg *operatorv1alpha1.VLMPipelineCustomConfig) error {
+	if doclingCfg.Pipeline != operatorv1alpha1.PipelineVLM {
+		return nil
+	}
+	if modelCfg == nil {
+		return errors.New(`pipeline is "vlm" but vlm_pipeline_custom_config is not set`)
+	}
+
+	// Both fail opaquely when absent: the task ends in failure and the result
+	// endpoint answers 404 without naming the field. SetDefaults fills them
+	// only for catalogued models, so an alias arrives here blank.
+	if modelCfg.Prompt == "" {
+		return fmt.Errorf("vlm pipeline model %q has no prompt and no catalogued default; set prompt explicitly", modelCfg.Model)
+	}
+	if modelCfg.ResponseFormat == "" {
+		return fmt.Errorf("vlm pipeline model %q has no response format and no catalogued default; set response_format explicitly", modelCfg.Model)
+	}
+
+	// Loaded once: every field below then comes from the same revision, rather
+	// than risking a credential from one and an endpoint from another.
+	settings := vlmPipelineCfg.Load()
+	if !settings.configured() {
+		return errors.New(`pipeline is "vlm" but vlmPipelineAPIURL is not set on the ControllerConfig`)
+	}
+
+	engineOptions := docling.VLMEngineOptions{
+		EngineType: docling.VLMEngineTypeAPI,
+		URL:        settings.apiURL,
+	}
+	// Only when there is one: an empty Bearer token is worse than no header.
+	if settings.apiKey != "" {
+		engineOptions.Headers = map[string]string{
+			// The model gateway expects a Bearer token, unlike the docling
+			// gateway itself, which takes the raw key.
+			"Authorization": "Bearer " + settings.apiKey,
+		}
+	}
+
+	doclingCfg.VLMPipelineCustomConfig = &docling.VLMPipelineCustomConfig{
+		ModelSpec: docling.VLMModelSpec{
+			// Docling requires a name and only echoes it back, so the model
+			// id serves.
+			Name:           modelCfg.Model,
+			DefaultRepoID:  modelCfg.Model,
+			Prompt:         modelCfg.Prompt,
+			ResponseFormat: modelCfg.ResponseFormat,
+		},
+		EngineOptions: engineOptions,
+		Scale:         parseFloat64Ptr(modelCfg.Scale),
+		MaxSize:       modelCfg.MaxSize,
 	}
 	return nil
 }
