@@ -20,7 +20,10 @@ import (
 	"os"
 	"strconv"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
 
 const (
@@ -28,8 +31,6 @@ const (
 	// Set to 5 based on production patterns from Crossplane (10), Flux (2-4),
 	// and sizing heuristic: (expected CRs) / (avg reconcile latency in seconds).
 	DefaultReconcilerConcurrency = 5
-
-	apiGroup = "operator.dataverse.redhat.com"
 )
 
 // Environment variable names for per-controller concurrency overrides.
@@ -59,15 +60,20 @@ func concurrencyFromEnv(envVar string) int {
 }
 
 // BuildGroupKindConcurrency builds a GroupKindConcurrency map for controller-runtime's
-// config.Controller. Each controller defaults to DefaultReconcilerConcurrency (5) and
+// config.Controller. Each controller defaults to DefaultReconcilerConcurrency and
 // can be overridden via environment variables (e.g., CONCURRENCY_DOCUMENT_PROCESSOR=10).
 func BuildGroupKindConcurrency() map[string]int {
 	return map[string]int{
-		"UnstructuredDataPipeline." + apiGroup:  concurrencyFromEnv(EnvConcurrencyUnstructuredDataPipeline),
-		"DocumentProcessor." + apiGroup:         concurrencyFromEnv(EnvConcurrencyDocumentProcessor),
-		"ChunksGenerator." + apiGroup:           concurrencyFromEnv(EnvConcurrencyChunksGenerator),
-		"VectorEmbeddingsGenerator." + apiGroup: concurrencyFromEnv(EnvConcurrencyVectorEmbeddingsGenerator),
-		"SourceCrawler." + apiGroup:             concurrencyFromEnv(EnvConcurrencySourceCrawler),
-		"DestinationSyncer." + apiGroup:         concurrencyFromEnv(EnvConcurrencyDestinationSyncer),
+		groupKind("UnstructuredDataPipeline"):  concurrencyFromEnv(EnvConcurrencyUnstructuredDataPipeline),
+		groupKind("DocumentProcessor"):         concurrencyFromEnv(EnvConcurrencyDocumentProcessor),
+		groupKind("ChunksGenerator"):           concurrencyFromEnv(EnvConcurrencyChunksGenerator),
+		groupKind("VectorEmbeddingsGenerator"): concurrencyFromEnv(EnvConcurrencyVectorEmbeddingsGenerator),
+		groupKind("SourceCrawler"):             concurrencyFromEnv(EnvConcurrencySourceCrawler),
+		groupKind("DestinationSyncer"):         concurrencyFromEnv(EnvConcurrencyDestinationSyncer),
 	}
+}
+
+// groupKind formats kind the way controller-runtime looks it up in GroupKindConcurrency.
+func groupKind(kind string) string {
+	return schema.GroupKind{Group: operatorv1alpha1.GroupVersion.Group, Kind: kind}.String()
 }

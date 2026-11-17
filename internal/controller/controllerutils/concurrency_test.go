@@ -18,6 +18,12 @@ package controllerutils
 
 import (
 	"testing"
+
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+
+	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
 
 func TestConcurrencyFromEnv(t *testing.T) {
@@ -77,6 +83,13 @@ func TestConcurrencyFromEnv(t *testing.T) {
 			expected: DefaultReconcilerConcurrency,
 		},
 		{
+			name:     "surrounding whitespace falls back to default",
+			envVar:   "TEST_CONCURRENCY_WHITESPACE",
+			envValue: " 10",
+			setEnv:   true,
+			expected: DefaultReconcilerConcurrency,
+		},
+		{
 			name:     "float value falls back to default",
 			envVar:   "TEST_CONCURRENCY_FLOAT",
 			envValue: "3.5",
@@ -98,66 +111,80 @@ func TestConcurrencyFromEnv(t *testing.T) {
 	}
 }
 
-func TestBuildGroupKindConcurrency(t *testing.T) {
-	t.Run("returns all 6 controllers with defaults when no env vars set", func(t *testing.T) {
-		result := BuildGroupKindConcurrency()
+// controllerKeys returns the GroupKindConcurrency key controller-runtime looks
+// up for each stage controller's For() type, keyed by its override env var.
+func controllerKeys(t *testing.T) map[string]string {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := operatorv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("building scheme: %v", err)
+	}
 
-		expectedKeys := []string{
-			"UnstructuredDataPipeline." + apiGroup,
-			"DocumentProcessor." + apiGroup,
-			"ChunksGenerator." + apiGroup,
-			"VectorEmbeddingsGenerator." + apiGroup,
-			"SourceCrawler." + apiGroup,
-			"DestinationSyncer." + apiGroup,
+	objects := map[string]client.Object{
+		EnvConcurrencyUnstructuredDataPipeline:  &operatorv1alpha1.UnstructuredDataPipeline{},
+		EnvConcurrencyDocumentProcessor:         &operatorv1alpha1.DocumentProcessor{},
+		EnvConcurrencyChunksGenerator:           &operatorv1alpha1.ChunksGenerator{},
+		EnvConcurrencyVectorEmbeddingsGenerator: &operatorv1alpha1.VectorEmbeddingsGenerator{},
+		EnvConcurrencySourceCrawler:             &operatorv1alpha1.SourceCrawler{},
+		EnvConcurrencyDestinationSyncer:         &operatorv1alpha1.DestinationSyncer{},
+	}
+	keys := make(map[string]string, len(objects))
+	for envVar, object := range objects {
+		gvk, err := apiutil.GVKForObject(object, scheme)
+		if err != nil {
+			t.Fatalf("resolving GVK for %T: %v", object, err)
 		}
+		keys[envVar] = gvk.GroupKind().String()
+	}
+	return keys
+}
 
-		if len(result) != len(expectedKeys) {
-			t.Errorf("expected %d entries, got %d", len(expectedKeys), len(result))
+// clearOverrides empties every override, so an override set in the test
+// process's own environment cannot leak into an assertion about defaults.
+func clearOverrides(t *testing.T, keys map[string]string) {
+	t.Helper()
+	for envVar := range keys {
+		t.Setenv(envVar, "")
+	}
+}
+
+func TestBuildGroupKindConcurrencyDefaults(t *testing.T) {
+	keys := controllerKeys(t)
+	clearOverrides(t, keys)
+	result := BuildGroupKindConcurrency()
+
+	if len(result) != len(keys) {
+		t.Errorf("got %d entries, want %d: %v", len(result), len(keys), result)
+	}
+	for envVar, key := range keys {
+		got, ok := result[key]
+		if !ok {
+			t.Errorf("no entry under %q, so controller-runtime would run it with 1 worker (env %s)", key, envVar)
+			continue
 		}
+		if got != DefaultReconcilerConcurrency {
+			t.Errorf("%s = %d, want default %d", key, got, DefaultReconcilerConcurrency)
+		}
+	}
+}
 
-		for _, key := range expectedKeys {
-			val, ok := result[key]
-			if !ok {
-				t.Errorf("missing key %q", key)
-				continue
+func TestBuildGroupKindConcurrencyOverridesOnlyItsOwnController(t *testing.T) {
+	keys := controllerKeys(t)
+	for envVar := range keys {
+		t.Run(envVar, func(t *testing.T) {
+			clearOverrides(t, keys)
+			t.Setenv(envVar, "17")
+			result := BuildGroupKindConcurrency()
+
+			for otherEnvVar, otherKey := range keys {
+				want := DefaultReconcilerConcurrency
+				if otherEnvVar == envVar {
+					want = 17
+				}
+				if result[otherKey] != want {
+					t.Errorf("with %s=17, %s = %d, want %d", envVar, otherKey, result[otherKey], want)
+				}
 			}
-			if val != DefaultReconcilerConcurrency {
-				t.Errorf("key %q = %d, want default %d", key, val, DefaultReconcilerConcurrency)
-			}
-		}
-	})
-
-	t.Run("uses correct GroupKind format (Kind.group)", func(t *testing.T) {
-		result := BuildGroupKindConcurrency()
-
-		// controller-runtime expects "Kind.group" format
-		expectedGroup := "operator.dataverse.redhat.com"
-		for key := range result {
-			if len(key) < len(expectedGroup) {
-				t.Errorf("key %q too short to contain group", key)
-				continue
-			}
-			suffix := key[len(key)-len(expectedGroup):]
-			if suffix != expectedGroup {
-				t.Errorf("key %q does not end with %q", key, expectedGroup)
-			}
-		}
-	})
-
-	t.Run("env var overrides default for a single controller", func(t *testing.T) {
-		t.Setenv(EnvConcurrencyDocumentProcessor, "20")
-
-		result := BuildGroupKindConcurrency()
-
-		dpKey := "DocumentProcessor." + apiGroup
-		if result[dpKey] != 20 {
-			t.Errorf("DocumentProcessor concurrency = %d, want 20", result[dpKey])
-		}
-
-		// Other controllers should still use the default
-		scKey := "SourceCrawler." + apiGroup
-		if result[scKey] != DefaultReconcilerConcurrency {
-			t.Errorf("SourceCrawler concurrency = %d, want default %d", result[scKey], DefaultReconcilerConcurrency)
-		}
-	})
+		})
+	}
 }
