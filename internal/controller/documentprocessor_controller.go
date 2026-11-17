@@ -205,22 +205,23 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
-// reconcileInFlightJobs polls docling for every in-flight job. reconcileJob
-// removes the jobs it settles (converted, or failed past the retry budget)
-// from the status itself, so the only ones left for this function to handle
-// are the tasks docling no longer knows about.
+// reconcileInFlightJobs polls docling for each job that has a task. Jobs that
+// reconcileJob settles are removed by it; the ones docling has lost are
+// handed to markLostJobs.
 func (r *DocumentProcessorReconciler) reconcileInFlightJobs(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string, fs *filestore.FileStore) ([]error, error) {
 	logger := log.FromContext(ctx)
 	var jobProcessingErrors []error
 	var lostJobs []operatorv1alpha1.Job
 	for _, job := range documentProcessorCR.Status.Jobs {
+		// No task id means a lost task awaiting resubmission. Polling it would
+		// release a semaphore slot a second time, taking one from a live task.
+		if job.TaskID == "" {
+			continue
+		}
 		logger.Info("reconciling job", "job", job)
 		if err := r.reconcileJob(ctx, job, documentProcessorCR, inputPath, outputPath, fs); err != nil {
-			// Docling restarted or expired the task. Collect it and fix up the
-			// status after the loop. Do not rebuild Status.Jobs from this loop:
-			// reconcileJob has already deleted the jobs it settled, so writing a
-			// list built here back to the status would resurrect them and the
-			// file would be converted (and counted) a second time.
+			// Collected, not patched here: rebuilding Status.Jobs from this loop
+			// would resurrect jobs reconcileJob already settled.
 			if errors.Is(err, docling.ErrTaskNotFound) {
 				lostJobs = append(lostJobs, job)
 				continue
@@ -234,32 +235,35 @@ func (r *DocumentProcessorReconciler) reconcileInFlightJobs(ctx context.Context,
 		return jobProcessingErrors, nil
 	}
 
-	// Persist straight away so the lost tasks do not still look in-flight if
-	// this reconcile later exits via requeue or error.
+	// Persisted now so the lost tasks do not look in-flight if this reconcile
+	// later exits early.
 	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
-		for _, job := range lostJobs {
-			// Mark the job failed instead of deleting it. needsConversion treats
-			// a failed job as "re-submit", and processDocument reads the surviving
-			// job to carry the attempt count forward. Deleting would reset
-			// Attempts to 1 on every re-submission, so a docling instance that
-			// keeps losing tasks would never reach maxDoclingConversionAttempts
-			// and the same file would be re-submitted forever.
-			if job.Attempts < maxDoclingConversionAttempts {
-				logger.Info("docling lost track of task, marking job for re-submission",
-					"taskID", job.TaskID, "filePath", job.FilePath, "attempts", job.Attempts)
-				job.Status = string(docling.TaskStatusFailure)
-				documentProcessorCR.AddOrUpdateJob(job)
-				continue
-			}
-			logger.Info("docling lost track of task and the retry budget is spent, marking file permanently failing",
-				"taskID", job.TaskID, "filePath", job.FilePath, "attempts", job.Attempts)
-			documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
-			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-		}
+		markLostJobs(ctx, documentProcessorCR, lostJobs)
 	}); err != nil {
 		return nil, fmt.Errorf("recording docling tasks lost by the server: %w", err)
 	}
 	return jobProcessingErrors, nil
+}
+
+// markLostJobs records that docling no longer knows these jobs' tasks. A job
+// under the attempt limit keeps its Attempts and loses its task id, so it is
+// resubmitted rather than polled; one at the limit is marked permanently failing.
+func markLostJobs(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, lostJobs []operatorv1alpha1.Job) {
+	logger := log.FromContext(ctx)
+	for _, job := range lostJobs {
+		if job.Attempts >= maxDoclingConversionAttempts {
+			logger.Info("docling lost track of task and the retry budget is spent, marking file permanently failing",
+				"taskID", job.TaskID, "filePath", job.FilePath, "attempts", job.Attempts)
+			documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
+			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
+			continue
+		}
+		logger.Info("docling lost track of task, marking job for resubmission",
+			"taskID", job.TaskID, "filePath", job.FilePath, "attempts", job.Attempts)
+		job.TaskID = ""
+		job.Status = string(docling.TaskStatusFailure)
+		documentProcessorCR.AddOrUpdateJob(job)
+	}
 }
 
 // storePageImages writes one file per rendered page beside the converted
@@ -539,6 +543,15 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 
 		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
 			logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
+			// A lost job left behind by a conversion that did finish would
+			// otherwise stay in status, and keep the resource requeuing, forever.
+			if job := documentProcessorCR.GetJobByFilePath(rawFilePath); job != nil && job.TaskID == "" {
+				if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+					documentProcessorCR.DeleteJobByFilePath(rawFilePath)
+				}); err != nil {
+					return false, fmt.Errorf("dropping stale job for converted file %s: %w", rawFilePath, err)
+				}
+			}
 			return false, nil
 		}
 	}
@@ -549,60 +562,60 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		return false, nil
 	}
 
-	// now let's check if the job exists in status for this file
 	job := documentProcessorCR.GetJobByFilePath(rawFilePath)
-	if job != nil {
-		// job already exists for this document
-		logger.Info("job already exists for the file, checking if it's the same configuration ...", "filePath", rawFilePath)
-		fileToConvert := unstructured.ConvertedFileMetadata{
-			RawFilePath:       rawFilePath,
-			FileIdentifier:    fileUID,
-			DocumentConverter: unstructured.DocumentConverterDocling,
-			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
-		}
-		fileInJob := unstructured.ConvertedFileMetadata{
-			RawFilePath:       job.FilePath,
-			FileIdentifier:    job.FileIdentifier,
-			DocumentConverter: unstructured.DocumentConverter(job.DocumentConverter),
-			DoclingConfig:     job.DoclingConfig,
-		}
+	if job == nil {
+		logger.Info("job does not exist for the file, it will be converted ...", "filePath", rawFilePath)
+		return true, nil
+	}
 
-		// first, we will check if the current job is still valid (same configuration)
-		if fileInJob.Equal(&fileToConvert) {
-			// we will check if the job is running or completed, if yes, we will return
-			// but if the job is failed, we will send it for conversion again and increment the attempt count
-			switch job.Status {
-			case string(docling.TaskStatusFailure), string(docling.TaskStatusSkipped):
-				// Return with the job left in the status. processDocument reads
-				// it to carry Attempts forward, so deleting it here would reset
-				// the count to 1 on every re-submission and
-				// maxDoclingConversionAttempts would never be reached.
-				logger.Info("job is failed or skipped, will be sent for conversion again ...", "filePath", rawFilePath)
-				return true, nil
-			case string(docling.TaskStatusPending), string(docling.TaskStatusStarted), string(docling.TaskStatusPartialSuccess), string(docling.TaskStatusSuccess):
-				logger.Info("job is running or completed, no need to create a new job", "filePath", rawFilePath)
-				return false, nil
-			default:
-				return false, fmt.Errorf("invalid task status received for task id: %s", job.TaskID)
-			}
-		}
-
-		// The configuration changed, so the existing job is useless whatever its
-		// status. Delete it and start fresh. Dropping the attempt count is
-		// deliberate here: this is a different conversion, so it gets a full
-		// retry budget of its own.
-		logger.Info("job already exists, but with a different configuration, let's delete the current job from status", "filePath", rawFilePath)
+	fileToConvert := unstructured.ConvertedFileMetadata{
+		RawFilePath:       rawFilePath,
+		FileIdentifier:    fileUID,
+		DocumentConverter: unstructured.DocumentConverterDocling,
+		DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
+	}
+	convert, deleteJob, err := existingJobDecision(job, &fileToConvert)
+	if err != nil {
+		return false, err
+	}
+	if deleteJob {
+		logger.Info("job exists with a different configuration, deleting it", "filePath", rawFilePath)
 		if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 			documentProcessorCR.DeleteJobByFilePath(rawFilePath)
 		}); err != nil {
-			logger.Error(err, "failed to update DocumentProcessor CR status")
-			return false, err
+			return false, fmt.Errorf("deleting outdated job for %s: %w", rawFilePath, err)
 		}
 	}
+	logger.Info("checked existing job", "filePath", rawFilePath, "status", job.Status, "convert", convert)
+	return convert, nil
+}
 
-	// job does not exist for this file, let's create a new job
-	logger.Info("job does not exist for the file, it will be converted ...", "filePath", rawFilePath)
-	return true, nil
+// existingJobDecision says whether a file that already has a job needs
+// converting, and whether that job must be deleted first.
+func existingJobDecision(
+	job *operatorv1alpha1.Job, fileToConvert *unstructured.ConvertedFileMetadata,
+) (convert, deleteJob bool, err error) {
+	fileInJob := unstructured.ConvertedFileMetadata{
+		RawFilePath:       job.FilePath,
+		FileIdentifier:    job.FileIdentifier,
+		DocumentConverter: unstructured.DocumentConverter(job.DocumentConverter),
+		DoclingConfig:     job.DoclingConfig,
+	}
+	// Config changed: a new conversion gets a fresh retry budget, so dropping Attempts is intended.
+	if !fileInJob.Equal(fileToConvert) {
+		return true, true, nil
+	}
+
+	switch job.Status {
+	case string(docling.TaskStatusFailure), string(docling.TaskStatusSkipped):
+		// Keep the job: processDocument reads it to carry Attempts forward.
+		return true, false, nil
+	case string(docling.TaskStatusPending), string(docling.TaskStatusStarted),
+		string(docling.TaskStatusPartialSuccess), string(docling.TaskStatusSuccess):
+		return false, false, nil
+	default:
+		return false, false, fmt.Errorf("invalid task status %q for task id %s", job.Status, job.TaskID)
+	}
 }
 
 func getFileUID(ctx context.Context, rawFilePath string, fs *filestore.FileStore) (string, error) {
