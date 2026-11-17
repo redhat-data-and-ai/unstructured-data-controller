@@ -77,6 +77,8 @@ type HTTPClientConfig struct {
 	AuthFormat string
 	APIKey     string
 	ModelName  string
+	// RetryPolicy overrides httpclient.DefaultPolicy; nil means the default.
+	RetryPolicy *httpclient.Policy
 }
 
 type HTTPClient struct {
@@ -89,8 +91,12 @@ type HTTPClient struct {
 // is idempotent (same input always produces the same output), though retries
 // may increase API costs if the provider charges per-call.
 func NewHTTPClient(config *HTTPClientConfig) *HTTPClient {
+	policy := httpclient.DefaultPolicy()
+	if config.RetryPolicy != nil {
+		policy = *config.RetryPolicy
+	}
 	return &HTTPClient{
-		Client: httpclient.NewWithRetry(HTTPClientTimeout),
+		Client: httpclient.New(HTTPClientTimeout, policy),
 		Config: config,
 	}
 }

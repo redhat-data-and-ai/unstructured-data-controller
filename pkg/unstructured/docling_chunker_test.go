@@ -29,6 +29,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/docling"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 )
 
 // A page 1000 points square, so a normalised coordinate is the raw value with
@@ -72,7 +73,10 @@ func writeTestJSON(t *testing.T, w http.ResponseWriter, body string) {
 
 func testChunker(srv *httptest.Server) *DoclingChunker {
 	return &DoclingChunker{
-		Client: docling.NewClientFromURL(&docling.ClientConfig{URL: srv.URL, MaxConcurrentRequests: 2}),
+		// No retry, so a retryable status fails on the first attempt as these tests expect.
+		Client: docling.NewClientFromURL(&docling.ClientConfig{
+			URL: srv.URL, MaxConcurrentRequests: 2, RetryPolicy: &httpclient.Policy{},
+		}),
 		Options: docling.ChunkingOptions{
 			Tokenizer: "/models/tok", MaxTokens: 2048, IncludeRawText: true,
 		},

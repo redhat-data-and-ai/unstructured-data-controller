@@ -28,6 +28,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 )
 
 // convertOptionsKey is the key the chunk endpoints read; the convert
@@ -66,8 +68,11 @@ func validOptions() ChunkingOptions {
 // which is the smallest setting that still lets a leak show up as a second
 // call failing.
 func newChunkTestClient(srv *httptest.Server) *Client {
-	return NewClientFromURL(&ClientConfig{URL: srv.URL, MaxConcurrentRequests: 1})
+	return NewClientFromURL(&ClientConfig{URL: srv.URL, MaxConcurrentRequests: 1, RetryPolicy: &noRetry})
 }
+
+// noRetry makes a retryable status fail on the first attempt, as these tests expect.
+var noRetry = httpclient.Policy{}
 
 // TestChunkDoclingDocumentSendsTheRightRequest pins the wire format, because
 // every part of it has a near-miss that fails silently rather than loudly.
@@ -361,7 +366,7 @@ func TestGetChunksKeepsTheSlotWhenTheStatusCannotBeRead(t *testing.T) {
 
 	// Two slots, so one submit can still be made if exactly one leaks, and
 	// the assertion below can tell the difference.
-	client := NewClientFromURL(&ClientConfig{URL: srv.URL, MaxConcurrentRequests: 2})
+	client := NewClientFromURL(&ClientConfig{URL: srv.URL, MaxConcurrentRequests: 2, RetryPolicy: &noRetry})
 
 	// Take both slots.
 	for range 2 {

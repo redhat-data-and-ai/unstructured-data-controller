@@ -171,6 +171,8 @@ type ClientConfig struct {
 	Key                   string
 	MaxConcurrentRequests int64
 	HTTPTimeout           time.Duration
+	// RetryPolicy governs idempotent requests; nil means httpclient.DefaultPolicy.
+	RetryPolicy *httpclient.Policy
 
 	sem *semaphore.Weighted
 }
@@ -240,11 +242,19 @@ type TaskStatusResponse struct {
 	ErrorMessage string     `json:"error_message,omitempty"`
 }
 
+// retryPolicyOrDefault returns policy, or httpclient.DefaultPolicy when it is nil.
+func retryPolicyOrDefault(policy *httpclient.Policy) httpclient.Policy {
+	if policy == nil {
+		return httpclient.DefaultPolicy()
+	}
+	return *policy
+}
+
 func NewClientFromURL(clientConfig *ClientConfig) *Client {
 	clientConfig.sem = semaphore.NewWeighted(clientConfig.MaxConcurrentRequests)
 	return &Client{
 		ClientConfig:    clientConfig,
-		retryHTTPClient: httpclient.NewWithRetry(clientConfig.HTTPTimeout),
+		retryHTTPClient: httpclient.New(clientConfig.HTTPTimeout, retryPolicyOrDefault(clientConfig.RetryPolicy)),
 		plainHTTPClient: &http.Client{Timeout: clientConfig.HTTPTimeout},
 	}
 }

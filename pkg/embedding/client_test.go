@@ -25,11 +25,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 )
 
 // InputRejected decides whether a failed batch has one input dropped from it
 // or is returned whole, so a status misread as input-specific discards every
 // input the caller had.
+// noRetry makes a retryable status fail on the first attempt, as these tests expect.
+var noRetry = httpclient.Policy{}
+
 func TestAPIErrorInputRejected(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -68,7 +73,7 @@ func TestGenerateEmbeddingsReturnsAPIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	result, err := client.GenerateEmbeddings(context.Background(), []string{"too long"}, "float")
 
@@ -90,7 +95,7 @@ func TestGenerateEmbeddingsRateLimitIsNotInputRejected(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	_, err := client.GenerateEmbeddings(context.Background(), []string{"input"}, "float")
 
@@ -107,7 +112,7 @@ func TestGenerateEmbeddingsUnauthorizedIsNotInputRejected(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	_, err := client.GenerateEmbeddings(context.Background(), []string{"input"}, "float")
 
@@ -124,7 +129,7 @@ func TestGenerateEmbeddingsSucceeds(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	result, err := client.GenerateEmbeddings(context.Background(), []string{"a", "b"}, "float")
 
@@ -142,7 +147,7 @@ func TestGenerateEmbeddingsEmptyInput(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	result, err := client.GenerateEmbeddings(context.Background(), nil, "float")
 
@@ -157,7 +162,7 @@ func TestGenerateEmbeddingsTransportFailureIsNotAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	_, err := client.GenerateEmbeddings(context.Background(), []string{"input"}, "float")
 
