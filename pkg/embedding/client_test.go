@@ -19,6 +19,7 @@ package embedding
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -214,4 +215,39 @@ func TestGenerateEmbeddingsRetriesUnderAPolicy(t *testing.T) {
 			assert.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
 		})
 	}
+}
+
+func TestUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "rate limited", err: &APIError{StatusCode: http.StatusTooManyRequests}, want: true},
+		{name: "server error", err: &APIError{StatusCode: http.StatusInternalServerError}, want: true},
+		{name: "service unavailable, wrapped", err: fmt.Errorf("embedding chunks: %w",
+			&APIError{StatusCode: http.StatusServiceUnavailable}), want: true},
+		{name: "unreachable", err: fmt.Errorf("%w: dial tcp: refused", ErrUnreachable), want: true},
+		{name: "input rejected is per request", err: &APIError{StatusCode: http.StatusBadRequest}, want: false},
+		{name: "bad credential is not an outage", err: &APIError{StatusCode: http.StatusUnauthorized}, want: false},
+		{name: "unrelated error", err: errors.New("decoding chunks file"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, Unavailable(test.err))
+		})
+	}
+}
+
+func TestGenerateEmbeddingsMarksATransportFailureUnreachable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := server.URL
+	server.Close()
+
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: closedURL, ModelName: "test-model", RetryPolicy: &noRetry})
+	_, err := client.GenerateEmbeddings(context.Background(), []string{"a"}, "float")
+
+	require.ErrorIs(t, err, ErrUnreachable)
+	assert.True(t, Unavailable(err))
 }

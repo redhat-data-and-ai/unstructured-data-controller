@@ -112,20 +112,9 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
 	}
 
-	embeddingErrors := []error{}
-	var filesProcessed int64
-	for _, chunksFilePath := range filePaths {
-		logger.Info("processing chunked file for embedding", "file", chunksFilePath)
-		processed, err := processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
-		if err != nil {
-			embeddingErrors = append(embeddingErrors, err)
-			logger.Error(err, "failed to process chunked file", "file", chunksFilePath)
-			continue
-		}
-		if processed {
-			filesProcessed++
-		}
-	}
+	filesProcessed, embeddingErrors := embedFiles(ctx, filePaths, func(chunksFilePath string) (bool, error) {
+		return processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
+	})
 
 	if len(embeddingErrors) > 0 {
 		logger.Error(embeddingErrors[0], "failed to process some chunked files")
@@ -144,6 +133,33 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	logger.Info("successfully updated VectorEmbeddingsGenerator CR status", "status", vectorEmbeddingsGeneratorCR.Status)
 
 	return ctrl.Result{}, nil
+}
+
+// embedFiles runs process over each file and counts the ones it embedded. It
+// stops at the first error saying the embedding API is unavailable: every later
+// file would fail the same way, each after waiting out a full retry budget.
+func embedFiles(ctx context.Context, filePaths []string, process func(string) (bool, error)) (int64, []error) {
+	logger := log.FromContext(ctx)
+	var filesProcessed int64
+	var embeddingErrors []error
+	for index, chunksFilePath := range filePaths {
+		logger.Info("processing chunked file for embedding", "file", chunksFilePath)
+		processed, err := process(chunksFilePath)
+		if err != nil {
+			embeddingErrors = append(embeddingErrors, err)
+			logger.Error(err, "failed to process chunked file", "file", chunksFilePath)
+			if embedding.Unavailable(err) {
+				logger.Info("embedding API is unavailable, leaving the remaining files for the next reconcile",
+					"remaining", len(filePaths)-index-1)
+				break
+			}
+			continue
+		}
+		if processed {
+			filesProcessed++
+		}
+	}
+	return filesProcessed, embeddingErrors
 }
 
 func processChunkedFile(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string, fs *filestore.FileStore) (bool, error) {

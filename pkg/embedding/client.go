@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,6 +53,20 @@ func (e *APIError) InputRejected() bool {
 	default:
 		return false
 	}
+}
+
+// ErrUnreachable marks a request that got no response from the embedding API.
+var ErrUnreachable = errors.New("embedding API unreachable")
+
+// Unavailable reports whether err means the embedding API is not serving
+// requests at all (unreachable, 429 or 5xx), so the next request would fail
+// the same way.
+func Unavailable(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= http.StatusInternalServerError
+	}
+	return errors.Is(err, ErrUnreachable)
 }
 
 // EmbeddingRequest is the JSON body for the embedding API (OpenAI-compatible).
@@ -143,7 +158,7 @@ func (c *HTTPClient) GenerateEmbeddings(
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send embedding request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
