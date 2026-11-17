@@ -17,7 +17,10 @@ limitations under the License.
 package httpclient
 
 import (
+	"context"
+	"errors"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"time"
 
@@ -31,6 +34,10 @@ const (
 	DefaultRetryMaxWait     = 2 * time.Minute
 )
 
+// sharedTransport pools connections across every client New returns, since
+// callers build clients per request.
+var sharedTransport = http.DefaultTransport.(*http.Transport).Clone()
+
 // Policy sets how many times a request is retried and the bounds on the wait
 // between attempts.
 type Policy struct {
@@ -39,18 +46,23 @@ type Policy struct {
 	WaitMax  time.Duration
 }
 
-// DefaultPolicy returns the policy NewWithRetry uses.
+// DefaultPolicy returns the retry policy used when a client config leaves its
+// policy unset.
 func DefaultPolicy() Policy {
 	return Policy{RetryMax: DefaultRetryMax, WaitMin: DefaultRetryInitialWait, WaitMax: DefaultRetryMaxWait}
 }
 
-// NewWithRetry is New with DefaultPolicy.
-func NewWithRetry(timeout time.Duration) *http.Client {
-	return New(timeout, DefaultPolicy())
+// PolicyOrDefault returns *policy, or DefaultPolicy when policy is nil.
+func PolicyOrDefault(policy *Policy) Policy {
+	if policy == nil {
+		return DefaultPolicy()
+	}
+	return *policy
 }
 
-// New returns an *http.Client that retries transient failures (429, 5xx) under
-// policy. timeout applies to each attempt, not to the retries as a whole.
+// New returns an *http.Client that retries transient failures (429, 5xx,
+// connection errors) under policy. timeout applies to each attempt, and an
+// attempt that times out is not retried.
 //
 // Once retries run out the final response is returned rather than an error,
 // so callers read its status and body exactly as they would without retry.
@@ -60,11 +72,24 @@ func New(timeout time.Duration, policy Policy) *http.Client {
 	retryClient.RetryWaitMin = policy.WaitMin
 	retryClient.RetryWaitMax = policy.WaitMax
 	retryClient.Backoff = cappedJitterBackoff
+	retryClient.CheckRetry = retryUnlessTimeout
 	retryClient.ErrorHandler = retryablehttp.PassthroughErrorHandler
 	// Callers log through controller-runtime's logger.
 	retryClient.Logger = nil
+	retryClient.HTTPClient.Transport = sharedTransport
 	retryClient.HTTPClient.Timeout = timeout
 	return retryClient.StandardClient()
+}
+
+// retryUnlessTimeout is the library's default policy, except that a request
+// which already ran out its timeout is not sent again: it would most likely
+// time out again, and a slow POST is billed each time.
+func retryUnlessTimeout(ctx context.Context, resp *http.Response, err error) (bool, error) {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return false, err
+	}
+	return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
 }
 
 // cappedJitterBackoff is exponential backoff with up to 50% added jitter, so

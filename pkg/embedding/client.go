@@ -91,12 +91,8 @@ type HTTPClient struct {
 // is idempotent (same input always produces the same output), though retries
 // may increase API costs if the provider charges per-call.
 func NewHTTPClient(config *HTTPClientConfig) *HTTPClient {
-	policy := httpclient.DefaultPolicy()
-	if config.RetryPolicy != nil {
-		policy = *config.RetryPolicy
-	}
 	return &HTTPClient{
-		Client: httpclient.New(HTTPClientTimeout, policy),
+		Client: httpclient.New(HTTPClientTimeout, httpclient.PolicyOrDefault(config.RetryPolicy)),
 		Config: config,
 	}
 }
@@ -145,7 +141,6 @@ func (c *HTTPClient) GenerateEmbeddings(
 		return nil, err
 	}
 
-	// Retry is handled transparently by go-retryablehttp via the HTTP client.
 	resp, err := c.Client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send embedding request: %w", err)

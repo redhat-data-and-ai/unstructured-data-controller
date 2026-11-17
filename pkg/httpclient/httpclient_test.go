@@ -22,25 +22,65 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
 
 // fastPolicy keeps retry tests to milliseconds.
 var fastPolicy = Policy{RetryMax: 2, WaitMin: time.Millisecond, WaitMax: 5 * time.Millisecond}
 
-func TestNewWithRetry(t *testing.T) {
-	client := NewWithRetry(30 * time.Second)
-
-	if client == nil {
-		t.Fatal("NewWithRetry returned nil client")
+func TestPolicyOrDefault(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy *Policy
+		want   Policy
+	}{
+		{name: "nil falls back to the default", policy: nil, want: DefaultPolicy()},
+		{name: "an explicit policy is used as given", policy: &fastPolicy, want: fastPolicy},
+		{name: "an explicit zero policy means no retries, not the default", policy: &Policy{}, want: Policy{}},
 	}
-	if client.Transport == nil {
-		t.Fatal("returned client has nil Transport, expected go-retryablehttp RoundTripper")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := PolicyOrDefault(test.policy); got != test.want {
+				t.Errorf("PolicyOrDefault = %+v, want %+v", got, test.want)
+			}
+		})
 	}
 }
 
-func TestNewWithRetryZeroTimeout(t *testing.T) {
-	if client := NewWithRetry(0); client == nil {
-		t.Fatal("NewWithRetry with zero timeout returned nil client")
+func TestNewSharesOneTransport(t *testing.T) {
+	transportOf := func(client *http.Client) http.RoundTripper {
+		roundTripper, ok := client.Transport.(*retryablehttp.RoundTripper)
+		if !ok {
+			t.Fatalf("Transport is %T, want *retryablehttp.RoundTripper", client.Transport)
+		}
+		return roundTripper.Client.HTTPClient.Transport
+	}
+
+	first, second := transportOf(New(time.Second, fastPolicy)), transportOf(New(time.Minute, DefaultPolicy()))
+	if first != second {
+		t.Error("clients built separately do not share a transport, so connections are not reused")
+	}
+}
+
+func TestNewDoesNotRetryATimedOutAttempt(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	resp, err := New(20*time.Millisecond, fastPolicy).Get(server.URL)
+	if err == nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("closing response body: %v", closeErr)
+		}
+		t.Fatal("Get returned no error, want the attempt's timeout")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1: a timed-out request must not be sent again", got)
 	}
 }
 

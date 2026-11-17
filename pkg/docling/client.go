@@ -55,6 +55,16 @@ type DoclingHTTPError struct {
 	Endpoint   string
 }
 
+// redactEndpoint strips any userinfo from endpoint, since the error can reach
+// resource status.
+func redactEndpoint(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "<unparseable docling URL>"
+	}
+	return parsed.Redacted()
+}
+
 func (e *DoclingHTTPError) Error() string {
 	return fmt.Sprintf("docling request to %s returned status %d", e.Endpoint, e.StatusCode)
 }
@@ -171,7 +181,8 @@ type ClientConfig struct {
 	Key                   string
 	MaxConcurrentRequests int64
 	HTTPTimeout           time.Duration
-	// RetryPolicy governs idempotent requests; nil means httpclient.DefaultPolicy.
+	// RetryPolicy, when set, governs every retried request. Nil means the defaults:
+	// httpclient.DefaultPolicy, and a short budget for status polls.
 	RetryPolicy *httpclient.Policy
 
 	sem *semaphore.Weighted
@@ -191,6 +202,7 @@ type DoclingRequestPayload struct {
 type Client struct {
 	ClientConfig    *ClientConfig `json:"client_config"`
 	retryHTTPClient *http.Client  // reused across requests for connection pooling
+	pollHTTPClient  *http.Client  // short retry budget, for status polls
 	plainHTTPClient *http.Client  // no retry, for non-idempotent requests like task creation
 }
 
@@ -242,19 +254,23 @@ type TaskStatusResponse struct {
 	ErrorMessage string     `json:"error_message,omitempty"`
 }
 
-// retryPolicyOrDefault returns policy, or httpclient.DefaultPolicy when it is nil.
-func retryPolicyOrDefault(policy *httpclient.Policy) httpclient.Policy {
-	if policy == nil {
-		return httpclient.DefaultPolicy()
+// statusPollPolicy is short because the reconcile requeue already repeats a poll.
+var statusPollPolicy = httpclient.Policy{RetryMax: 2, WaitMin: time.Second, WaitMax: 5 * time.Second}
+
+// pollPolicy returns override if set, else statusPollPolicy.
+func pollPolicy(override *httpclient.Policy) httpclient.Policy {
+	if override != nil {
+		return *override
 	}
-	return *policy
+	return statusPollPolicy
 }
 
 func NewClientFromURL(clientConfig *ClientConfig) *Client {
 	clientConfig.sem = semaphore.NewWeighted(clientConfig.MaxConcurrentRequests)
 	return &Client{
 		ClientConfig:    clientConfig,
-		retryHTTPClient: httpclient.New(clientConfig.HTTPTimeout, retryPolicyOrDefault(clientConfig.RetryPolicy)),
+		retryHTTPClient: httpclient.New(clientConfig.HTTPTimeout, httpclient.PolicyOrDefault(clientConfig.RetryPolicy)),
+		pollHTTPClient:  httpclient.New(clientConfig.HTTPTimeout, pollPolicy(clientConfig.RetryPolicy)),
 		plainHTTPClient: &http.Client{Timeout: clientConfig.HTTPTimeout},
 	}
 }
@@ -349,7 +365,7 @@ func (c *Client) doDoclingRequest(
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			logger.Error(closeErr, "failed to close response body for non-200 response")
 		}
-		return nil, &DoclingHTTPError{StatusCode: resp.StatusCode, Endpoint: endpoint}
+		return nil, &DoclingHTTPError{StatusCode: resp.StatusCode, Endpoint: redactEndpoint(endpoint)}
 	}
 
 	return resp.Body, nil
@@ -398,29 +414,18 @@ func (c *Client) ConvertFile(
 
 	logger.Info("sending request to convert file", "urlToSendRequest",
 		convertSourceAsyncEndpoint, "sourceFileURL", baseURL)
-	// Task creation POST: no retry because retrying after a partial success
-	// could create duplicate untracked tasks in docling. Use a plain HTTP
-	// client instead of the retry client.
 	var asyncResponse AsyncDoclingResponse
-
-	resp, err := c.sendWithAuthFallback(ctx, c.plainHTTPClient, http.MethodPost, convertSourceAsyncEndpoint, payload)
+	responseBody, err := c.doDoclingRequest(ctx, c.plainHTTPClient, http.MethodPost, convertSourceAsyncEndpoint, payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send convert request: %w", err)
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			logger.Error(closeErr, "failed to close response body")
-		}
-		return nil, fmt.Errorf("failed to convert file: status code %d", resp.StatusCode)
-	}
 	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
+		if closeErr := responseBody.Close(); closeErr != nil {
 			logger.Error(closeErr, "failed to close response body")
 		}
 	}()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(responseBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -443,13 +448,10 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 
 	logger.Info("sending request to get status of task", "url", getTaskStatusPollEndpoint)
 	var taskStatusResponse TaskStatusResponse
-	bodyResponse, err := c.doDoclingRequest(ctx, c.retryHTTPClient, http.MethodGet, getTaskStatusPollEndpoint, nil)
+	bodyResponse, err := c.doDoclingRequest(ctx, c.pollHTTPClient, http.MethodGet, getTaskStatusPollEndpoint, nil)
 	if err != nil {
-		// A 404 on the status poll endpoint means docling lost the task
-		// (restart, TTL expiry). Return ErrTaskNotFound so the controller
-		// can remove the stale job and re-submit. This check is intentionally
-		// only in getTaskStatus, not in doDoclingRequest, because a 404 on
-		// the result endpoint has different semantics.
+		// Only a 404 from the poll endpoint means docling lost the task; a 404
+		// from the result endpoint does not, so this check is not in doDoclingRequest.
 		var httpErr *DoclingHTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
 			return false, nil, ErrTaskNotFound

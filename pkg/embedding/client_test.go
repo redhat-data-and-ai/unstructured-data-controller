@@ -21,7 +21,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,4 +171,47 @@ func TestGenerateEmbeddingsTransportFailureIsNotAPIError(t *testing.T) {
 	require.Error(t, err)
 	var apiErr *APIError
 	assert.False(t, errors.As(err, &apiErr))
+}
+
+// TestGenerateEmbeddingsRetriesUnderAPolicy pins that the client really
+// retries, since every other test here turns retries off.
+func TestGenerateEmbeddingsRetriesUnderAPolicy(t *testing.T) {
+	fastRetry := httpclient.Policy{RetryMax: 2, WaitMin: time.Millisecond, WaitMax: 2 * time.Millisecond}
+	tests := []struct {
+		name         string
+		failures     int32 // requests answered 503 before the first success
+		wantErr      bool
+		wantRequests int32
+	}{
+		{name: "a transient 503 is retried to success", failures: 1, wantRequests: 2},
+		{name: "a persistent 503 surfaces as an APIError once retries run out",
+			failures: 100, wantErr: true, wantRequests: int32(fastRetry.RetryMax + 1)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if requests.Add(1) <= test.failures {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				_, writeErr := w.Write([]byte(`{"data":[{"embedding":[0.1]}]}`))
+				require.NoError(t, writeErr)
+			}))
+			defer server.Close()
+
+			client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &fastRetry})
+			_, err := client.GenerateEmbeddings(context.Background(), []string{"a"}, "float")
+
+			assert.Equal(t, test.wantRequests, requests.Load())
+			if !test.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+		})
+	}
 }
