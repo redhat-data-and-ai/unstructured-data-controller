@@ -27,17 +27,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-var (
-	SQSClient *sqs.Client
-)
-
-// NewSQSClientFromConfig creates and returns an Amazon SQS client using the provided context and AWS configuration.
+// NewSQSClientFromConfig returns a new Amazon SQS client for awsConfig. Each
+// call builds its own, since crawlers can use different credentials and queues.
 func NewSQSClientFromConfig(ctx context.Context, awsConfig *AWSConfig) (*sqs.Client, error) {
-	logger := log.FromContext(ctx)
-	if SQSClient != nil {
-		return SQSClient, nil
+	if awsConfig == nil {
+		return nil, errors.New("cannot create an SQS client without an AWS config")
 	}
-
 	cfg, err := getAWSConfig(ctx, awsConfig)
 	if err != nil {
 		return nil, err
@@ -48,17 +43,7 @@ func NewSQSClientFromConfig(ctx context.Context, awsConfig *AWSConfig) (*sqs.Cli
 			o.BaseEndpoint = aws.String(awsConfig.Endpoint)
 		}
 	}
-	SQSClient = sqs.NewFromConfig(cfg, sqsOptions)
-	logger.Info("SQS client initialized ...")
-	return SQSClient, nil
-}
-
-// GetSQSClient returns the initialized Amazon SQS client instance.
-func GetSQSClient() (*sqs.Client, error) {
-	if SQSClient == nil {
-		return nil, errors.New("SQS client not initialized yet")
-	}
-	return SQSClient, nil
+	return sqs.NewFromConfig(cfg, sqsOptions), nil
 }
 
 const sqsLongPollSeconds = 20

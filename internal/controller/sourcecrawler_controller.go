@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/awsclienthandler"
@@ -206,23 +207,18 @@ func (r *SourceCrawlerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			if err != nil {
 				return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to get source credentials for SQS: %w", err))
 			}
-			if _, err := awsclienthandler.NewSQSClientFromConfig(ctx, sourceAWSConfig); err != nil {
+			sqsClient, err := awsclienthandler.NewSQSClientFromConfig(ctx, sourceAWSConfig)
+			if err != nil {
 				return ctrl.Result{}, r.handleError(ctx, sourceCrawlerCR, fmt.Errorf("failed to create SQS client: %w", err))
 			}
-			return handleSQSWakeUp(ctx, sqsQueueURL, sourceCrawlerConfig.S3Config.Bucket, sourceCrawlerConfig.S3Config.Prefix), nil
+			return handleSQSWakeUp(ctx, sqsClient, sqsQueueURL, sourceCrawlerConfig.S3Config.Bucket, sourceCrawlerConfig.S3Config.Prefix), nil
 		}
 	}
 	return ctrl.Result{RequeueAfter: defaultCrawlerResyncInterval}, nil
 }
 
-func handleSQSWakeUp(ctx context.Context, queueURL, bucket, prefix string) ctrl.Result {
+func handleSQSWakeUp(ctx context.Context, sqsClient *sqs.Client, queueURL, bucket, prefix string) ctrl.Result {
 	logger := log.FromContext(ctx)
-
-	sqsClient, err := awsclienthandler.GetSQSClient()
-	if err != nil {
-		logger.Error(err, "failed to initialize SQS client")
-		return ctrl.Result{RequeueAfter: 10 * time.Second}
-	}
 
 	// DrainSQSQueue long-polls (up to 20s), so it blocks until messages
 	// arrive or the timeout expires — no separate poll interval needed.
