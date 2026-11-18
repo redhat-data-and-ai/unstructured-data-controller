@@ -17,7 +17,7 @@ limitations under the License.
 package auth
 
 import (
-	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 )
@@ -25,22 +25,25 @@ import (
 const pageStyle = `font-family:system-ui,sans-serif;display:flex;` +
 	`justify-content:center;align-items:center;height:100vh;margin:0`
 
-const redirectPageTmpl = `<!DOCTYPE html>
+// Parsed at init so a malformed template fails the build's tests rather than a
+// live request. html/template escapes TargetURL per context, so a redirect_uri
+// cannot break out of the attribute it is interpolated into.
+var redirectPageTmpl = template.Must(template.New("redirect").Parse(`<!DOCTYPE html>
 <html>
 <head>
-<title>%s</title>
-<meta http-equiv="refresh" content="0; url=%s" />
+<title>{{.Message}}</title>
+<meta http-equiv="refresh" content="0; url={{.TargetURL}}" />
 </head>
 <body style="` + pageStyle + `">
-<div style="text-align:center"><p>%s</p></div>
+<div style="text-align:center"><p>{{.Message}}</p></div>
 </body>
-</html>`
+</html>`))
 
-const callbackPageTmpl = `<!DOCTYPE html>
+var callbackPageTmpl = template.Must(template.New("callback").Parse(`<!DOCTYPE html>
 <html>
 <head>
 <title>Authentication Successful</title>
-<meta http-equiv="refresh" content="0; url=%s" />
+<meta http-equiv="refresh" content="0; url={{.TargetURL}}" />
 </head>
 <body style="` + pageStyle + `">
 <div style="text-align:center">
@@ -48,18 +51,23 @@ const callbackPageTmpl = `<!DOCTYPE html>
 <p>You may now close this window.</p>
 </div>
 </body>
-</html>`
+</html>`))
+
+type pageData struct {
+	TargetURL string
+	Message   string
+}
 
 func writeRedirectPage(w http.ResponseWriter, targetURL, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := fmt.Fprintf(w, redirectPageTmpl, message, targetURL, message); err != nil {
+	if err := redirectPageTmpl.Execute(w, pageData{TargetURL: targetURL, Message: message}); err != nil {
 		slog.Error("failed to write redirect page", "error", err)
 	}
 }
 
 func writeCallbackPage(w http.ResponseWriter, redirectURL string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := fmt.Fprintf(w, callbackPageTmpl, redirectURL); err != nil {
+	if err := callbackPageTmpl.Execute(w, pageData{TargetURL: redirectURL}); err != nil {
 		slog.Error("failed to write callback page", "error", err)
 	}
 }
