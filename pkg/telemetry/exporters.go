@@ -49,6 +49,10 @@ const (
 	otlpTracesEndpointEnvKey  = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
 	otlpMetricsEndpointEnvKey = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
 
+	otlpProtocolEnvKey        = "OTEL_EXPORTER_OTLP_PROTOCOL"
+	otlpTracesProtocolEnvKey  = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
+	otlpMetricsProtocolEnvKey = "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"
+
 	exporterOTLP    = "otlp"
 	exporterConsole = "console"
 	exporterNone    = "none"
@@ -142,7 +146,23 @@ func warnOnSchemelessEndpoint(log logr.Logger) {
 
 		log.Info("OTLP endpoint has no http:// or https:// scheme and will be ignored, "+
 			"falling back to localhost:4317",
-			"variable", key, "value", value)
+			"variable", key)
+	}
+}
+
+// warnOnNonGRPCProtocol catches a misconfiguration where the operator sets
+// OTEL_EXPORTER_OTLP_PROTOCOL to http/protobuf but the exporters here are
+// always the gRPC variants. The gRPC exporter silently ignores the env var
+// and dials anyway, so the failure shows up only as async export errors.
+func warnOnNonGRPCProtocol(log logr.Logger) {
+	for _, key := range []string{otlpProtocolEnvKey, otlpTracesProtocolEnvKey, otlpMetricsProtocolEnvKey} {
+		value := os.Getenv(key)
+		if value == "" || value == "grpc" {
+			continue
+		}
+		log.Info("OTLP protocol is not gRPC; this binary always uses gRPC exporters, "+
+			"so the setting will be ignored",
+			"variable", key)
 	}
 }
 

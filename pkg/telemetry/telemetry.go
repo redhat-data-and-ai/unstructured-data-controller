@@ -127,6 +127,7 @@ func Setup(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 
 	warnOnSchemelessEndpoint(cfg.Logger)
+	warnOnNonGRPCProtocol(cfg.Logger)
 
 	res, err := newResource(ctx, cfg)
 	if err != nil {
@@ -139,7 +140,10 @@ func Setup(ctx context.Context, cfg Config) (*Provider, error) {
 	if err := provider.setupMetrics(ctx, cfg, res); err != nil {
 		// Tracing may already be installed. Shut it back down so a partial
 		// failure does not leave a provider nobody holds a handle to.
-		_ = provider.Shutdown(ctx)
+		if shutdownErr := provider.Shutdown(ctx); shutdownErr != nil {
+			err = errors.Join(err, fmt.Errorf("rolling back tracing setup: %w", shutdownErr))
+		}
+		installNoop()
 		return &Provider{}, err
 	}
 

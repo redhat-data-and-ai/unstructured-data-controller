@@ -77,8 +77,9 @@ func main() {
 		Logger:           ctrl.Log.WithName("telemetry"),
 	})
 	if err != nil {
-		slog.Error("failed to set up telemetry", "error", err)
-		os.Exit(1)
+		// Telemetry is optional. Setup returns a usable no-op Provider on
+		// error, so a bad OTEL_* value must not take the server down.
+		slog.Error("failed to set up telemetry, continuing without it", "error", err)
 	}
 
 	oauthCfg, err := auth.NewOAuthConfigFromEnv()

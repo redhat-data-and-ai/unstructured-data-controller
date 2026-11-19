@@ -69,6 +69,14 @@ func newResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
 		cfg.Logger.Info("Telemetry resource has conflicting schema URLs, continuing", "error", err.Error())
 		return res, nil
 	}
+	// A partial resource means some attributes from OTEL_RESOURCE_ATTRIBUTES
+	// were malformed (e.g. "region" instead of "region=us-east-1"). The
+	// returned resource still contains the valid attributes, and losing all
+	// telemetry over a single bad key-value pair would be a bad trade.
+	if errors.Is(err, resource.ErrPartialResource) {
+		cfg.Logger.Info("Some OTEL_RESOURCE_ATTRIBUTES were malformed and ignored, continuing", "error", err.Error())
+		return res, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("detecting resource attributes: %w", err)
 	}

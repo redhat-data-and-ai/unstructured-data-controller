@@ -203,7 +203,7 @@ OTEL_COMPOSE := $(CONTAINER_TOOL) compose -f hack/otel/compose.yaml
 otel-dev-up: ## Start a local OTel Collector that prints everything it receives.
 	$(OTEL_COMPOSE) up -d
 	@echo "Collector listening on localhost:4317 (gRPC). Point a binary at it with:"
-	@echo "  OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 OTEL_EXPORTER_OTLP_INSECURE=true make run"
+	@echo "  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 OTEL_EXPORTER_OTLP_INSECURE=true make run"
 	@echo "Then watch it with: make otel-dev-logs"
 
 .PHONY: otel-dev-logs

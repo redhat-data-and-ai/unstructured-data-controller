@@ -148,8 +148,9 @@ func main() {
 		Logger: ctrl.Log.WithName("telemetry"),
 	})
 	if err != nil {
-		setupLog.Error(err, "unable to set up telemetry")
-		os.Exit(1)
+		// Telemetry is optional. Setup returns a usable no-op Provider on
+		// error, so a bad OTEL_* value must not take the operator down.
+		setupLog.Error(err, "unable to set up telemetry, continuing without it")
 	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
