@@ -180,6 +180,9 @@ On follow-up: if the user is not satisfied, ask them which pipeline to search. D
 
 		chunks, err := retrieveChunks(ctx, searchConfig, rerankerClient)
 		if err != nil {
+			if snowflake.IsOAuthTokenExpiredError(err) {
+				return handleOAuthExpiry(ctx, log)
+			}
 			log.Error("failed to search chunks in snowflake", "error", err, "database", searchConfig.database, "schema", searchConfig.schema, "table", searchConfig.table)
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Error searching chunks: %v", err)}},

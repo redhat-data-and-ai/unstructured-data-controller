@@ -114,6 +114,9 @@ If the pipeline has a "guidance" field, follow those instructions when working w
 
 		databases, err := snowflake.ShowDatabases(ctx, oauthToken)
 		if err != nil {
+			if snowflake.IsOAuthTokenExpiredError(err) {
+				return handleOAuthExpiry(ctx, log)
+			}
 			log.Error("failed to list databases from snowflake", "error", err)
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{&mcp.TextContent{

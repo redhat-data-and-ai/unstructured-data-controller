@@ -168,7 +168,9 @@ func (d *destinationClient) fetch(ctx context.Context, key string) ([]byte, erro
 	// path.Join resolves ".." rather than refusing it, which would walk out
 	// of this pipeline's prefix and into another product's data in the same
 	// bucket, so the key is checked before it is joined.
-	if key == "" || path.IsAbs(key) || key != path.Clean(key) || strings.HasPrefix(key, "../") {
+	// "." and ".." also bypass the prefix guard: path.Clean returns them unchanged
+	// and strings.HasPrefix(key, "../") misses ".." (no trailing slash).
+	if key == "" || key == "." || key == ".." || path.IsAbs(key) || key != path.Clean(key) || strings.HasPrefix(key, "../") {
 		return nil, fmt.Errorf("page image key %q is not a plain relative path", key)
 	}
 	fullKey := path.Join(d.prefix, key)
@@ -276,6 +278,9 @@ On error: report the exact error to the user and STOP. Do NOT retry with other p
 			strings.ToUpper(strings.ReplaceAll(qc.Database, "-", "_")),
 			strings.ToUpper(qc.Schema), strings.ToUpper(qc.Table), args.ChunkID)
 		if err != nil {
+			if snowflake.IsOAuthTokenExpiredError(err) {
+				return handleOAuthExpiry(ctx, log)
+			}
 			// A failed query is not an absent chunk. Reporting it as one would
 			// have the model stop and tell the user their citation does not
 			// exist, when the warehouse was briefly unreachable.
