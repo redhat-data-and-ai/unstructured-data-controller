@@ -35,6 +35,7 @@ import (
 	mcptools "github.com/redhat-data-and-ai/unstructured-data-controller/internal/mcp/tools"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/auth"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/embedding"
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/k8sclient"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/logger"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/reranker"
@@ -83,6 +84,8 @@ func main() {
 		APIKey:     os.Getenv("EMBEDDING_API_KEY"),
 		AuthFormat: "Bearer",
 		ModelName:  os.Getenv("EMBEDDING_MODEL_NAME"),
+		// An interactive tool call should fail fast, not wait out a retry budget.
+		RetryPolicy: &httpclient.Policy{},
 	})
 
 	// Reranking is enabled by an explicit flag, never by the presence of its

@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 	"golang.org/x/sync/semaphore"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -43,6 +44,30 @@ const (
 	SemaphoreAcquireError = "failed to acquire docling semaphore"
 	SemaphorePanicError   = "semaphore: released more than held"
 )
+
+// ErrTaskNotFound reports that docling has no record of a task ID, typically
+// after a docling restart or task expiry.
+var ErrTaskNotFound = errors.New("docling task not found")
+
+// DoclingHTTPError is returned for a non-200 docling response; match it with errors.As.
+type DoclingHTTPError struct {
+	StatusCode int
+	Endpoint   string
+}
+
+// redactEndpoint strips any userinfo from endpoint, since the error can reach
+// resource status.
+func redactEndpoint(endpoint string) string {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "<unparseable docling URL>"
+	}
+	return parsed.Redacted()
+}
+
+func (e *DoclingHTTPError) Error() string {
+	return fmt.Sprintf("docling request to %s returned status %d", e.Endpoint, e.StatusCode)
+}
 
 // ErrSemaphoreUnavailable reports that the client is already at its configured
 // concurrency and refused the work rather than queueing for it. Callers should
@@ -156,6 +181,9 @@ type ClientConfig struct {
 	Key                   string
 	MaxConcurrentRequests int64
 	HTTPTimeout           time.Duration
+	// RetryPolicy, when set, governs every retried request. Nil means the defaults:
+	// httpclient.DefaultPolicy, and a short budget for status polls.
+	RetryPolicy *httpclient.Policy
 
 	sem *semaphore.Weighted
 }
@@ -172,7 +200,10 @@ type DoclingRequestPayload struct {
 }
 
 type Client struct {
-	ClientConfig *ClientConfig `json:"client_config"`
+	ClientConfig    *ClientConfig `json:"client_config"`
+	retryHTTPClient *http.Client  // reused across requests for connection pooling
+	pollHTTPClient  *http.Client  // short retry budget, for status polls
+	plainHTTPClient *http.Client  // no retry, for non-idempotent requests like task creation
 }
 
 type DoclingResponse struct {
@@ -223,10 +254,24 @@ type TaskStatusResponse struct {
 	ErrorMessage string     `json:"error_message,omitempty"`
 }
 
+// statusPollPolicy is short because the reconcile requeue already repeats a poll.
+var statusPollPolicy = httpclient.Policy{RetryMax: 2, WaitMin: time.Second, WaitMax: 5 * time.Second}
+
+// pollPolicy returns override if set, else statusPollPolicy.
+func pollPolicy(override *httpclient.Policy) httpclient.Policy {
+	if override != nil {
+		return *override
+	}
+	return statusPollPolicy
+}
+
 func NewClientFromURL(clientConfig *ClientConfig) *Client {
 	clientConfig.sem = semaphore.NewWeighted(clientConfig.MaxConcurrentRequests)
 	return &Client{
-		ClientConfig: clientConfig,
+		ClientConfig:    clientConfig,
+		retryHTTPClient: httpclient.New(clientConfig.HTTPTimeout, httpclient.PolicyOrDefault(clientConfig.RetryPolicy)),
+		pollHTTPClient:  httpclient.New(clientConfig.HTTPTimeout, pollPolicy(clientConfig.RetryPolicy)),
+		plainHTTPClient: &http.Client{Timeout: clientConfig.HTTPTimeout},
 	}
 }
 
@@ -265,12 +310,14 @@ func (c *Client) createHTTPRequest(ctx context.Context, method, endpoint string,
 	return req, nil
 }
 
-func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint string, payload []byte) (
-	io.ReadCloser, error) {
+// sendWithAuthFallback sends an HTTP request using the given client, trying
+// "Bearer <key>" first. If the server returns 403 and we have a key configured,
+// it retries with the raw key format. This handles docling deployments that
+// expect different auth header formats.
+func (c *Client) sendWithAuthFallback(
+	ctx context.Context, httpClient *http.Client, method, endpoint string, payload []byte,
+) (*http.Response, error) {
 	logger := log.FromContext(ctx)
-	client := &http.Client{
-		Timeout: c.ClientConfig.HTTPTimeout,
-	}
 
 	req, err := c.createHTTPRequest(ctx, method, endpoint, payload, "Bearer %s")
 	if err != nil {
@@ -278,28 +325,47 @@ func (c *Client) createDoclingRequest(ctx context.Context, method, endpoint stri
 	}
 
 	logger.Info("sending request to docling service", "url", endpoint)
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
+	// Fall back to raw key auth format if Bearer token got 403.
 	if resp.StatusCode == http.StatusForbidden && c.ClientConfig.Key != "" {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Error(closeErr, "failed to close response body before auth fallback")
+		}
 		req, err = c.createHTTPRequest(ctx, method, endpoint, payload, "%s")
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
-		resp, err = client.Do(req)
+		resp, err = httpClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to send request: %w", err)
 		}
 	}
 
+	return resp, nil
+}
+
+// doDoclingRequest sends a request with auth fallback and returns the body, or
+// a *DoclingHTTPError for a non-200. Pass c.plainHTTPClient for task-creating
+// POSTs: a retried submit can create a duplicate task and leak a semaphore slot.
+func (c *Client) doDoclingRequest(
+	ctx context.Context, httpClient *http.Client, method, endpoint string, payload []byte,
+) (io.ReadCloser, error) {
+	logger := log.FromContext(ctx)
+
+	resp, err := c.sendWithAuthFallback(ctx, httpClient, method, endpoint, payload)
+	if err != nil {
+		return nil, err
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		logger.Error(errors.New("received non-200 OK response from endpoint"),
-			"docling request returned non-200 status",
-			"statusCode", resp.StatusCode,
-			"url", endpoint)
-		return nil, fmt.Errorf("failed to process request: status code %d", resp.StatusCode)
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Error(closeErr, "failed to close response body for non-200 response")
+		}
+		return nil, &DoclingHTTPError{StatusCode: resp.StatusCode, Endpoint: redactEndpoint(endpoint)}
 	}
 
 	return resp.Body, nil
@@ -348,13 +414,16 @@ func (c *Client) ConvertFile(
 
 	logger.Info("sending request to convert file", "urlToSendRequest",
 		convertSourceAsyncEndpoint, "sourceFileURL", baseURL)
-	// convert response to AsyncDoclingResponse
 	var asyncResponse AsyncDoclingResponse
-	responseBody, err := c.createDoclingRequest(ctx, http.MethodPost, convertSourceAsyncEndpoint, payload)
+	responseBody, err := c.doDoclingRequest(ctx, c.plainHTTPClient, http.MethodPost, convertSourceAsyncEndpoint, payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get response body: %w", err)
+		return nil, fmt.Errorf("failed to send convert request: %w", err)
 	}
-	defer func() { _ = responseBody.Close() }()
+	defer func() {
+		if closeErr := responseBody.Close(); closeErr != nil {
+			logger.Error(closeErr, "failed to close response body")
+		}
+	}()
 
 	body, err := io.ReadAll(responseBody)
 	if err != nil {
@@ -379,8 +448,14 @@ func (c *Client) getTaskStatus(ctx context.Context, taskID string) (bool, *TaskS
 
 	logger.Info("sending request to get status of task", "url", getTaskStatusPollEndpoint)
 	var taskStatusResponse TaskStatusResponse
-	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, getTaskStatusPollEndpoint, nil)
+	bodyResponse, err := c.doDoclingRequest(ctx, c.pollHTTPClient, http.MethodGet, getTaskStatusPollEndpoint, nil)
 	if err != nil {
+		// Only a 404 from the poll endpoint means docling lost the task; a 404
+		// from the result endpoint does not, so this check is not in doDoclingRequest.
+		var httpErr *DoclingHTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+			return false, nil, ErrTaskNotFound
+		}
 		return false, nil, fmt.Errorf("failed to get response body: %w", err)
 	}
 	defer func() {
@@ -432,7 +507,7 @@ func (c *Client) GetConvertedFile(ctx context.Context, taskID string) (TaskStatu
 
 	logger.Info("sending request to get converted file", "url", taskResultURL)
 	var doclingResponse DoclingResponse
-	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
+	bodyResponse, err := c.doDoclingRequest(ctx, c.retryHTTPClient, http.MethodGet, taskResultURL, nil)
 	if err != nil {
 		c.safeRelease()
 		return "", nil, fmt.Errorf("failed to get response body: %w", err)

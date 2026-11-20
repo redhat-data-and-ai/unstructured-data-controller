@@ -19,17 +19,25 @@ package embedding
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 )
 
 // InputRejected decides whether a failed batch has one input dropped from it
 // or is returned whole, so a status misread as input-specific discards every
 // input the caller had.
+// noRetry makes a retryable status fail on the first attempt, as these tests expect.
+var noRetry = httpclient.Policy{}
+
 func TestAPIErrorInputRejected(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -68,7 +76,7 @@ func TestGenerateEmbeddingsReturnsAPIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	result, err := client.GenerateEmbeddings(context.Background(), []string{"too long"}, "float")
 
@@ -90,7 +98,7 @@ func TestGenerateEmbeddingsRateLimitIsNotInputRejected(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	_, err := client.GenerateEmbeddings(context.Background(), []string{"input"}, "float")
 
@@ -107,7 +115,7 @@ func TestGenerateEmbeddingsUnauthorizedIsNotInputRejected(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	_, err := client.GenerateEmbeddings(context.Background(), []string{"input"}, "float")
 
@@ -124,7 +132,7 @@ func TestGenerateEmbeddingsSucceeds(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	result, err := client.GenerateEmbeddings(context.Background(), []string{"a", "b"}, "float")
 
@@ -142,7 +150,7 @@ func TestGenerateEmbeddingsEmptyInput(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	result, err := client.GenerateEmbeddings(context.Background(), nil, "float")
 
@@ -157,11 +165,89 @@ func TestGenerateEmbeddingsTransportFailureIsNotAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	server.Close()
 
-	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &noRetry})
 
 	_, err := client.GenerateEmbeddings(context.Background(), []string{"input"}, "float")
 
 	require.Error(t, err)
 	var apiErr *APIError
 	assert.False(t, errors.As(err, &apiErr))
+}
+
+// TestGenerateEmbeddingsRetriesUnderAPolicy pins that the client really
+// retries, since every other test here turns retries off.
+func TestGenerateEmbeddingsRetriesUnderAPolicy(t *testing.T) {
+	fastRetry := httpclient.Policy{RetryMax: 2, WaitMin: time.Millisecond, WaitMax: 2 * time.Millisecond}
+	tests := []struct {
+		name         string
+		failures     int32 // requests answered 503 before the first success
+		wantErr      bool
+		wantRequests int32
+	}{
+		{name: "a transient 503 is retried to success", failures: 1, wantRequests: 2},
+		{name: "a persistent 503 surfaces as an APIError once retries run out",
+			failures: 100, wantErr: true, wantRequests: int32(fastRetry.RetryMax + 1)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if requests.Add(1) <= test.failures {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				_, writeErr := w.Write([]byte(`{"data":[{"embedding":[0.1]}]}`))
+				require.NoError(t, writeErr)
+			}))
+			defer server.Close()
+
+			client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model", RetryPolicy: &fastRetry})
+			_, err := client.GenerateEmbeddings(context.Background(), []string{"a"}, "float")
+
+			assert.Equal(t, test.wantRequests, requests.Load())
+			if !test.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, http.StatusServiceUnavailable, apiErr.StatusCode)
+		})
+	}
+}
+
+func TestUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "rate limited", err: &APIError{StatusCode: http.StatusTooManyRequests}, want: true},
+		{name: "server error", err: &APIError{StatusCode: http.StatusInternalServerError}, want: true},
+		{name: "service unavailable, wrapped", err: fmt.Errorf("embedding chunks: %w",
+			&APIError{StatusCode: http.StatusServiceUnavailable}), want: true},
+		{name: "unreachable", err: fmt.Errorf("%w: dial tcp: refused", ErrUnreachable), want: true},
+		{name: "input rejected is per request", err: &APIError{StatusCode: http.StatusBadRequest}, want: false},
+		{name: "bad credential is not an outage", err: &APIError{StatusCode: http.StatusUnauthorized}, want: false},
+		{name: "unrelated error", err: errors.New("decoding chunks file"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.want, Unavailable(test.err))
+		})
+	}
+}
+
+func TestGenerateEmbeddingsMarksATransportFailureUnreachable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := server.URL
+	server.Close()
+
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: closedURL, ModelName: "test-model", RetryPolicy: &noRetry})
+	_, err := client.GenerateEmbeddings(context.Background(), []string{"a"}, "float")
+
+	require.ErrorIs(t, err, ErrUnreachable)
+	assert.True(t, Unavailable(err))
 }
