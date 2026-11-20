@@ -138,6 +138,55 @@ func queryRowsIn[T any](
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxQueryRetries, lastErr)
 }
 
+// queryWithFunc is like queryRows but accepts a custom scanner for queries
+// whose columns are not known at compile time.
+func queryWithFunc[T any](
+	ctx context.Context, oauthToken, query string,
+	scanFn func(*sql.Rows) (T, error), args ...any,
+) (T, error) {
+	var zero T
+	var lastErr error
+	for attempt := range maxQueryRetries {
+		result, err := executeQueryWithFunc(ctx, oauthToken, query, scanFn, args...)
+		if err != nil {
+			lastErr = err
+			if !isRetryableError(err) {
+				return zero, err
+			}
+			if attempt < maxQueryRetries-1 {
+				select {
+				case <-ctx.Done():
+					return zero, ctx.Err()
+				case <-time.After(time.Duration(attempt+1) * 3 * time.Second):
+				}
+			}
+			continue
+		}
+		return result, nil
+	}
+	return zero, fmt.Errorf("failed after %d attempts: %w", maxQueryRetries, lastErr)
+}
+
+func executeQueryWithFunc[T any](
+	ctx context.Context, oauthToken, query string,
+	scanFn func(*sql.Rows) (T, error), args ...any,
+) (T, error) {
+	var zero T
+	db, err := openConnectionIn(oauthToken, "", "")
+	if err != nil {
+		return zero, err
+	}
+	defer func() { _ = db.Close() }()
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return zero, fmt.Errorf("query failed: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanFn(rows)
+}
+
 // executeQuery runs a single query attempt: open connection, query, scan, close.
 func executeQuery[T any](
 	ctx context.Context, oauthToken, database, schema, query string, args ...any,

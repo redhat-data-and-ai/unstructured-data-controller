@@ -29,11 +29,12 @@ import (
 // Each has to match a db tag on ChunkResult or the scanner drops it without
 // complaining; TestChunkColumnsMatchTheStruct checks both directions.
 var chunkColumns = []string{
-	"FILE_ID", "CHUNK_INDEX", "CHUNK_TEXT", "CHUNK_ID", "RAW_TEXT", "BLOCK_IDS", "REGIONS",
+	"FILE_ID", "FILE_PATH", "CHUNK_INDEX", "CHUNK_TEXT", "CHUNK_ID", "RAW_TEXT", "BLOCK_IDS", "REGIONS",
 }
 
 type ChunkResult struct {
-	FileID string `json:"file_id" db:"file_id"`
+	FileID   string `json:"file_id" db:"file_id"`
+	FilePath string `json:"file_path,omitempty" db:"file_path"`
 	// ChunkIndex is the chunk's position in the flattened view, which is not
 	// ChunkID. Only ChunkID survives the file being embedded again.
 	ChunkIndex string `json:"chunk_index" db:"chunk_index"`
@@ -78,13 +79,13 @@ func SearchChunks(
 	return promoteVariants(chunks), nil
 }
 
-// SearchChunksWithFileFilter performs vector similarity search scoped to files matching the given pattern.
+// SearchChunksWithFileFilter performs vector similarity search scoped to files matching the given path pattern.
 func SearchChunksWithFileFilter(
 	ctx context.Context, oauthToken, database, schema, table, vectorLiteral, filePattern string, limit int,
 ) ([]ChunkResult, error) {
 	query := fmt.Sprintf(
 		`SELECT `+strings.Join(chunkColumns, ", ")+`, VECTOR_COSINE_SIMILARITY(EMBEDDING, %s::VECTOR(FLOAT,768)) AS score `+
-			`FROM %s.%s.%s WHERE FILE_ID LIKE ? ESCAPE '\\' ORDER BY score DESC LIMIT %d`,
+			`FROM %s.%s.%s WHERE FILE_PATH LIKE ? ESCAPE '\\' ORDER BY score DESC LIMIT %d`,
 		vectorLiteral, database, schema, table, limit,
 	)
 
