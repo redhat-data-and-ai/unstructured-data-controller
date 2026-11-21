@@ -116,6 +116,26 @@ func (c *Client) CommitSHA(ctx context.Context) (string, error) {
 
 func (c *Client) cloneWithRevision(ctx context.Context, auth *http.BasicAuth) (billy.Filesystem, error) {
 	fs := memfs.New()
+	// A commit hash cannot be a clone ReferenceName, so clone without depth and check it out.
+	if looksLikeSHA(c.revision) {
+		repo, err := git.CloneContext(ctx, memory.NewStorage(), fs, &git.CloneOptions{
+			URL:        c.url,
+			Auth:       auth,
+			NoCheckout: true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cloning repository for commit %s: %w", c.revision, err)
+		}
+		wt, err := repo.Worktree()
+		if err != nil {
+			return nil, fmt.Errorf("getting worktree for commit %s: %w", c.revision, err)
+		}
+		if err := wt.Checkout(&git.CheckoutOptions{Hash: plumbing.NewHash(c.revision)}); err != nil {
+			return nil, fmt.Errorf("checking out commit %s: %w", c.revision, err)
+		}
+		return fs, nil
+	}
+
 	cloneOpts := &git.CloneOptions{
 		URL:           c.url,
 		ReferenceName: plumbing.NewBranchReferenceName(c.revision),
