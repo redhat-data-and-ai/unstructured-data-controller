@@ -6,7 +6,7 @@ Kubernetes operator (kubebuilder) for unstructured data pipelines - crawling sou
 
 Always use `make` targets instead of raw `go` commands - they include the right flags, dependencies, and setup.
 
-- `make lint` - golangci-lint + yamllint. Run before every commit.
+- `make lint` - golangci-lint + yamllint, from a cold cache so it matches CI. Run before every commit.
 - `make test` - unit tests with envtest.
 - `make build` - build the manager binary.
 - `make fmt` - go fmt.
@@ -35,6 +35,7 @@ Always use `make` targets instead of raw `go` commands - they include the right 
 - Always run `make lint` and `make test` before pushing. Do not push code that fails linting or tests.
 - Align with architecture. Changes must fit the established architecture - one controller per CRD, shared utils in controllerutils, pure library code in pkg/. If a change doesn't fit, discuss the architectural implication before proceeding.
 - Best practices over existing code. If something in this codebase contradicts Go, controller-runtime, or Kubernetes conventions, challenge it - do not blindly copy a bad pattern.
+- What is already vendored is not a constraint. Pick the best solution, and add or upgrade a dependency when it needs one, as long as it comes from a trusted, maintained upstream and is verified against `go.sum`.
 - Always ask why. Poke holes in decisions - don't accept an approach just because it's what the existing code does. If you can't justify a pattern, question it.
 - Code is reviewed by humans. Comment the *why* behind non-obvious decisions, and keep it short - see Go Style > Comments. Obvious code gets no comment.
 - Be concise in code. Don't over-engineer - add just what's needed, nothing more. No premature abstractions, no speculative features, no unnecessary layers.
