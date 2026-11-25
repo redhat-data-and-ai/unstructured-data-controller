@@ -21,7 +21,6 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
-	"strings"
 	"unicode"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,8 +55,7 @@ func ConcurrencyOverrides(scheme *runtime.Scheme) map[string]int {
 // e.g. CONCURRENCY_DOCUMENT_PROCESSOR for DocumentProcessor.
 func ConcurrencyEnvVar(kind string) string {
 	runes := []rune(kind)
-	var name strings.Builder
-	name.WriteString(concurrencyEnvPrefix)
+	name := []rune(concurrencyEnvPrefix)
 	for i, current := range runes {
 		// A word starts at an upper-case letter after a lower-case one, or at
 		// the last capital of an acronym (HTTPRoute -> HTTP_ROUTE).
@@ -65,12 +63,12 @@ func ConcurrencyEnvVar(kind string) string {
 			previous := runes[i-1]
 			nextIsLower := i+1 < len(runes) && unicode.IsLower(runes[i+1])
 			if unicode.IsLower(previous) || unicode.IsDigit(previous) || (unicode.IsUpper(previous) && nextIsLower) {
-				name.WriteByte('_')
+				name = append(name, '_')
 			}
 		}
-		name.WriteRune(unicode.ToUpper(current))
+		name = append(name, unicode.ToUpper(current))
 	}
-	return name.String()
+	return string(name)
 }
 
 // reconciledKinds returns the object kinds scheme registers for the operator's
