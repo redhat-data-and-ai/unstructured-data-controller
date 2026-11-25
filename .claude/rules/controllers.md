@@ -67,7 +67,7 @@ controller-runtime v0.23.3 uses a priority queue by default. Understanding how p
 - For stage controllers in this project, do NOT set priority manually. The skip logic itself is wrong for our use case (see "Do NOT skip reconciliation" above), so the priority is irrelevant.
 
 ## Concurrency
-Every controller runs 5 workers by default, set once through the manager's global `config.Controller.MaxConcurrentReconciles`, so a new controller needs no registration. A kind can be overridden with `CONCURRENCY_<KIND>` in upper snake case (e.g., `CONCURRENCY_DOCUMENT_PROCESSOR=10`); the kinds are discovered from the scheme and the overrides passed as `GroupKindConcurrency`. Do not set `MaxConcurrentReconciles` in a controller's `WithOptions`: controller-runtime then ignores `GroupKindConcurrency`, so its env override stops working.
+Every controller runs 5 workers by default, set once through the manager's global `config.Controller.MaxConcurrentReconciles`, so a new controller needs no registration. To make a controller's count overridable, pass `controllerutils.ConcurrencyOverride("CONCURRENCY_<KIND>")` as `MaxConcurrentReconciles` in its `WithOptions` (e.g., `CONCURRENCY_DOCUMENT_PROCESSOR=10`). It returns 0 when the variable is unset or invalid, and 0 falls back to the global default.
 
 The work queue never reconciles the same CR on two workers at once, so concurrency is safe for idempotent reconcilers that keep no per-reconcile state on the reconciler struct or in package variables.
 

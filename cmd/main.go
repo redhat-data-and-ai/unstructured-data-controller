@@ -184,9 +184,7 @@ func main() {
 		})
 	}
 
-	concurrencyOverrides := controllerutils.ConcurrencyOverrides(scheme)
-	setupLog.Info("configured reconcile concurrency",
-		"default", controllerutils.DefaultReconcilerConcurrency, "overrides", concurrencyOverrides)
+	setupLog.Info("configured reconcile concurrency", "default", controllerutils.DefaultReconcilerConcurrency)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -201,9 +199,8 @@ func main() {
 			},
 		},
 		Controller: config.Controller{
-			// Applies to every controller, so a new one needs no registration here.
+			// Every controller gets this unless it sets its own count in WithOptions.
 			MaxConcurrentReconciles: controllerutils.DefaultReconcilerConcurrency,
-			GroupKindConcurrency:    concurrencyOverrides,
 			// Start informer caches before winning leader election so they are
 			// warm when the pod becomes leader. Reduces time-to-first-reconcile
 			// on failover.
