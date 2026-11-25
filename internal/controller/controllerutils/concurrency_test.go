@@ -19,6 +19,8 @@ package controllerutils
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
@@ -26,165 +28,133 @@ import (
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 )
 
-func TestConcurrencyFromEnv(t *testing.T) {
-	tests := []struct {
-		name     string
-		envVar   string
-		envValue string
-		setEnv   bool
-		expected int
-	}{
-		{
-			name:     "env not set returns default",
-			envVar:   "TEST_CONCURRENCY_UNSET",
-			setEnv:   false,
-			expected: DefaultReconcilerConcurrency,
-		},
-		{
-			name:     "valid positive integer",
-			envVar:   "TEST_CONCURRENCY_VALID",
-			envValue: "10",
-			setEnv:   true,
-			expected: 10,
-		},
-		{
-			name:     "value of 1 is accepted",
-			envVar:   "TEST_CONCURRENCY_ONE",
-			envValue: "1",
-			setEnv:   true,
-			expected: 1,
-		},
-		{
-			name:     "zero falls back to default",
-			envVar:   "TEST_CONCURRENCY_ZERO",
-			envValue: "0",
-			setEnv:   true,
-			expected: DefaultReconcilerConcurrency,
-		},
-		{
-			name:     "negative falls back to default",
-			envVar:   "TEST_CONCURRENCY_NEGATIVE",
-			envValue: "-1",
-			setEnv:   true,
-			expected: DefaultReconcilerConcurrency,
-		},
-		{
-			name:     "non-numeric string falls back to default",
-			envVar:   "TEST_CONCURRENCY_INVALID",
-			envValue: "ten",
-			setEnv:   true,
-			expected: DefaultReconcilerConcurrency,
-		},
-		{
-			name:     "empty string falls back to default",
-			envVar:   "TEST_CONCURRENCY_EMPTY",
-			envValue: "",
-			setEnv:   true,
-			expected: DefaultReconcilerConcurrency,
-		},
-		{
-			name:     "surrounding whitespace falls back to default",
-			envVar:   "TEST_CONCURRENCY_WHITESPACE",
-			envValue: " 10",
-			setEnv:   true,
-			expected: DefaultReconcilerConcurrency,
-		},
-		{
-			name:     "float value falls back to default",
-			envVar:   "TEST_CONCURRENCY_FLOAT",
-			envValue: "3.5",
-			setEnv:   true,
-			expected: DefaultReconcilerConcurrency,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.setEnv {
-				t.Setenv(tt.envVar, tt.envValue)
-			}
-			result := concurrencyFromEnv(tt.envVar)
-			if result != tt.expected {
-				t.Errorf("concurrencyFromEnv(%q) = %d, want %d", tt.envVar, result, tt.expected)
-			}
-		})
-	}
-}
-
-// controllerKeys returns the GroupKindConcurrency key controller-runtime looks
-// up for each stage controller's For() type, keyed by its override env var.
-func controllerKeys(t *testing.T) map[string]string {
+// operatorScheme returns a scheme with the operator's types, as main registers them.
+func operatorScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	if err := operatorv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatalf("building scheme: %v", err)
-	}
+	require.NoError(t, operatorv1alpha1.AddToScheme(scheme))
+	return scheme
+}
 
-	objects := map[string]client.Object{
-		EnvConcurrencyUnstructuredDataPipeline:  &operatorv1alpha1.UnstructuredDataPipeline{},
-		EnvConcurrencyDocumentProcessor:         &operatorv1alpha1.DocumentProcessor{},
-		EnvConcurrencyChunksGenerator:           &operatorv1alpha1.ChunksGenerator{},
-		EnvConcurrencyVectorEmbeddingsGenerator: &operatorv1alpha1.VectorEmbeddingsGenerator{},
-		EnvConcurrencySourceCrawler:             &operatorv1alpha1.SourceCrawler{},
-		EnvConcurrencyDestinationSyncer:         &operatorv1alpha1.DestinationSyncer{},
+// lookupKeys maps each controller's For() kind to the GroupKindConcurrency key
+// controller-runtime looks it up under, derived the same way the builder does.
+func lookupKeys(t *testing.T, scheme *runtime.Scheme) map[string]string {
+	t.Helper()
+	objects := []client.Object{
+		&operatorv1alpha1.ControllerConfig{},
+		&operatorv1alpha1.UnstructuredDataPipeline{},
+		&operatorv1alpha1.SourceCrawler{},
+		&operatorv1alpha1.DocumentProcessor{},
+		&operatorv1alpha1.ChunksGenerator{},
+		&operatorv1alpha1.VectorEmbeddingsGenerator{},
+		&operatorv1alpha1.DestinationSyncer{},
 	}
 	keys := make(map[string]string, len(objects))
-	for envVar, object := range objects {
+	for _, object := range objects {
 		gvk, err := apiutil.GVKForObject(object, scheme)
-		if err != nil {
-			t.Fatalf("resolving GVK for %T: %v", object, err)
-		}
-		keys[envVar] = gvk.GroupKind().String()
+		require.NoError(t, err)
+		keys[gvk.Kind] = gvk.GroupKind().String()
 	}
 	return keys
 }
 
-// clearOverrides empties every override, so an override set in the test
-// process's own environment cannot leak into an assertion about defaults.
-func clearOverrides(t *testing.T, keys map[string]string) {
+// clearOverrides empties every override, so one set in the test process's own
+// environment cannot leak into an assertion.
+func clearOverrides(t *testing.T, kinds map[string]string) {
 	t.Helper()
-	for envVar := range keys {
-		t.Setenv(envVar, "")
+	for kind := range kinds {
+		t.Setenv(ConcurrencyEnvVar(kind), "")
 	}
 }
 
-func TestBuildGroupKindConcurrencyDefaults(t *testing.T) {
-	keys := controllerKeys(t)
-	clearOverrides(t, keys)
-	result := BuildGroupKindConcurrency()
-
-	if len(result) != len(keys) {
-		t.Errorf("got %d entries, want %d: %v", len(result), len(keys), result)
+func TestConcurrencyEnvVar(t *testing.T) {
+	tests := []struct {
+		kind string
+		want string
+	}{
+		// The six names deployments already set; changing any breaks them.
+		{kind: "UnstructuredDataPipeline", want: "CONCURRENCY_UNSTRUCTURED_DATA_PIPELINE"},
+		{kind: "DocumentProcessor", want: "CONCURRENCY_DOCUMENT_PROCESSOR"},
+		{kind: "ChunksGenerator", want: "CONCURRENCY_CHUNKS_GENERATOR"},
+		{kind: "VectorEmbeddingsGenerator", want: "CONCURRENCY_VECTOR_EMBEDDINGS_GENERATOR"},
+		{kind: "SourceCrawler", want: "CONCURRENCY_SOURCE_CRAWLER"},
+		{kind: "DestinationSyncer", want: "CONCURRENCY_DESTINATION_SYNCER"},
+		{kind: "ControllerConfig", want: "CONCURRENCY_CONTROLLER_CONFIG"},
+		{kind: "Pod", want: "CONCURRENCY_POD"},
+		{kind: "HTTPRoute", want: "CONCURRENCY_HTTP_ROUTE"},
+		{kind: "S3Bucket", want: "CONCURRENCY_S3_BUCKET"},
 	}
-	for envVar, key := range keys {
-		got, ok := result[key]
-		if !ok {
-			t.Errorf("no entry under %q, so controller-runtime would run it with 1 worker (env %s)", key, envVar)
-			continue
-		}
-		if got != DefaultReconcilerConcurrency {
-			t.Errorf("%s = %d, want default %d", key, got, DefaultReconcilerConcurrency)
-		}
+	for _, test := range tests {
+		t.Run(test.kind, func(t *testing.T) {
+			assert.Equal(t, test.want, ConcurrencyEnvVar(test.kind))
+		})
 	}
 }
 
-func TestBuildGroupKindConcurrencyOverridesOnlyItsOwnController(t *testing.T) {
-	keys := controllerKeys(t)
-	for envVar := range keys {
-		t.Run(envVar, func(t *testing.T) {
+func TestReconciledKindsAreExactlyTheOperatorObjects(t *testing.T) {
+	scheme := operatorScheme(t)
+	keys := lookupKeys(t, scheme)
+	want := make([]string, 0, len(keys))
+	for kind := range keys {
+		want = append(want, kind)
+	}
+
+	// The scheme also registers list kinds and metav1 option types for the
+	// group version; none of them is reconciled.
+	assert.ElementsMatch(t, want, reconciledKinds(scheme))
+}
+
+func TestConcurrencyOverrides(t *testing.T) {
+	scheme := operatorScheme(t)
+	keys := lookupKeys(t, scheme)
+
+	t.Run("no overrides set leaves every kind on the global default", func(t *testing.T) {
+		clearOverrides(t, keys)
+		assert.Empty(t, ConcurrencyOverrides(scheme))
+	})
+
+	t.Run("an invalid override is ignored", func(t *testing.T) {
+		clearOverrides(t, keys)
+		t.Setenv(ConcurrencyEnvVar("DocumentProcessor"), "ten")
+		assert.Empty(t, ConcurrencyOverrides(scheme))
+	})
+
+	for kind, key := range keys {
+		t.Run("override for "+kind+" lands under its lookup key only", func(t *testing.T) {
 			clearOverrides(t, keys)
-			t.Setenv(envVar, "17")
-			result := BuildGroupKindConcurrency()
+			t.Setenv(ConcurrencyEnvVar(kind), "17")
+			assert.Equal(t, map[string]int{key: 17}, ConcurrencyOverrides(scheme))
+		})
+	}
+}
 
-			for otherEnvVar, otherKey := range keys {
-				want := DefaultReconcilerConcurrency
-				if otherEnvVar == envVar {
-					want = 17
-				}
-				if result[otherKey] != want {
-					t.Errorf("with %s=17, %s = %d, want %d", envVar, otherKey, result[otherKey], want)
-				}
+func TestConcurrencyFromEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		set     bool
+		want    int
+		wantSet bool
+	}{
+		{name: "unset is no override", set: false},
+		{name: "empty is no override", value: "", set: true},
+		{name: "positive integer is used", value: "10", set: true, want: 10, wantSet: true},
+		{name: "one is a valid override", value: "1", set: true, want: 1, wantSet: true},
+		{name: "zero is ignored", value: "0", set: true},
+		{name: "negative is ignored", value: "-1", set: true},
+		{name: "non-numeric is ignored", value: "ten", set: true},
+		{name: "float is ignored", value: "3.5", set: true},
+		{name: "surrounding whitespace is ignored", value: " 10", set: true},
+	}
+	const envVar = "TEST_CONCURRENCY_FROM_ENV"
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.set {
+				t.Setenv(envVar, test.value)
 			}
+			got, ok := concurrencyFromEnv(envVar)
+			assert.Equal(t, test.wantSet, ok, "override reported")
+			assert.Equal(t, test.want, got)
 		})
 	}
 }
