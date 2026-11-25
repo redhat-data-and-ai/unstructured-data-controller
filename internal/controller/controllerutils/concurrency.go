@@ -23,11 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const (
-	// Default number of concurrent reconcile workers per controller.
-	DefaultReconcilerConcurrency = 5
-)
-
 // Environment variable names for per-controller concurrency overrides.
 const (
 	EnvConcurrencyUnstructuredDataPipeline  = "CONCURRENCY_UNSTRUCTURED_DATA_PIPELINE"
@@ -39,8 +34,8 @@ const (
 )
 
 // ConcurrencyOverride returns the worker count set in envVar, or 0 when it is
-// unset or not a positive integer. Zero makes controller-runtime use the
-// manager-wide DefaultReconcilerConcurrency.
+// unset or not a positive integer. Zero makes controller-runtime use its
+// default of one worker.
 func ConcurrencyOverride(envVar string) int {
 	value := os.Getenv(envVar)
 	if value == "" {
@@ -48,8 +43,8 @@ func ConcurrencyOverride(envVar string) int {
 	}
 	workers, err := strconv.Atoi(value)
 	if err != nil || workers <= 0 {
-		log.Log.Info("ignoring invalid concurrency env var, using default",
-			"envVar", envVar, "value", value, "default", DefaultReconcilerConcurrency)
+		log.Log.Info("ignoring invalid concurrency env var, using one worker",
+			"envVar", envVar, "value", value)
 		return 0
 	}
 	return workers

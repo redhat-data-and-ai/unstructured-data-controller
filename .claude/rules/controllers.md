@@ -32,7 +32,7 @@ Never add logic inside `Reconcile()` to skip work based on `observedGeneration`,
 The idiomatic controller-runtime approach is:
 - **Make Reconcile idempotent** - always read current state, always converge to desired state
 - **Use predicates in SetupWithManager** to control which events trigger reconciliation (this is the right layer for filtering)
-- **Use concurrency** (5 workers per controller) to handle restart backlog quickly
+- **Use concurrency** (raised per controller with `CONCURRENCY_*` env vars) to handle restart backlog quickly
 - **Rely on the priority queue** to prioritize new CRs (priority 0) over restart re-list items (priority -100)
 
 This is what the Kubebuilder documentation recommends, and what controller-runtime is designed for. `GenerationChangedPredicate` on the `For()` resource is the correct and sufficient restart optimization - it filters status-only Update events without blocking Create events or RequeueAfter items.
@@ -44,7 +44,7 @@ When a pod restarts or a new version is deployed:
 2. The informer re-lists every existing CR as a Create event
 3. controller-runtime's priority queue assigns priority -100 to these initial-list items
 4. Any new CR created by a user after startup gets priority 0 (processed first)
-5. With concurrency=5, multiple workers process the backlog in parallel
+5. With concurrency raised above 1, multiple workers process the backlog in parallel
 6. `GenerationChangedPredicate` on `For()` only filters Update events - it lets all Create events through, which is correct
 
 ## Priority Queue
@@ -67,7 +67,7 @@ controller-runtime v0.23.3 uses a priority queue by default. Understanding how p
 - For stage controllers in this project, do NOT set priority manually. The skip logic itself is wrong for our use case (see "Do NOT skip reconciliation" above), so the priority is irrelevant.
 
 ## Concurrency
-Every controller runs 5 workers by default, set once through the manager's global `config.Controller.MaxConcurrentReconciles`, so a new controller needs no registration. To make a controller's count overridable, pass `controllerutils.ConcurrencyOverride("CONCURRENCY_<KIND>")` as `MaxConcurrentReconciles` in its `WithOptions` (e.g., `CONCURRENCY_DOCUMENT_PROCESSOR=10`). It returns 0 when the variable is unset or invalid, and 0 falls back to the global default.
+Each controller runs one worker, controller-runtime's default, unless its `CONCURRENCY_<KIND>` env var is set to a positive integer (e.g., `CONCURRENCY_DOCUMENT_PROCESSOR=10`). A controller reads its own override by passing `controllerutils.ConcurrencyOverride("CONCURRENCY_<KIND>")` as `MaxConcurrentReconciles` in its `WithOptions`; give a new controller the same line so its concurrency can be raised. An unset or invalid value returns 0, which controller-runtime treats as one worker.
 
 The work queue never reconciles the same CR on two workers at once, so concurrency is safe for idempotent reconcilers that keep no per-reconcile state on the reconciler struct or in package variables.
 

@@ -27,15 +27,15 @@ func TestConcurrencyOverride(t *testing.T) {
 		set   bool
 		want  int
 	}{
-		{name: "unset falls back to the global default", set: false, want: 0},
-		{name: "empty falls back to the global default", value: "", set: true, want: 0},
+		{name: "unset falls back to one worker", set: false, want: 0},
+		{name: "empty falls back to one worker", value: "", set: true, want: 0},
 		{name: "positive integer is used", value: "10", set: true, want: 10},
 		{name: "one is a valid override", value: "1", set: true, want: 1},
-		{name: "zero falls back to the global default", value: "0", set: true, want: 0},
-		{name: "negative falls back to the global default", value: "-1", set: true, want: 0},
-		{name: "non-numeric falls back to the global default", value: "ten", set: true, want: 0},
-		{name: "float falls back to the global default", value: "3.5", set: true, want: 0},
-		{name: "surrounding whitespace falls back to the global default", value: " 10", set: true, want: 0},
+		{name: "zero falls back to one worker", value: "0", set: true, want: 0},
+		{name: "negative falls back to one worker", value: "-1", set: true, want: 0},
+		{name: "non-numeric falls back to one worker", value: "ten", set: true, want: 0},
+		{name: "float falls back to one worker", value: "3.5", set: true, want: 0},
+		{name: "surrounding whitespace falls back to one worker", value: " 10", set: true, want: 0},
 	}
 
 	const envVar = "TEST_CONCURRENCY_OVERRIDE"

@@ -42,7 +42,6 @@ import (
 
 	operatorv1alpha1 "github.com/redhat-data-and-ai/unstructured-data-controller/api/v1alpha1"
 	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller"
-	"github.com/redhat-data-and-ai/unstructured-data-controller/internal/controller/controllerutils"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -184,8 +183,6 @@ func main() {
 		})
 	}
 
-	setupLog.Info("configured reconcile concurrency", "default", controllerutils.DefaultReconcilerConcurrency)
-
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -199,8 +196,6 @@ func main() {
 			},
 		},
 		Controller: config.Controller{
-			// Every controller gets this unless it sets its own count in WithOptions.
-			MaxConcurrentReconciles: controllerutils.DefaultReconcilerConcurrency,
 			// Start informer caches before winning leader election so they are
 			// warm when the pod becomes leader. Reduces time-to-first-reconcile
 			// on failover.
