@@ -350,7 +350,7 @@ func (c *Client) sendWithAuthFallback(
 
 // doDoclingRequest sends a request with auth fallback and returns the body, or
 // a *DoclingHTTPError for a non-200. Pass c.plainHTTPClient for task-creating
-// POSTs: a retried submit can create a duplicate task and leak a semaphore slot.
+// POSTs: a retried submit can start a duplicate task that no slot covers and nothing collects.
 func (c *Client) doDoclingRequest(
 	ctx context.Context, httpClient *http.Client, method, endpoint string, payload []byte,
 ) (io.ReadCloser, error) {
