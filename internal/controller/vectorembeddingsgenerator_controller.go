@@ -117,9 +117,10 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		return processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
 	})
 
+	// embedFiles has already logged each file's error, so only a summary goes up.
 	if len(embeddingErrors) > 0 {
-		logger.Error(embeddingErrors[0], "failed to process some chunked files")
-		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, errors.New("failed to process some chunked files"))
+		return r.handleError(ctx, vectorEmbeddingsGeneratorCR,
+			fmt.Errorf("failed to embed %d of %d chunked files", len(embeddingErrors), len(filePaths)))
 	}
 
 	// all done, let's update the status to ready
