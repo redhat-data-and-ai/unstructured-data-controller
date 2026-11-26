@@ -246,19 +246,13 @@ func (r *DocumentProcessorReconciler) reconcileInFlightJobs(ctx context.Context,
 	return jobProcessingErrors, nil
 }
 
-// markLostJobs records that docling no longer knows these jobs' tasks. A job
-// under the attempt limit keeps its Attempts and loses its task id, so it is
-// resubmitted rather than polled; one at the limit is marked permanently failing.
+// markLostJobs records that docling no longer knows these jobs' tasks. Each
+// keeps its Attempts and loses its task id, so it is resubmitted rather than
+// polled. The attempt limit is applied at resubmission, after needsConversion
+// has had the chance to count a conversion that was stored before the loss.
 func markLostJobs(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, lostJobs []operatorv1alpha1.Job) {
 	logger := log.FromContext(ctx)
 	for _, job := range lostJobs {
-		if job.Attempts >= maxDoclingConversionAttempts {
-			logger.Info("docling lost track of task and the retry budget is spent, marking file permanently failing",
-				"taskID", job.TaskID, "filePath", job.FilePath, "attempts", job.Attempts)
-			documentProcessorCR.AddPermanentlyFailingFile(job.FilePath)
-			documentProcessorCR.DeleteJobByFilePath(job.FilePath)
-			continue
-		}
 		logger.Info("docling lost track of task, marking job for resubmission",
 			"taskID", job.TaskID, "filePath", job.FilePath, "attempts", job.Attempts)
 		job.TaskID = ""
@@ -575,20 +569,34 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		DocumentConverter: unstructured.DocumentConverterDocling,
 		DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 	}
-	convert, deleteJob, err := existingJobDecision(job, &fileToConvert)
+	action, err := existingJobDecision(job, &fileToConvert)
 	if err != nil {
 		return false, err
 	}
-	if deleteJob {
-		logger.Info("job exists with a different configuration, deleting it", "filePath", rawFilePath)
+	logger.Info("checked existing job", "filePath", rawFilePath, "status", job.Status, "action", action)
+	switch action {
+	case jobWait:
+		return false, nil
+	case jobResubmit:
+		return true, nil
+	case jobReplace:
 		if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 			documentProcessorCR.DeleteJobByFilePath(rawFilePath)
 		}); err != nil {
 			return false, fmt.Errorf("deleting outdated job for %s: %w", rawFilePath, err)
 		}
+		return true, nil
+	case jobGiveUp:
+		if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+			documentProcessorCR.AddPermanentlyFailingFile(rawFilePath)
+			documentProcessorCR.DeleteJobByFilePath(rawFilePath)
+		}); err != nil {
+			return false, fmt.Errorf("giving up on %s: %w", rawFilePath, err)
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown job action %d for %s", action, rawFilePath)
 	}
-	logger.Info("checked existing job", "filePath", rawFilePath, "status", job.Status, "convert", convert)
-	return convert, nil
 }
 
 // settleFinishedLostJob drops a lost job whose conversion is already stored and
@@ -599,11 +607,24 @@ func settleFinishedLostJob(documentProcessorCR *operatorv1alpha1.DocumentProcess
 	documentProcessorCR.Status.FilesProcessed++
 }
 
-// existingJobDecision says whether a file that already has a job needs
-// converting, and whether that job must be deleted first.
+// jobAction is what needsConversion does with a file that already has a job.
+type jobAction int
+
+const (
+	// jobWait leaves a running or finished task alone.
+	jobWait jobAction = iota
+	// jobResubmit converts again, keeping the job so its Attempts carries forward.
+	jobResubmit
+	// jobReplace deletes a job for an outdated config and converts afresh.
+	jobReplace
+	// jobGiveUp marks a file whose failed attempts reached the limit as permanently failing.
+	jobGiveUp
+)
+
+// existingJobDecision says what to do with a file that already has a job.
 func existingJobDecision(
 	job *operatorv1alpha1.Job, fileToConvert *unstructured.ConvertedFileMetadata,
-) (convert, deleteJob bool, err error) {
+) (jobAction, error) {
 	fileInJob := unstructured.ConvertedFileMetadata{
 		RawFilePath:       job.FilePath,
 		FileIdentifier:    job.FileIdentifier,
@@ -612,18 +633,20 @@ func existingJobDecision(
 	}
 	// Config changed: a new conversion gets a fresh retry budget, so dropping Attempts is intended.
 	if !fileInJob.Equal(fileToConvert) {
-		return true, true, nil
+		return jobReplace, nil
 	}
 
 	switch job.Status {
 	case string(docling.TaskStatusFailure), string(docling.TaskStatusSkipped):
-		// Keep the job: processDocument reads it to carry Attempts forward.
-		return true, false, nil
+		if job.Attempts >= maxDoclingConversionAttempts {
+			return jobGiveUp, nil
+		}
+		return jobResubmit, nil
 	case string(docling.TaskStatusPending), string(docling.TaskStatusStarted),
 		string(docling.TaskStatusPartialSuccess), string(docling.TaskStatusSuccess):
-		return false, false, nil
+		return jobWait, nil
 	default:
-		return false, false, fmt.Errorf("invalid task status %q for task id %s", job.Status, job.TaskID)
+		return jobWait, fmt.Errorf("invalid task status %q for task id %s", job.Status, job.TaskID)
 	}
 }
 
