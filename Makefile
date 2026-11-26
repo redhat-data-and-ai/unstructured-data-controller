@@ -147,6 +147,14 @@ test-e2e: setup-test-e2e ## Run the e2e tests. Expected an isolated environment 
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: test-e2e-external
+test-e2e-external: ## Run e2e tests against an external cluster (staging). Caller sets E2E_* env vars.
+	SKIP_OPERATOR_DEPLOY=true \
+	SKIP_BUCKET_SETUP=true \
+	SKIP_CLUSTER_SETUP=true \
+	SKIP_CLUSTER_CLEANUP=true \
+	go test -count=1 -tags e2e ./test/e2e/ -v -timeout=60m
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint and yamllint linters
 	$(GOLANGCI_LINT) run

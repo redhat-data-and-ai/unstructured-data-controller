@@ -45,13 +45,22 @@ var (
 	localstackHost  = "localhost"
 	localstackPort  = "4566"
 	localstackURL   = fmt.Sprintf("http://%s:%s", localstackHost, localstackPort)
+
+	testNamespace       = envOrDefault("E2E_NAMESPACE", "unstructured-controller-namespace")
+	skipOperatorDeploy  = os.Getenv("SKIP_OPERATOR_DEPLOY") == "true"
 )
 
 const (
-	testNamespace          = "unstructured-controller-namespace"
 	deploymentName         = "unstructured-controller-manager"
 	unstructuredSecretName = "unstructured-secret"
 )
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 func TestMain(m *testing.M) {
 	testenv = env.New()
@@ -117,10 +126,16 @@ func TestMain(m *testing.M) {
 }
 
 func testSetup(ctx context.Context, runningProcesses *[]exec.Cmd, config *envconf.Config) error {
-	// change dir for Makefile or it will fail
+	// go test sets cwd to the package dir (test/e2e/); chdir to repo root
+	// so relative paths like test/resources/... resolve correctly
 	if err := os.Chdir("../../"); err != nil {
 		log.Printf("Unable to set working directory: %s", err)
 		return err
+	}
+
+	if skipOperatorDeploy {
+		log.Println("SKIP_OPERATOR_DEPLOY=true: skipping operator deployment, secrets, localstack, docling, ollama, and ControllerConfig")
+		return nil
 	}
 
 	image := os.Getenv("IMG")
@@ -305,18 +320,20 @@ func testCleanup(ctx context.Context, _ *envconf.Config, runningProcesses *[]exe
 	log.Println("cleaning up test environment ...")
 	errorList := []error{}
 
-	commandList := []string{
-		"make undeploy ignore-not-found=true",
-		fmt.Sprintf("kubectl delete secret %s -n %s --ignore-not-found=true", unstructuredSecretName, testNamespace),
-		fmt.Sprintf("kubectl delete controllerconfigs.operator.dataverse.redhat.com controllerconfig -n %s --ignore-not-found=true", testNamespace),
-		fmt.Sprintf("kubectl delete -f test/localstack/ -n %s --ignore-not-found=true", testNamespace),
-		fmt.Sprintf("kubectl delete -f test/docling-serve/ -n %s --ignore-not-found=true", testNamespace),
-		fmt.Sprintf("kubectl delete -f test/ollama-embedding/ -n %s --ignore-not-found=true", testNamespace),
-		"make uninstall",
-	}
-	for _, command := range commandList {
-		if p := utils.RunCommandContext(ctx, command); p.Err() != nil {
-			errorList = append(errorList, fmt.Errorf("failed to run command: %s: %s", command, p.Err()))
+	if !skipOperatorDeploy {
+		commandList := []string{
+			"make undeploy ignore-not-found=true",
+			fmt.Sprintf("kubectl delete secret %s -n %s --ignore-not-found=true", unstructuredSecretName, testNamespace),
+			fmt.Sprintf("kubectl delete controllerconfigs.operator.dataverse.redhat.com controllerconfig -n %s --ignore-not-found=true", testNamespace),
+			fmt.Sprintf("kubectl delete -f test/localstack/ -n %s --ignore-not-found=true", testNamespace),
+			fmt.Sprintf("kubectl delete -f test/docling-serve/ -n %s --ignore-not-found=true", testNamespace),
+			fmt.Sprintf("kubectl delete -f test/ollama-embedding/ -n %s --ignore-not-found=true", testNamespace),
+			"make uninstall",
+		}
+		for _, command := range commandList {
+			if p := utils.RunCommandContext(ctx, command); p.Err() != nil {
+				errorList = append(errorList, fmt.Errorf("failed to run command: %s: %s", command, p.Err()))
+			}
 		}
 	}
 
