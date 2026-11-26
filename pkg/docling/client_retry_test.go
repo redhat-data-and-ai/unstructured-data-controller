@@ -58,12 +58,18 @@ func TestGetConvertedFileMapsOnlyAPoll404ToTaskNotFound(t *testing.T) {
 		resultStatus   int
 		wantNotFound   bool
 		wantHTTPStatus int
+		// taskEnded is set only where the response proves the task is over, so
+		// freeing its slot is correct. A failed poll proves nothing, so that row
+		// makes no claim about the slot either way.
+		taskEnded bool
 	}{
-		{name: "poll 404 means docling lost the task", pollStatus: http.StatusNotFound, wantNotFound: true},
+		{name: "poll 404 means docling lost the task", pollStatus: http.StatusNotFound,
+			wantNotFound: true, taskEnded: true},
 		{name: "poll 500 is a typed error, not a lost task",
 			pollStatus: http.StatusInternalServerError, wantHTTPStatus: http.StatusInternalServerError},
 		{name: "result 404 is a typed error, not a lost task",
-			pollStatus: http.StatusOK, resultStatus: http.StatusNotFound, wantHTTPStatus: http.StatusNotFound},
+			pollStatus: http.StatusOK, resultStatus: http.StatusNotFound, wantHTTPStatus: http.StatusNotFound,
+			taskEnded: true},
 	}
 
 	for _, test := range tests {
@@ -95,7 +101,9 @@ func TestGetConvertedFileMapsOnlyAPoll404ToTaskNotFound(t *testing.T) {
 				require.ErrorAs(t, err, &httpErr)
 				assert.Equal(t, test.wantHTTPStatus, httpErr.StatusCode)
 			}
-			requireSlotFree(t, client)
+			if test.taskEnded {
+				requireSlotFree(t, client)
+			}
 		})
 	}
 }
