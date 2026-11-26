@@ -17,6 +17,7 @@ limitations under the License.
 package httpclient
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -211,5 +212,59 @@ func TestCappedJitterBackoff(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewStopsOnAStalledErrorBody(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	resp, err := New(50*time.Millisecond, fastPolicy).Get(server.URL)
+	if err == nil {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Errorf("closing response body: %v", closeErr)
+		}
+		t.Fatal("Get returned no error, want the attempt's timeout")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1: a 503 whose body stalled past the timeout must not be retried", got)
+	}
+}
+
+func TestNewKeepsTheFinalErrorBody(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if _, err := w.Write([]byte("try later")); err != nil {
+			t.Errorf("writing body: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	resp, err := New(time.Second, fastPolicy).Get(server.URL)
+	if err != nil {
+		t.Fatalf("Get returned error %v, want the final response", err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		t.Errorf("closing response body: %v", closeErr)
+	}
+	if readErr != nil {
+		t.Fatalf("reading body: %v", readErr)
+	}
+	if string(body) != "try later" {
+		t.Errorf("body = %q, want the server's error body", body)
+	}
+	if got := attempts.Load(); got != int32(fastPolicy.RetryMax+1) {
+		t.Errorf("attempts = %d, want %d: a complete 503 is still retried", got, fastPolicy.RetryMax+1)
 	}
 }

@@ -17,8 +17,10 @@ limitations under the License.
 package httpclient
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -32,11 +34,42 @@ const (
 	DefaultRetryMax         = 7
 	DefaultRetryInitialWait = 1 * time.Second
 	DefaultRetryMaxWait     = 2 * time.Minute
+
+	// maxErrorBody bounds how much of a 429 or 5xx body is kept for the caller.
+	maxErrorBody = 64 << 10
 )
 
 // sharedTransport pools connections across every client New returns, since
 // callers build clients per request.
-var sharedTransport = http.DefaultTransport.(*http.Transport).Clone()
+var sharedTransport http.RoundTripper = bufferRetryableBodies{next: http.DefaultTransport.(*http.Transport).Clone()}
+
+// bufferRetryableBodies reads a 429 or 5xx body within the attempt, so a body
+// that stalls fails that attempt with its timeout. Left to the library, it would
+// be drained after the retry decision, and a stall retried at full timeout cost.
+type bufferRetryableBodies struct {
+	next http.RoundTripper
+}
+
+func (b bufferRetryableBodies) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := b.next.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < http.StatusInternalServerError {
+		return resp, nil
+	}
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	closeErr := resp.Body.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return resp, nil
+}
 
 // Policy sets how many times a request is retried and the bounds on the wait
 // between attempts.
