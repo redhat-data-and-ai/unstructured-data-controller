@@ -60,11 +60,11 @@ Use `+listType=atomic` instead only when the list really is a single indivisible
 - Conditions are observations, not state machines
 
 ### Recording the observed generation
-Upstream calls this field `observedGeneration`. This project spells it
+Upstream's closest field is `observedGeneration`. This project spells it
 `lastAppliedGeneration` (`json:"lastAppliedGeneration,omitempty"`) and every
 existing CRD already uses that name, so new CRDs must use it too - a second
 spelling would mean clients had to check both.
 
-- Record the generation most recently acted upon, so clients can tell whether the controller has seen the latest spec
+- Record the last generation reconciled successfully. A failed reconcile leaves it at the previous one, so it tells clients whether the latest spec has been applied, not merely seen
 - Do not rename the existing field: it is part of the published CRD schema and renaming it is a breaking API change for anything reading status
 - Do not add an `observedGeneration` alongside it
