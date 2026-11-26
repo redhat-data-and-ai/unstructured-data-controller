@@ -30,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -64,8 +65,7 @@ const (
 // ChunksGeneratorReconciler reconciles a ChunksGenerator object
 type ChunksGeneratorReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=chunksgenerators,verbs=get;list;watch;create;update;patch;delete
@@ -104,6 +104,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		logger.Error(err, "failed to get ChunksGenerator CR")
 		return ctrl.Result{}, err
 	}
+
 	chunksGeneratorCR = chunksGeneratorCR.DeepCopy()
 	chunksGeneratorCR.Spec.ChunksGeneratorConfig.SetDefaults()
 
@@ -131,15 +132,13 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
-	r.fileStore = fs
-
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(chunksGeneratorCR)
 	if err != nil {
 		return r.handleError(ctx, chunksGeneratorCR, err)
 	}
 	inputPath := unstructured.StagePath(pipelineName, chunksGeneratorCR.Spec.DependsOn[0].Name)
 	outputPath := unstructured.StagePath(pipelineName, chunksGeneratorCR.Spec.StageName)
-	filePaths, err := r.fileStore.ListFilesInPath(ctx, inputPath)
+	filePaths, err := fs.ListFilesInPath(ctx, inputPath)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, chunksGeneratorCR, err)
@@ -164,7 +163,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if job.TaskID == "" {
 			continue
 		}
-		if err := r.reconcileChunkJob(ctx, job, chunksGeneratorCR, inputPath, outputPath); err != nil {
+		if err := r.reconcileChunkJob(ctx, job, chunksGeneratorCR, inputPath, outputPath, fs); err != nil {
 			chunkingErrors = append(chunkingErrors, err)
 			logger.Error(err, "failed to reconcile chunking task", "file", job.FilePath, "taskID", job.TaskID)
 		}
@@ -172,7 +171,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	for _, convertedFilePath := range filePaths {
 		logger.Info("processing converted file", "file", convertedFilePath)
-		processed, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR, inputPath, outputPath)
+		processed, err := r.processConvertedFile(ctx, convertedFilePath, chunksGeneratorCR, inputPath, outputPath, fs)
 		if err != nil {
 			// Both chunking paths refuse work at capacity rather than
 			// queueing, so the file waits for the next pass instead of
@@ -271,7 +270,7 @@ func (r *ChunksGeneratorReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string) (bool, error) {
+func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string, fs *filestore.FileStore) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("processing converted file", "file", convertedFilePath)
 
@@ -297,7 +296,7 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 	}
 
 	// figure out if the file is already chunked
-	needsChunking, err := r.needsChunking(ctx, convertedFilePath, chunksGeneratorCR, inputPath, outputPath)
+	needsChunking, err := needsChunking(ctx, convertedFilePath, chunksGeneratorCR, inputPath, outputPath, fs)
 	if err != nil {
 		logger.Error(err, "failed to check if file needs chunking")
 		return false, err
@@ -307,7 +306,7 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 		return false, nil
 	}
 
-	convertedFile, err := r.retrieveConvertedFile(ctx, convertedFilePath)
+	convertedFile, err := retrieveConvertedFile(ctx, convertedFilePath, fs)
 	if err != nil {
 		return false, err
 	}
@@ -331,8 +330,8 @@ func (r *ChunksGeneratorReconciler) processConvertedFile(ctx context.Context, co
 		return false, r.recordChunkJob(ctx, chunksGeneratorCR, convertedFile, convertedFilePath, config, result.TaskID)
 	}
 
-	if err := r.storeChunks(ctx, convertedFile, config, result.Chunks,
-		chunksGeneratorCR.Spec.DependsOn[0].Name, convertedFilePath, chunksFilePath); err != nil {
+	if err := storeChunks(ctx, convertedFile, config, result.Chunks,
+		chunksGeneratorCR.Spec.DependsOn[0].Name, convertedFilePath, chunksFilePath, fs); err != nil {
 		return false, err
 	}
 
@@ -393,10 +392,10 @@ func chunkerFor(config operatorv1alpha1.ChunksGeneratorConfig) (unstructured.Chu
 }
 
 // retrieveConvertedFile reads a converted file and checks it is one.
-func (r *ChunksGeneratorReconciler) retrieveConvertedFile(
-	ctx context.Context, convertedFilePath string,
+func retrieveConvertedFile(
+	ctx context.Context, convertedFilePath string, fs *filestore.FileStore,
 ) (*unstructured.ConvertedFile, error) {
-	raw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
+	raw, err := fs.Retrieve(ctx, convertedFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("reading converted file %s: %w", convertedFilePath, err)
 	}
@@ -415,10 +414,10 @@ func (r *ChunksGeneratorReconciler) retrieveConvertedFile(
 // storeChunks writes the chunks artifact for a document. The configuration is
 // passed in rather than read from the resource, because a task can outlive a
 // change to the spec and the artifact must describe the chunking that ran.
-func (r *ChunksGeneratorReconciler) storeChunks(
+func storeChunks(
 	ctx context.Context, convertedFile *unstructured.ConvertedFile,
 	config operatorv1alpha1.ChunksGeneratorConfig, chunks []unstructured.Chunk,
-	convertStage, convertedFilePath, chunksFilePath string,
+	convertStage, convertedFilePath, chunksFilePath string, fs *filestore.FileStore,
 ) error {
 	// Written here rather than by the chunker, which resolves geometry and
 	// has no business knowing where files live. Left empty for a page that
@@ -458,7 +457,7 @@ func (r *ChunksGeneratorReconciler) storeChunks(
 		return err
 	}
 
-	return r.fileStore.Store(ctx, chunksFilePath, chunksFileBytes)
+	return fs.Store(ctx, chunksFilePath, chunksFileBytes)
 }
 
 // chunkingOptionsFrom maps the generator's hybrid chunker settings onto the
@@ -518,7 +517,7 @@ func (r *ChunksGeneratorReconciler) recordChunkJob(
 // collecting it again would release a slot a second time, taking one from a
 // task that is still running.
 func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job operatorv1alpha1.ChunkJob,
-	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string) error {
+	chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string, fs *filestore.FileStore) error {
 	logger := log.FromContext(ctx)
 
 	chunker, err := chunkerFor(job.ChunksGeneratorConfig)
@@ -540,7 +539,7 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 	// ended and whose output is written. Polling it again would release a
 	// second permit and count the file twice, so notice first.
 	chunksFilePath := unstructured.RemapToOutputDir(job.FilePath, inputPath, outputPath)
-	written, err := r.chunksAlreadyWritten(ctx, job, chunksFilePath)
+	written, err := chunksAlreadyWritten(ctx, job, chunksFilePath, fs)
 	if err != nil {
 		return err
 	}
@@ -559,7 +558,7 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 	var convertedFile *unstructured.ConvertedFile
 	readDocument := func() (*unstructured.ConvertedDocument, error) {
 		var readErr error
-		convertedFile, readErr = r.retrieveConvertedFile(ctx, job.FilePath)
+		convertedFile, readErr = retrieveConvertedFile(ctx, job.FilePath, fs)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -585,8 +584,8 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 	// Any failure from here on goes through failChunkJob rather than being
 	// returned, even a transient upload error: the task has ended, so leaving
 	// the job with its id would have the next pass collect it again.
-	if err := r.storeChunks(ctx, convertedFile, job.ChunksGeneratorConfig, result.Chunks,
-		chunksGeneratorCR.Spec.DependsOn[0].Name, job.FilePath, chunksFilePath); err != nil {
+	if err := storeChunks(ctx, convertedFile, job.ChunksGeneratorConfig, result.Chunks,
+		chunksGeneratorCR.Spec.DependsOn[0].Name, job.FilePath, chunksFilePath, fs); err != nil {
 		return r.failChunkJob(ctx, job, chunksGeneratorCR, err)
 	}
 	logger.Info("stored chunks for file", "file", job.FilePath, "taskID", job.TaskID, "chunks", len(result.Chunks))
@@ -603,15 +602,15 @@ func (r *ChunksGeneratorReconciler) reconcileChunkJob(ctx context.Context, job o
 // It compares against the job's own configuration, not the spec's: an artifact
 // from an earlier configuration is not this job's output, and taking it as
 // such would leave the file chunked by something no longer asked for.
-func (r *ChunksGeneratorReconciler) chunksAlreadyWritten(
-	ctx context.Context, job operatorv1alpha1.ChunkJob, chunksFilePath string,
+func chunksAlreadyWritten(
+	ctx context.Context, job operatorv1alpha1.ChunkJob, chunksFilePath string, fs *filestore.FileStore,
 ) (bool, error) {
-	exists, err := r.fileStore.Exists(ctx, chunksFilePath)
+	exists, err := fs.Exists(ctx, chunksFilePath)
 	if err != nil || !exists {
 		return false, err
 	}
 
-	raw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	raw, err := fs.Retrieve(ctx, chunksFilePath)
 	if err != nil {
 		return false, fmt.Errorf("reading chunks file %s: %w", chunksFilePath, err)
 	}
@@ -683,7 +682,7 @@ func (r *ChunksGeneratorReconciler) failChunkJob(ctx context.Context, job operat
 		job.FilePath, job.Attempts, maxDoclingChunkingAttempts, cause)
 }
 
-func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string) (bool, error) {
+func needsChunking(ctx context.Context, convertedFilePath string, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, inputPath, outputPath string, fs *filestore.FileStore) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("checking if file needs chunking", "file", convertedFilePath)
 
@@ -691,7 +690,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 
 	// fetch the converted file from the filestore
 	// this will also make sure that the converted file exists in the filestore
-	convertedFileRaw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
+	convertedFileRaw, err := fs.Retrieve(ctx, convertedFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -708,7 +707,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	convertedFileMetadata := convertedFile.ConvertedDocument.Metadata
 
 	// check if the chunked file does not exist in the filestore then return true
-	chunksFileExists, err := r.fileStore.Exists(ctx, chunksFilePath)
+	chunksFileExists, err := fs.Exists(ctx, chunksFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -717,7 +716,7 @@ func (r *ChunksGeneratorReconciler) needsChunking(ctx context.Context, converted
 	}
 
 	// if the chunked file exists, then we need to check if it has the same configuration
-	chunksFileRaw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	chunksFileRaw, err := fs.Retrieve(ctx, chunksFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -758,7 +757,7 @@ func (r *ChunksGeneratorReconciler) findDependents(ctx context.Context, obj clie
 			continue
 		}
 		for _, dep := range item.Spec.DependsOn {
-			if pipelineName+"-"+dep.Name == changedName {
+			if controllerutils.StageCRName(pipelineName, dep.Name) == changedName {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: item.Name, Namespace: item.Namespace},
 				})
@@ -777,6 +776,9 @@ func (r *ChunksGeneratorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.VectorEmbeddingsGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DestinationSyncer{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: controllerutils.ConcurrencyOverride(controllerutils.EnvConcurrencyChunksGenerator),
+		}).
 		Complete(r)
 }
 func (r *ChunksGeneratorReconciler) handleError(ctx context.Context, chunksGeneratorCR *operatorv1alpha1.ChunksGenerator, err error) (ctrl.Result, error) {

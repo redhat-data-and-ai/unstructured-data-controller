@@ -194,7 +194,7 @@ func (c *Client) ChunkDoclingDocument(
 
 	logger.Info("sending request to chunk document", "urlToSendRequest", endpoint, "filename", filename)
 
-	responseBody, err := c.createDoclingRequest(ctx, http.MethodPost, endpoint, payload)
+	responseBody, err := c.doDoclingRequest(ctx, c.plainHTTPClient, http.MethodPost, endpoint, payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get response body: %w", err)
 	}
@@ -264,7 +264,7 @@ func (c *Client) GetChunks(ctx context.Context, taskID string) (TaskStatus, *Chu
 	}
 
 	logger.Info("sending request to get chunks", "url", taskResultURL)
-	bodyResponse, err := c.createDoclingRequest(ctx, http.MethodGet, taskResultURL, nil)
+	bodyResponse, err := c.doDoclingRequest(ctx, c.retryHTTPClient, http.MethodGet, taskResultURL, nil)
 	if err != nil {
 		c.safeRelease()
 		return "", nil, fmt.Errorf("%w: failed to get the chunk result: %w", ErrChunkTaskEnded, err)

@@ -28,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -46,8 +47,7 @@ const (
 
 type VectorEmbeddingsGeneratorReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=vectorembeddingsgenerators,verbs=get;list;watch;create;update;patch;delete
@@ -78,6 +78,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		logger.Error(err, "failed to get VectorEmbeddingsGenerator CR")
 		return ctrl.Result{}, err
 	}
+
 	vectorEmbeddingsGeneratorCR = vectorEmbeddingsGeneratorCR.DeepCopy()
 	vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.SetDefaults()
 
@@ -99,39 +100,27 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 		logger.Error(err, "failed to create the filestore client")
 		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
 	}
-	r.fileStore = fs
-
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(vectorEmbeddingsGeneratorCR)
 	if err != nil {
 		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
 	}
 	inputPath := unstructured.StagePath(pipelineName, vectorEmbeddingsGeneratorCR.Spec.DependsOn[0].Name)
 	outputPath := unstructured.StagePath(pipelineName, vectorEmbeddingsGeneratorCR.Spec.StageName)
-	filePaths, err := r.fileStore.ListFilesInPath(ctx, inputPath)
+	filePaths, err := fs.ListFilesInPath(ctx, inputPath)
 	logger.Info("files in path", "count", len(filePaths))
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, err)
 	}
 
-	embeddingErrors := []error{}
-	var filesProcessed int64
-	for _, chunksFilePath := range filePaths {
-		logger.Info("processing chunked file for embedding", "file", chunksFilePath)
-		processed, err := r.processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath)
-		if err != nil {
-			embeddingErrors = append(embeddingErrors, err)
-			logger.Error(err, "failed to process chunked file", "file", chunksFilePath)
-			continue
-		}
-		if processed {
-			filesProcessed++
-		}
-	}
+	filesProcessed, embeddingErrors := embedFiles(ctx, filePaths, func(chunksFilePath string) (bool, error) {
+		return processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
+	})
 
+	// embedFiles has already logged each file's error, so only a summary goes up.
 	if len(embeddingErrors) > 0 {
-		logger.Error(embeddingErrors[0], "failed to process some chunked files")
-		return r.handleError(ctx, vectorEmbeddingsGeneratorCR, errors.New("failed to process some chunked files"))
+		return r.handleError(ctx, vectorEmbeddingsGeneratorCR,
+			fmt.Errorf("failed to embed %d of %d chunked files", len(embeddingErrors), len(filePaths)))
 	}
 
 	// all done, let's update the status to ready
@@ -148,14 +137,40 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	return ctrl.Result{}, nil
 }
 
-func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string) (bool, error) {
+// embedFiles runs process over each file and counts the ones it embedded. It
+// stops at the first error saying the embedding API is unavailable: every later
+// file would fail the same way, each after waiting out a full retry budget.
+func embedFiles(ctx context.Context, filePaths []string, process func(string) (bool, error)) (int64, []error) {
+	logger := log.FromContext(ctx)
+	var filesProcessed int64
+	var embeddingErrors []error
+	for index, chunksFilePath := range filePaths {
+		logger.Info("processing chunked file for embedding", "file", chunksFilePath)
+		processed, err := process(chunksFilePath)
+		if err != nil {
+			embeddingErrors = append(embeddingErrors, err)
+			logger.Error(err, "failed to process chunked file", "file", chunksFilePath)
+			if embedding.Unavailable(err) {
+				logger.Info("embedding API is unavailable, leaving the remaining files for the next reconcile",
+					"remaining", len(filePaths)-index-1)
+				break
+			}
+			continue
+		}
+		if processed {
+			filesProcessed++
+		}
+	}
+	return filesProcessed, embeddingErrors
+}
+
+func processChunkedFile(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string, fs *filestore.FileStore) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("processing chunked file", "chunksFilePath", chunksFilePath)
 
-	needsEmbedding, err := r.needsEmbedding(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath)
+	needsEmbedding, err := needsEmbedding(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
 	if err != nil {
-		logger.Error(err, "failed to check if file needs embedding")
-		return false, err
+		return false, fmt.Errorf("checking whether %s needs embedding: %w", chunksFilePath, err)
 	}
 	if !needsEmbedding {
 		logger.Info("file does not need embedding, skipping ...", "file", chunksFilePath)
@@ -163,16 +178,14 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 	}
 
 	logger.Info("retrieving chunked file from filestore", "file", chunksFilePath)
-	chunkedFileRaw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	chunkedFileRaw, err := fs.Retrieve(ctx, chunksFilePath)
 	if err != nil {
-		logger.Error(err, "failed to retrieve chunked file")
-		return false, err
+		return false, fmt.Errorf("retrieving chunks file %s: %w", chunksFilePath, err)
 	}
 
 	chunkedFile := &unstructured.ChunksFile{}
 	if err := json.Unmarshal(chunkedFileRaw, &chunkedFile); err != nil {
-		logger.Error(err, "failed to unmarshal chunked file")
-		return false, err
+		return false, fmt.Errorf("decoding chunks file %s: %w", chunksFilePath, err)
 	}
 
 	// Validate chunked file structure. Metadata is checked too, because
@@ -293,15 +306,13 @@ func (r *VectorEmbeddingsGeneratorReconciler) processChunkedFile(ctx context.Con
 
 	embeddingsFileBytes, err := json.Marshal(embeddingsFile)
 	if err != nil {
-		logger.Error(err, "failed to marshal embeddings file")
-		return false, err
+		return false, fmt.Errorf("encoding embeddings for %s: %w", chunksFilePath, err)
 	}
 
 	embeddingsFilePath := unstructured.RemapToOutputDir(chunksFilePath, inputPath, outputPath)
 	logger.Info("storing embedded file", "embeddingsFilePath", embeddingsFilePath)
-	if err := r.fileStore.Store(ctx, embeddingsFilePath, embeddingsFileBytes); err != nil {
-		logger.Error(err, "failed to store embedded file")
-		return false, err
+	if err := fs.Store(ctx, embeddingsFilePath, embeddingsFileBytes); err != nil {
+		return false, fmt.Errorf("storing embeddings for %s: %w", chunksFilePath, err)
 	}
 
 	logger.Info("successfully processed and stored embedded file", "file", chunksFilePath, "embeddingsFile", embeddingsFilePath)
@@ -362,21 +373,19 @@ func embedRange(
 	return append(skippedLeft, skippedRight...), nil
 }
 
-func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string) (bool, error) {
+func needsEmbedding(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string, fs *filestore.FileStore) (bool, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("checking if file needs embedding", "file", chunksFilePath)
 
-	chunksFileExists, err := r.fileStore.Exists(ctx, chunksFilePath)
+	chunksFileExists, err := fs.Exists(ctx, chunksFilePath)
 	if err != nil {
 		return false, err
 	}
 	if !chunksFileExists {
-		err := fmt.Errorf("chunked file %s does not exist", chunksFilePath)
-		logger.Error(err, "chunked file does not exist", "file", chunksFilePath)
-		return false, err
+		return false, fmt.Errorf("chunked file %s does not exist", chunksFilePath)
 	}
 
-	chunkedFileRaw, err := r.fileStore.Retrieve(ctx, chunksFilePath)
+	chunkedFileRaw, err := fs.Retrieve(ctx, chunksFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -388,13 +397,13 @@ func (r *VectorEmbeddingsGeneratorReconciler) needsEmbedding(ctx context.Context
 
 	embeddingsFilePath := unstructured.RemapToOutputDir(chunksFilePath, inputPath, outputPath)
 	logger.Info("embeddings file path", "embeddingsFilePath", embeddingsFilePath)
-	embeddingsFileExists, err := r.fileStore.Exists(ctx, embeddingsFilePath)
+	embeddingsFileExists, err := fs.Exists(ctx, embeddingsFilePath)
 	if err != nil {
 		return false, err
 	}
 
 	if embeddingsFileExists {
-		embeddingsFileRaw, err := r.fileStore.Retrieve(ctx, embeddingsFilePath)
+		embeddingsFileRaw, err := fs.Retrieve(ctx, embeddingsFilePath)
 		if err != nil {
 			return false, err
 		}
@@ -457,7 +466,7 @@ func (r *VectorEmbeddingsGeneratorReconciler) findDependents(ctx context.Context
 			continue
 		}
 		for _, dep := range item.Spec.DependsOn {
-			if pipelineName+"-"+dep.Name == changedName {
+			if controllerutils.StageCRName(pipelineName, dep.Name) == changedName {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: item.Name, Namespace: item.Namespace},
 				})
@@ -476,5 +485,8 @@ func (r *VectorEmbeddingsGeneratorReconciler) SetupWithManager(mgr ctrl.Manager)
 		Watches(&operatorv1alpha1.DocumentProcessor{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.ChunksGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DestinationSyncer{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: controllerutils.ConcurrencyOverride(controllerutils.EnvConcurrencyVectorEmbeddingsGenerator),
+		}).
 		Complete(r)
 }

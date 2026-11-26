@@ -30,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -54,8 +55,7 @@ var (
 // DocumentProcessorReconciler reconciles a DocumentProcessor object
 type DocumentProcessorReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	fileStore *filestore.FileStore
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=operator.dataverse.redhat.com,namespace=unstructured-controller-namespace,resources=documentprocessors,verbs=get;list;watch;create;update;patch;delete
@@ -83,6 +83,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to get DocumentProcessor CR")
 		return ctrl.Result{}, err
 	}
+
 	documentProcessorCR = documentProcessorCR.DeepCopy()
 
 	applyVLMDefaults(documentProcessorCR)
@@ -151,8 +152,6 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "failed to create filestore")
 		return r.handleError(ctx, documentProcessorCR, err)
 	}
-	r.fileStore = fs
-
 	// read from upstream stage directory, write to own stage directory
 	pipelineName, err := controllerutils.ParentPipelineNameFromOwnerReference(documentProcessorCR)
 	if err != nil {
@@ -161,17 +160,12 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	inputPath := unstructured.StagePath(pipelineName, documentProcessorCR.Spec.DependsOn[0].Name)
 	outputPath := unstructured.StagePath(pipelineName, documentProcessorCR.Spec.StageName)
 
-	// first, let's figure out the jobs that are currently running
-	jobProcessingErrors := []error{}
-	for _, job := range documentProcessorCR.Status.Jobs {
-		logger.Info("reconciling job", "job", job)
-		if err := r.reconcileJob(ctx, job, documentProcessorCR, inputPath, outputPath); err != nil {
-			jobProcessingErrors = append(jobProcessingErrors, err)
-			logger.Error(err, "failed to process job", "job", job.FilePath)
-		}
+	jobProcessingErrors, err := r.reconcileInFlightJobs(ctx, documentProcessorCR, inputPath, outputPath, fs)
+	if err != nil {
+		return r.handleError(ctx, documentProcessorCR, err)
 	}
 
-	filePaths, err := r.fileStore.ListFilesInPath(ctx, inputPath)
+	filePaths, err := fs.ListFilesInPath(ctx, inputPath)
 	if err != nil {
 		logger.Error(err, "failed to list files in path")
 		return r.handleError(ctx, documentProcessorCR, err)
@@ -181,7 +175,7 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	rawFilePaths := unstructured.FilterRawFilePaths(filePaths)
 	for _, rawFilePath := range rawFilePaths {
 		logger.Info("processing document", "document", rawFilePath)
-		if err := r.processDocument(ctx, rawFilePath, documentProcessorCR, doclingCfg, inputPath, outputPath); err != nil {
+		if err := r.processDocument(ctx, rawFilePath, documentProcessorCR, doclingCfg, inputPath, outputPath, fs); err != nil {
 			documentProcessingErrors = append(documentProcessingErrors, err)
 			logger.Error(err, "failed to process document", "document", rawFilePath)
 		}
@@ -212,17 +206,72 @@ func (r *DocumentProcessorReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{}, nil
 }
 
+// reconcileInFlightJobs polls docling for each job that has a task. Jobs that
+// reconcileJob settles are removed by it; the ones docling has lost are
+// handed to markLostJobs.
+func (r *DocumentProcessorReconciler) reconcileInFlightJobs(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string, fs *filestore.FileStore) ([]error, error) {
+	logger := log.FromContext(ctx)
+	var jobProcessingErrors []error
+	var lostJobs []operatorv1alpha1.Job
+	for _, job := range documentProcessorCR.Status.Jobs {
+		// No task id means a lost task awaiting resubmission. Polling it would
+		// release a semaphore slot a second time, taking one from a live task.
+		if job.TaskID == "" {
+			continue
+		}
+		logger.Info("reconciling job", "job", job)
+		if err := r.reconcileJob(ctx, job, documentProcessorCR, inputPath, outputPath, fs); err != nil {
+			// Collected, not patched here: rebuilding Status.Jobs from this loop
+			// would resurrect jobs reconcileJob already settled.
+			if errors.Is(err, docling.ErrTaskNotFound) {
+				lostJobs = append(lostJobs, job)
+				continue
+			}
+			jobProcessingErrors = append(jobProcessingErrors, err)
+			logger.Error(err, "failed to process job", "job", job.FilePath)
+		}
+	}
+
+	if len(lostJobs) == 0 {
+		return jobProcessingErrors, nil
+	}
+
+	// Persisted now so the lost tasks do not look in-flight if this reconcile
+	// later exits early.
+	if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+		markLostJobs(ctx, documentProcessorCR, lostJobs)
+	}); err != nil {
+		return nil, fmt.Errorf("recording docling tasks lost by the server: %w", err)
+	}
+	return jobProcessingErrors, nil
+}
+
+// markLostJobs records that docling no longer knows these jobs' tasks. Each
+// keeps its Attempts and loses its task id, so it is resubmitted rather than
+// polled. The attempt limit is applied at resubmission, after needsConversion
+// has had the chance to count a conversion that was stored before the loss.
+func markLostJobs(ctx context.Context, documentProcessorCR *operatorv1alpha1.DocumentProcessor, lostJobs []operatorv1alpha1.Job) {
+	logger := log.FromContext(ctx)
+	for _, job := range lostJobs {
+		logger.Info("docling lost track of task, marking job for resubmission",
+			"taskID", job.TaskID, "filePath", job.FilePath, "attempts", job.Attempts)
+		job.TaskID = ""
+		job.Status = string(docling.TaskStatusFailure)
+		documentProcessorCR.AddOrUpdateJob(job)
+	}
+}
+
 // storePageImages writes one file per rendered page beside the converted
 // document, under the name PageImagePath gives it, and returns the pages it
 // wrote. On failure that is the pages written before it, so a caller never
 // records an image it does not have.
-func (r *DocumentProcessorReconciler) storePageImages(ctx context.Context,
-	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string) ([]int, error) {
+func storePageImages(ctx context.Context,
+	pageImages []docling.PageImage, rawFilePath, inputPath, outputPath string, fs *filestore.FileStore) ([]int, error) {
 	stored := make([]int, 0, len(pageImages))
 	for _, pageImage := range pageImages {
 		imagePath := unstructured.RemapToOutputDir(
 			unstructured.PageImagePath(rawFilePath, pageImage.PageNo), inputPath, outputPath)
-		if err := r.fileStore.Store(ctx, imagePath, pageImage.Data); err != nil {
+		if err := fs.Store(ctx, imagePath, pageImage.Data); err != nil {
 			return stored, fmt.Errorf("storing page %d image for %s: %w", pageImage.PageNo, rawFilePath, err)
 		}
 		stored = append(stored, pageImage.PageNo)
@@ -234,7 +283,7 @@ func (r *DocumentProcessorReconciler) storePageImages(ctx context.Context,
 	return stored, nil
 }
 
-func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (err error) {
+func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job operatorv1alpha1.Job, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string, fs *filestore.FileStore) (err error) {
 	logger := log.FromContext(ctx)
 	// recover from panic semaphore panic
 	defer func() {
@@ -294,8 +343,8 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		if imageErr != nil {
 			logger.Error(imageErr, "could not take page images, storing the document with them",
 				"taskID", job.TaskID, "filePath", job.FilePath)
-		} else if stored, storeErr := r.storePageImages(
-			ctx, pageImages, job.FilePath, inputPath, outputPath); storeErr != nil {
+		} else if stored, storeErr := storePageImages(
+			ctx, pageImages, job.FilePath, inputPath, outputPath, fs); storeErr != nil {
 			logger.Error(storeErr, "could not store page images, storing the document with them",
 				"taskID", job.TaskID, "filePath", job.FilePath, "storedBeforeFailing", len(stored))
 		} else {
@@ -318,7 +367,7 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 		}
 		convertedFilePath := unstructured.RemapToOutputDir(
 			unstructured.ConvertedFilePath(job.FilePath), inputPath, outputPath)
-		if err := r.fileStore.Store(ctx, convertedFilePath, convertedFileBytes); err != nil {
+		if err := fs.Store(ctx, convertedFilePath, convertedFileBytes); err != nil {
 			return err
 		}
 		logger.Info("successfully stored the converted file in the filestore", "filePath", convertedFilePath)
@@ -360,12 +409,12 @@ func (r *DocumentProcessorReconciler) reconcileJob(ctx context.Context, job oper
 	return nil
 }
 
-func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor, doclingCfg *docling.DoclingConfig, inputPath, outputPath string) error {
+func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor, doclingCfg *docling.DoclingConfig, inputPath, outputPath string, fs *filestore.FileStore) error {
 	logger := log.FromContext(ctx)
 	logger.Info("processing document", "rawFilePath", rawFilePath)
 
 	// check if the document needs to be converted
-	needsConversion, err := r.needsConversion(ctx, rawFilePath, documentProcessorCR, inputPath, outputPath)
+	needsConversion, err := r.needsConversion(ctx, rawFilePath, documentProcessorCR, inputPath, outputPath, fs)
 	if err != nil {
 		logger.Error(err, "failed to check if document needs conversion")
 		return err
@@ -376,14 +425,14 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	}
 
 	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	fileUID, err := getFileUID(ctx, rawFilePath, fs)
 	if err != nil {
 		logger.Error(err, "Failed to get file UID")
 		return err
 	}
 
 	// create a new job for the document
-	fileURL, err := r.fileStore.GetFileURL(ctx, rawFilePath)
+	fileURL, err := fs.GetFileURL(ctx, rawFilePath)
 	if err != nil {
 		logger.Error(err, "failed to get file URL")
 		return err
@@ -426,13 +475,13 @@ func (r *DocumentProcessorReconciler) processDocument(ctx context.Context, rawFi
 	return nil
 }
 
-func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string) (bool, error) {
+func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFilePath string, documentProcessorCR *operatorv1alpha1.DocumentProcessor, inputPath, outputPath string, fs *filestore.FileStore) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	logger.Info("checking if document should be converted", "filePath", rawFilePath)
 
 	// does the raw file even exist? this is unlikely to happen, but just in case
-	rawFileExists, err := r.fileStore.Exists(ctx, rawFilePath)
+	rawFileExists, err := fs.Exists(ctx, rawFilePath)
 	if err != nil {
 		return false, err
 	}
@@ -443,7 +492,7 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 
 	// check whether metadata file exists
-	rawMetadataFileExists, err := r.fileStore.Exists(ctx, unstructured.MetadataPath(rawFilePath))
+	rawMetadataFileExists, err := fs.Exists(ctx, unstructured.MetadataPath(rawFilePath))
 	if err != nil {
 		return false, err
 	}
@@ -453,7 +502,7 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 
 	// fetch the File UID
-	fileUID, err := r.getFileUID(ctx, rawFilePath)
+	fileUID, err := getFileUID(ctx, rawFilePath, fs)
 	if err != nil {
 		logger.Error(err, "Failed to get file UID")
 		return false, err
@@ -462,13 +511,13 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	// does the converted file exist in the output directory?
 	convertedFilePath := unstructured.RemapToOutputDir(
 		unstructured.ConvertedFilePath(rawFilePath), inputPath, outputPath)
-	convertedFileExists, err := r.fileStore.Exists(ctx, convertedFilePath)
+	convertedFileExists, err := fs.Exists(ctx, convertedFilePath)
 	if err != nil {
 		return false, err
 	}
 	if convertedFileExists {
 		// if the converted file exists, then we need to check if it has the same configuration
-		convertedFileRaw, err := r.fileStore.Retrieve(ctx, convertedFilePath)
+		convertedFileRaw, err := fs.Retrieve(ctx, convertedFilePath)
 		if err != nil {
 			return false, err
 		}
@@ -489,6 +538,15 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 
 		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
 			logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
+			// A lost job left behind by a conversion that did finish would
+			// otherwise stay in status, and keep the resource requeuing, forever.
+			if job := documentProcessorCR.GetJobByFilePath(rawFilePath); job != nil && job.TaskID == "" {
+				if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+					settleFinishedLostJob(documentProcessorCR, rawFilePath)
+				}); err != nil {
+					return false, fmt.Errorf("dropping stale job for converted file %s: %w", rawFilePath, err)
+				}
+			}
 			return false, nil
 		}
 	}
@@ -499,58 +557,102 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 		return false, nil
 	}
 
-	// now let's check if the job exists in status for this file
 	job := documentProcessorCR.GetJobByFilePath(rawFilePath)
-	if job != nil {
-		// job already exists for this document
-		logger.Info("job already exists for the file, checking if it's the same configuration ...", "filePath", rawFilePath)
-		fileToConvert := unstructured.ConvertedFileMetadata{
-			RawFilePath:       rawFilePath,
-			FileIdentifier:    fileUID,
-			DocumentConverter: unstructured.DocumentConverterDocling,
-			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
-		}
-		fileInJob := unstructured.ConvertedFileMetadata{
-			RawFilePath:       job.FilePath,
-			FileIdentifier:    job.FileIdentifier,
-			DocumentConverter: unstructured.DocumentConverter(job.DocumentConverter),
-			DoclingConfig:     job.DoclingConfig,
-		}
+	if job == nil {
+		logger.Info("job does not exist for the file, it will be converted ...", "filePath", rawFilePath)
+		return true, nil
+	}
 
-		// first, we will check if the current job is still valid (same configuration)
-		if fileInJob.Equal(&fileToConvert) {
-			// we will check if the job is running or completed, if yes, we will return
-			// but if the job is failed, we will send it for conversion again and increment the attempt count
-			switch job.Status {
-			case string(docling.TaskStatusFailure), string(docling.TaskStatusSkipped):
-				logger.Info("job is failed or skipped, will be sent for conversion again ...", "filePath", rawFilePath)
-			case string(docling.TaskStatusPending), string(docling.TaskStatusStarted), string(docling.TaskStatusPartialSuccess), string(docling.TaskStatusSuccess):
-				logger.Info("job is running or completed, no need to create a new job", "filePath", rawFilePath)
-				return false, nil
-			default:
-				return false, fmt.Errorf("invalid task status received for task id: %s", job.TaskID)
-			}
-		}
-
-		// if the current job is not valid (different configuration), then it is of no use to us irrespective of the status
-		// we will delete the job from status and create a new job with the new configuration
-		logger.Info("job already exists, but with a different configuration, let's delete the current job from status", "filePath", rawFilePath)
+	fileToConvert := unstructured.ConvertedFileMetadata{
+		RawFilePath:       rawFilePath,
+		FileIdentifier:    fileUID,
+		DocumentConverter: unstructured.DocumentConverterDocling,
+		DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
+	}
+	action, err := existingJobDecision(job, &fileToConvert)
+	if err != nil {
+		return false, err
+	}
+	logger.Info("checked existing job", "filePath", rawFilePath, "status", job.Status, "action", action)
+	switch action {
+	case jobWait:
+		return false, nil
+	case jobResubmit:
+		return true, nil
+	case jobReplace:
 		if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
 			documentProcessorCR.DeleteJobByFilePath(rawFilePath)
 		}); err != nil {
-			logger.Error(err, "failed to update DocumentProcessor CR status")
-			return false, err
+			return false, fmt.Errorf("deleting outdated job for %s: %w", rawFilePath, err)
 		}
+		return true, nil
+	case jobGiveUp:
+		if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
+			documentProcessorCR.AddPermanentlyFailingFile(rawFilePath)
+			documentProcessorCR.DeleteJobByFilePath(rawFilePath)
+		}); err != nil {
+			return false, fmt.Errorf("giving up on %s: %w", rawFilePath, err)
+		}
+		return false, nil
+	default:
+		return false, fmt.Errorf("unknown job action %d for %s", action, rawFilePath)
 	}
-
-	// job does not exist for this file, let's create a new job
-	logger.Info("job does not exist for the file, it will be converted ...", "filePath", rawFilePath)
-	return true, nil
 }
 
-func (r *DocumentProcessorReconciler) getFileUID(ctx context.Context, rawFilePath string) (string, error) {
+// settleFinishedLostJob drops a lost job whose conversion is already stored and
+// counts the file, which the completion patch that should have counted it
+// must have failed to do. The count change is also what wakes downstream stages.
+func settleFinishedLostJob(documentProcessorCR *operatorv1alpha1.DocumentProcessor, rawFilePath string) {
+	documentProcessorCR.DeleteJobByFilePath(rawFilePath)
+	documentProcessorCR.Status.FilesProcessed++
+}
+
+// jobAction is what needsConversion does with a file that already has a job.
+type jobAction int
+
+const (
+	// jobWait leaves a running or finished task alone.
+	jobWait jobAction = iota
+	// jobResubmit converts again, keeping the job so its Attempts carries forward.
+	jobResubmit
+	// jobReplace deletes a job for an outdated config and converts afresh.
+	jobReplace
+	// jobGiveUp marks a file whose failed attempts reached the limit as permanently failing.
+	jobGiveUp
+)
+
+// existingJobDecision says what to do with a file that already has a job.
+func existingJobDecision(
+	job *operatorv1alpha1.Job, fileToConvert *unstructured.ConvertedFileMetadata,
+) (jobAction, error) {
+	fileInJob := unstructured.ConvertedFileMetadata{
+		RawFilePath:       job.FilePath,
+		FileIdentifier:    job.FileIdentifier,
+		DocumentConverter: unstructured.DocumentConverter(job.DocumentConverter),
+		DoclingConfig:     job.DoclingConfig,
+	}
+	// Config changed: a new conversion gets a fresh retry budget, so dropping Attempts is intended.
+	if !fileInJob.Equal(fileToConvert) {
+		return jobReplace, nil
+	}
+
+	switch job.Status {
+	case string(docling.TaskStatusFailure), string(docling.TaskStatusSkipped):
+		if job.Attempts >= maxDoclingConversionAttempts {
+			return jobGiveUp, nil
+		}
+		return jobResubmit, nil
+	case string(docling.TaskStatusPending), string(docling.TaskStatusStarted),
+		string(docling.TaskStatusPartialSuccess), string(docling.TaskStatusSuccess):
+		return jobWait, nil
+	default:
+		return jobWait, fmt.Errorf("invalid task status %q for task id %s", job.Status, job.TaskID)
+	}
+}
+
+func getFileUID(ctx context.Context, rawFilePath string, fs *filestore.FileStore) (string, error) {
 	logger := log.FromContext(ctx)
-	metaDataFileRaw, err := r.fileStore.Retrieve(ctx, unstructured.MetadataPath(rawFilePath))
+	metaDataFileRaw, err := fs.Retrieve(ctx, unstructured.MetadataPath(rawFilePath))
 	if err != nil {
 		logger.Error(err, "Failed to retrieve metadata file")
 		return "", err
@@ -579,7 +681,7 @@ func (r *DocumentProcessorReconciler) findDependents(ctx context.Context, obj cl
 			continue
 		}
 		for _, dep := range item.Spec.DependsOn {
-			if pipelineName+"-"+dep.Name == changedName {
+			if controllerutils.StageCRName(pipelineName, dep.Name) == changedName {
 				requests = append(requests, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: item.Name, Namespace: item.Namespace},
 				})
@@ -601,6 +703,9 @@ func (r *DocumentProcessorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&operatorv1alpha1.VectorEmbeddingsGenerator{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Watches(&operatorv1alpha1.DestinationSyncer{}, handler.EnqueueRequestsFromMapFunc(r.findDependents), builder.WithPredicates(controllerutils.FilesProcessedChangedPredicate{})).
 		Named("documentprocessor").
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: controllerutils.ConcurrencyOverride(controllerutils.EnvConcurrencyDocumentProcessor),
+		}).
 		Complete(r)
 }
 

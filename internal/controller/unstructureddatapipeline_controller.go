@@ -29,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -86,6 +87,7 @@ func (r *UnstructuredDataPipelineReconciler) Reconcile(ctx context.Context, req 
 		logger.Error(err, "failed to get UnstructuredDataPipeline CR")
 		return ctrl.Result{}, err
 	}
+
 	// DeepCopy to avoid mutating the shared informer cache
 	unstructuredDataPipelineCR = unstructuredDataPipelineCR.DeepCopy()
 
@@ -155,7 +157,7 @@ func (r *UnstructuredDataPipelineReconciler) deleteOrphanedStageCRs(ctx context.
 	// 1. expected stage CRs grouped by type; {SourceCrawler: ["pipeline-crawl"], DocumentProcessor: ["pipeline-convert"] ...}
 	expectedStages := map[operatorv1alpha1.StageType][]string{}
 	for _, stage := range stages {
-		expectedStages[stage.Type] = append(expectedStages[stage.Type], childCRName(pipeline, stage.Name))
+		expectedStages[stage.Type] = append(expectedStages[stage.Type], controllerutils.StageCRName(pipeline.Name, stage.Name))
 	}
 
 	// 2. list all current stage CRs for this pipeline, grouped by type
@@ -217,13 +219,9 @@ func (r *UnstructuredDataPipelineReconciler) deleteOrphanedStageCRs(ctx context.
 	})
 }
 
-func childCRName(unstructuredDataPipelineCR *operatorv1alpha1.UnstructuredDataPipeline, stageName string) string {
-	return unstructuredDataPipelineCR.Name + "-" + stageName
-}
-
 func (r *UnstructuredDataPipelineReconciler) ensureChildCR(ctx context.Context, stage operatorv1alpha1.PipelineStage, unstructuredDataPipelineCR *operatorv1alpha1.UnstructuredDataPipeline) error {
 	logger := log.FromContext(ctx)
-	crName := childCRName(unstructuredDataPipelineCR, stage.Name)
+	crName := controllerutils.StageCRName(unstructuredDataPipelineCR.Name, stage.Name)
 	deps := stage.DependsOn
 
 	switch stage.Type {
@@ -362,6 +360,9 @@ func (r *UnstructuredDataPipelineReconciler) SetupWithManager(mgr ctrl.Manager) 
 		Owns(&operatorv1alpha1.ChunksGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.VectorEmbeddingsGenerator{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&operatorv1alpha1.DestinationSyncer{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: controllerutils.ConcurrencyOverride(controllerutils.EnvConcurrencyUnstructuredDataPipeline),
+		}).
 		Complete(r)
 }
 

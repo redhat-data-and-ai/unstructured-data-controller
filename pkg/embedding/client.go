@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
+	"github.com/redhat-data-and-ai/unstructured-data-controller/pkg/httpclient"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -53,6 +56,20 @@ func (e *APIError) InputRejected() bool {
 	}
 }
 
+// ErrUnreachable marks a request that got no response from the embedding API.
+var ErrUnreachable = errors.New("embedding API unreachable")
+
+// Unavailable reports whether err means the embedding API is not serving
+// requests at all (unreachable, 429 or 5xx), so the next request would fail
+// the same way.
+func Unavailable(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= http.StatusInternalServerError
+	}
+	return errors.Is(err, ErrUnreachable)
+}
+
 // EmbeddingRequest is the JSON body for the embedding API (OpenAI-compatible).
 type EmbeddingRequest struct {
 	Model          string   `json:"model"`
@@ -76,6 +93,8 @@ type HTTPClientConfig struct {
 	AuthFormat string
 	APIKey     string
 	ModelName  string
+	// RetryPolicy overrides httpclient.DefaultPolicy; nil means the default.
+	RetryPolicy *httpclient.Policy
 }
 
 type HTTPClient struct {
@@ -83,11 +102,13 @@ type HTTPClient struct {
 	Config *HTTPClientConfig
 }
 
+// NewHTTPClient creates an embedding HTTP client with automatic retry on
+// transient errors (429, 5xx). Retries are safe because embedding generation
+// is idempotent (same input always produces the same output), though retries
+// may increase API costs if the provider charges per-call.
 func NewHTTPClient(config *HTTPClientConfig) *HTTPClient {
 	return &HTTPClient{
-		Client: &http.Client{
-			Timeout: HTTPClientTimeout,
-		},
+		Client: httpclient.New(HTTPClientTimeout, httpclient.PolicyOrDefault(config.RetryPolicy)),
 		Config: config,
 	}
 }
@@ -130,7 +151,6 @@ func (c *HTTPClient) GenerateEmbeddings(
 		return nil, fmt.Errorf("failed to marshal embedding request: %w", err)
 	}
 
-	// TODO: Add a better log statement
 	logger.Info("sending embedding request")
 	req, err := c.createHTTPRequest(ctx, http.MethodPost, c.Config.Endpoint, payload)
 	if err != nil {
@@ -139,11 +159,17 @@ func (c *HTTPClient) GenerateEmbeddings(
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send embedding request: %w", err)
+		// A timeout is about this request, which may just be too large, so it
+		// is not reported as the API being down and later files still run.
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, fmt.Errorf("embedding request timed out: %w", err)
+		}
+		return nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
 	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			logger.Error(err, "failed to close response body")
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Error(closeErr, "failed to close embedding response body")
 		}
 	}()
 
