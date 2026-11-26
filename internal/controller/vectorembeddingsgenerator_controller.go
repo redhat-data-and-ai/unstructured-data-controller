@@ -170,8 +170,7 @@ func processChunkedFile(ctx context.Context, chunksFilePath string, vectorEmbedd
 
 	needsEmbedding, err := needsEmbedding(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
 	if err != nil {
-		logger.Error(err, "failed to check if file needs embedding")
-		return false, err
+		return false, fmt.Errorf("checking whether %s needs embedding: %w", chunksFilePath, err)
 	}
 	if !needsEmbedding {
 		logger.Info("file does not need embedding, skipping ...", "file", chunksFilePath)
@@ -181,14 +180,12 @@ func processChunkedFile(ctx context.Context, chunksFilePath string, vectorEmbedd
 	logger.Info("retrieving chunked file from filestore", "file", chunksFilePath)
 	chunkedFileRaw, err := fs.Retrieve(ctx, chunksFilePath)
 	if err != nil {
-		logger.Error(err, "failed to retrieve chunked file")
-		return false, err
+		return false, fmt.Errorf("retrieving chunks file %s: %w", chunksFilePath, err)
 	}
 
 	chunkedFile := &unstructured.ChunksFile{}
 	if err := json.Unmarshal(chunkedFileRaw, &chunkedFile); err != nil {
-		logger.Error(err, "failed to unmarshal chunked file")
-		return false, err
+		return false, fmt.Errorf("decoding chunks file %s: %w", chunksFilePath, err)
 	}
 
 	// Validate chunked file structure. Metadata is checked too, because
@@ -309,15 +306,13 @@ func processChunkedFile(ctx context.Context, chunksFilePath string, vectorEmbedd
 
 	embeddingsFileBytes, err := json.Marshal(embeddingsFile)
 	if err != nil {
-		logger.Error(err, "failed to marshal embeddings file")
-		return false, err
+		return false, fmt.Errorf("encoding embeddings for %s: %w", chunksFilePath, err)
 	}
 
 	embeddingsFilePath := unstructured.RemapToOutputDir(chunksFilePath, inputPath, outputPath)
 	logger.Info("storing embedded file", "embeddingsFilePath", embeddingsFilePath)
 	if err := fs.Store(ctx, embeddingsFilePath, embeddingsFileBytes); err != nil {
-		logger.Error(err, "failed to store embedded file")
-		return false, err
+		return false, fmt.Errorf("storing embeddings for %s: %w", chunksFilePath, err)
 	}
 
 	logger.Info("successfully processed and stored embedded file", "file", chunksFilePath, "embeddingsFile", embeddingsFilePath)
