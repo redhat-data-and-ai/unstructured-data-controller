@@ -382,9 +382,7 @@ func needsEmbedding(ctx context.Context, chunksFilePath string, vectorEmbeddings
 		return false, err
 	}
 	if !chunksFileExists {
-		err := fmt.Errorf("chunked file %s does not exist", chunksFilePath)
-		logger.Error(err, "chunked file does not exist", "file", chunksFilePath)
-		return false, err
+		return false, fmt.Errorf("chunked file %s does not exist", chunksFilePath)
 	}
 
 	chunkedFileRaw, err := fs.Retrieve(ctx, chunksFilePath)
