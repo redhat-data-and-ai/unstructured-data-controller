@@ -90,7 +90,7 @@ func (fs *FileStore) Store(ctx context.Context, path string, data []byte) error 
 
 	// write to local filesystem
 	logger.Info("writing file to local filesystem", "path", localPath)
-	err := os.WriteFile(localPath, data, 0644)
+	err := writeFileAtomic(localPath, data)
 	if err != nil {
 		return err
 	}
@@ -216,11 +216,41 @@ func (fs *FileStore) Retrieve(ctx context.Context, path string) ([]byte, error) 
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(localPath, data, 0644); err != nil {
+	if err := writeFileAtomic(localPath, data); err != nil {
 		return nil, err
 	}
 
 	return data, nil
+}
+
+// writeFileAtomic writes data to a temporary file beside path and renames it
+// into place. The locks are per FileStore and each reconcile has its own, so
+// without this a concurrent reader of the shared cache could see a partial file.
+func writeFileAtomic(path string, data []byte) (err error) {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if removeErr := os.Remove(tmp.Name()); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+		}
+	}()
+
+	if _, err = tmp.Write(data); err != nil {
+		return errors.Join(err, tmp.Close())
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	// CreateTemp makes the file 0600; match what os.WriteFile produced before.
+	if err = os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func (fs *FileStore) GetFileURL(ctx context.Context, path string) (string, error) {
