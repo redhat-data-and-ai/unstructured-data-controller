@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -29,6 +30,8 @@ import (
 
 func TestEmbedFiles(t *testing.T) {
 	outage := &embedding.APIError{StatusCode: http.StatusServiceUnavailable}
+	unreachable := fmt.Errorf("%w: dial tcp: connection refused", embedding.ErrUnreachable)
+	timedOut := fmt.Errorf("embedding request timed out: %w", context.DeadlineExceeded)
 	corrupt := errors.New("decoding chunks file")
 	files := []string{"a", "b", "c"}
 
@@ -46,6 +49,10 @@ func TestEmbedFiles(t *testing.T) {
 		{name: "an outage mid-way keeps what already succeeded", results: map[string]error{"b": outage},
 			wantVisited: []string{"a", "b"}, wantProcessed: 1, wantErrors: 1},
 		{name: "a corrupt file does not stop the files after it", results: map[string]error{"a": corrupt},
+			wantVisited: files, wantProcessed: 2, wantErrors: 1},
+		{name: "an unreachable API stops the loop at the first file", results: map[string]error{"a": unreachable},
+			wantVisited: []string{"a"}, wantErrors: 1},
+		{name: "one file timing out does not stop the files after it", results: map[string]error{"a": timedOut},
 			wantVisited: files, wantProcessed: 2, wantErrors: 1},
 		{name: "a skipped file is visited but not counted", skipped: map[string]bool{"b": true},
 			wantVisited: files, wantProcessed: 2},

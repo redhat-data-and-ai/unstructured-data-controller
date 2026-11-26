@@ -251,3 +251,22 @@ func TestGenerateEmbeddingsMarksATransportFailureUnreachable(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnreachable)
 	assert.True(t, Unavailable(err))
 }
+
+// TestGenerateEmbeddingsTimeoutIsNotAnOutage pins that a request running out its
+// timeout is not reported as the API being unavailable, so the caller moves on
+// to the next file instead of stopping.
+func TestGenerateEmbeddingsTimeoutIsNotAnOutage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(&HTTPClientConfig{Endpoint: server.URL, ModelName: "test-model"})
+	client.Client = httpclient.New(20*time.Millisecond, noRetry)
+	_, err := client.GenerateEmbeddings(context.Background(), []string{"a"}, "float")
+
+	require.ErrorContains(t, err, "embedding request timed out")
+	assert.NotErrorIs(t, err, ErrUnreachable)
+	assert.False(t, Unavailable(err))
+}

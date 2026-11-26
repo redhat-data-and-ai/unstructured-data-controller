@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -158,6 +159,12 @@ func (c *HTTPClient) GenerateEmbeddings(
 
 	resp, err := c.Client.Do(req)
 	if err != nil {
+		// A timeout is about this request, which may just be too large, so it
+		// is not reported as the API being down and later files still run.
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, fmt.Errorf("embedding request timed out: %w", err)
+		}
 		return nil, fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
 	defer func() {
