@@ -137,3 +137,19 @@ func TestExistingJobDecision(t *testing.T) {
 		})
 	}
 }
+
+func TestSettleFinishedLostJob(t *testing.T) {
+	documentProcessorCR := &operatorv1alpha1.DocumentProcessor{}
+	documentProcessorCR.Status.FilesProcessed = 4
+	documentProcessorCR.Status.Jobs = []operatorv1alpha1.Job{
+		{FilePath: "a.pdf", Status: string(docling.TaskStatusFailure), Attempts: 1},
+		{FilePath: "b.pdf", TaskID: "live-task", Status: string(docling.TaskStatusPending), Attempts: 1},
+	}
+
+	settleFinishedLostJob(documentProcessorCR, "a.pdf")
+
+	assert.Nil(t, documentProcessorCR.GetJobByFilePath("a.pdf"), "the settled job must be removed")
+	assert.NotNil(t, documentProcessorCR.GetJobByFilePath("b.pdf"), "an unrelated job must be kept")
+	assert.Equal(t, int64(5), documentProcessorCR.Status.FilesProcessed,
+		"the stored conversion must be counted, or downstream stages are never woken for it")
+}

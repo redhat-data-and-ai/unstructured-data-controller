@@ -548,7 +548,7 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 			// otherwise stay in status, and keep the resource requeuing, forever.
 			if job := documentProcessorCR.GetJobByFilePath(rawFilePath); job != nil && job.TaskID == "" {
 				if err := controllerutils.StatusPatch(ctx, r.Client, documentProcessorCR, func() {
-					documentProcessorCR.DeleteJobByFilePath(rawFilePath)
+					settleFinishedLostJob(documentProcessorCR, rawFilePath)
 				}); err != nil {
 					return false, fmt.Errorf("dropping stale job for converted file %s: %w", rawFilePath, err)
 				}
@@ -589,6 +589,14 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 	}
 	logger.Info("checked existing job", "filePath", rawFilePath, "status", job.Status, "convert", convert)
 	return convert, nil
+}
+
+// settleFinishedLostJob drops a lost job whose conversion is already stored and
+// counts the file, which the completion patch that should have counted it
+// must have failed to do. The count change is also what wakes downstream stages.
+func settleFinishedLostJob(documentProcessorCR *operatorv1alpha1.DocumentProcessor, rawFilePath string) {
+	documentProcessorCR.DeleteJobByFilePath(rawFilePath)
+	documentProcessorCR.Status.FilesProcessed++
 }
 
 // existingJobDecision says whether a file that already has a job needs
