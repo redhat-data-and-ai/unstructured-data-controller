@@ -114,7 +114,11 @@ func (r *VectorEmbeddingsGeneratorReconciler) Reconcile(ctx context.Context, req
 	}
 
 	filesProcessed, embeddingErrors := embedFiles(ctx, filePaths, func(chunksFilePath string) (bool, error) {
-		return processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
+		processed, err := processChunkedFile(ctx, chunksFilePath, vectorEmbeddingsGeneratorCR, inputPath, outputPath, fs)
+		if err != nil {
+			storeEmbeddingFailure(ctx, fs, vectorEmbeddingsGeneratorCR, chunksFilePath, inputPath, outputPath, err)
+		}
+		return processed, err
 	})
 
 	// embedFiles has already logged each file's error, so only a summary goes up.
@@ -162,6 +166,42 @@ func embedFiles(ctx context.Context, filePaths []string, process func(string) (b
 		}
 	}
 	return filesProcessed, embeddingErrors
+}
+
+// storeEmbeddingFailure records embedErr in the embeddings output so file status can report it.
+// A failure record has no embeddings, so needsEmbedding retries the file on the next reconcile.
+func storeEmbeddingFailure(ctx context.Context, fs *filestore.FileStore, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, chunksFilePath, inputPath, outputPath string, embedErr error) {
+	logger := log.FromContext(ctx)
+	vegConfig := vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig
+	var convertedFileMetadata *unstructured.ConvertedFileMetadata
+	var chunkFileMetadata *unstructured.ChunksFileMetadata
+	if raw, readErr := fs.Retrieve(ctx, chunksFilePath); readErr == nil {
+		var chunksFile unstructured.ChunksFile
+		if json.Unmarshal(raw, &chunksFile) == nil && chunksFile.ChunksDocument != nil {
+			chunkFileMetadata = chunksFile.ChunksDocument.Metadata
+			if chunkFileMetadata != nil {
+				convertedFileMetadata = chunkFileMetadata.ConvertedFileMetadata
+			}
+		}
+	}
+	failedEmbed := unstructured.EmbeddingsFile{
+		EmbeddingDocument: &unstructured.EmbeddingDocument{
+			Metadata: &unstructured.EmbeddingFileMetadata{
+				ConvertedFileMetadata:   convertedFileMetadata,
+				ChunkFileMetadata:       chunkFileMetadata,
+				ModelName:               vegConfig.ModelName,
+				NomicEmbedTextV15Config: vegConfig.NomicEmbedTextV15Config,
+				GeminiEmbedding2Config:  vegConfig.GeminiEmbedding2Config,
+				Error:                   embedErr.Error(),
+			},
+		},
+	}
+	if failedBytes, marshalErr := json.Marshal(failedEmbed); marshalErr == nil {
+		failedPath := unstructured.RemapToOutputDir(chunksFilePath, inputPath, outputPath)
+		if storeErr := fs.Store(ctx, failedPath, failedBytes); storeErr != nil {
+			logger.Error(storeErr, "failed to store failed embedding status", "file", chunksFilePath)
+		}
+	}
 }
 
 func processChunkedFile(ctx context.Context, chunksFilePath string, vectorEmbeddingsGeneratorCR *operatorv1alpha1.VectorEmbeddingsGenerator, inputPath, outputPath string, fs *filestore.FileStore) (bool, error) {
@@ -395,6 +435,11 @@ func needsEmbedding(ctx context.Context, chunksFilePath string, vectorEmbeddings
 		return false, err
 	}
 
+	if chunkedFile.ChunksDocument.Chunks == nil {
+		logger.Info("chunks file has no chunks (upstream failure), skipping embedding", "file", chunksFilePath)
+		return false, nil
+	}
+
 	embeddingsFilePath := unstructured.RemapToOutputDir(chunksFilePath, inputPath, outputPath)
 	logger.Info("embeddings file path", "embeddingsFilePath", embeddingsFilePath)
 	embeddingsFileExists, err := fs.Exists(ctx, embeddingsFilePath)
@@ -426,6 +471,11 @@ func needsEmbedding(ctx context.Context, chunksFilePath string, vectorEmbeddings
 			ModelName:               vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.ModelName,
 			NomicEmbedTextV15Config: vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.NomicEmbedTextV15Config,
 			GeminiEmbedding2Config:  vectorEmbeddingsGeneratorCR.Spec.VectorEmbeddingsGeneratorConfig.GeminiEmbedding2Config,
+		}
+
+		if currentEmbeddedFile.EmbeddingDocument.Embeddings == nil {
+			logger.Info("embeddings file exists but has no embeddings (previous failure), re-embedding", "file", chunksFilePath)
+			return true, nil
 		}
 
 		if currentEmbeddedFile.EmbeddingDocument.Metadata.Equal(fileToEmbedMetadata) {
