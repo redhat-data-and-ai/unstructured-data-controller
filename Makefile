@@ -148,12 +148,15 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
+# Both clear the cache first: CI lints with a cold one, and a warm one can hide findings.
 lint: golangci-lint ## Run golangci-lint and yamllint linters
+	$(GOLANGCI_LINT) cache clean
 	$(GOLANGCI_LINT) run
 	yamllint $$(find . -path ./vendor -prune -o -type f -regex ".*y[a]ml" -print)
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
+	$(GOLANGCI_LINT) cache clean
 	$(GOLANGCI_LINT) run --fix
 
 .PHONY: lint-config
