@@ -541,12 +541,11 @@ func (r *DocumentProcessorReconciler) needsConversion(ctx context.Context, rawFi
 			DoclingConfig:     documentProcessorCR.Spec.DocumentProcessorConfig.DoclingConfig,
 		}
 
+		// A failure record is not a usable conversion, so it falls through to the
+		// permanent-failure and job checks rather than resubmitting unconditionally.
 		if convertedFile.ConvertedDocument.Content == nil {
-			logger.Info("converted file exists but has no content (previous failure), re-converting", "filePath", rawFilePath)
-			return true, nil
-		}
-
-		if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
+			logger.Info("converted file is a failure record, checking whether to convert again", "filePath", rawFilePath)
+		} else if currentConvertedFileMetadata.Equal(&fileToConvertMetadata) {
 			logger.Info("converted file has the same configuration, no conversion needed", "filePath", rawFilePath)
 			// A lost job left behind by a conversion that did finish would
 			// otherwise stay in status, and keep the resource requeuing, forever.
